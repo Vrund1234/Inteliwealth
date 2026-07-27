@@ -53,8 +53,6 @@ def extract_scheme_nav():
 
     return df
 
-
-
 # =====================================================
 # TRANSFORM
 # =====================================================
@@ -65,67 +63,133 @@ def transform_scheme_nav(df):
     print("Transforming Scheme NAV")
     print("=" * 80)
 
-
     df = df.copy()
 
+    # =====================================================
+    # LOAD GOLD SCHEME
+    # =====================================================
 
-    # -------------------------------
-    # Generate scheme_id
-    # -------------------------------
-
-    df["scheme_id"] = df.apply(
-        lambda row: str(
-            uuid.UUID(
-                hashlib.md5(
-                    f"{row['source']}|{row['scheme_code']}".encode()
-                ).hexdigest()
-            )
-        ),
-        axis=1
+    gold_scheme = pd.read_sql(
+        """
+        SELECT
+            id,
+            rta,
+            scheme_code
+        FROM gold.scheme
+        """,
+        engine
     )
 
+    # =====================================================
+    # CLEAN KEYS
+    # =====================================================
 
-    # -------------------------------
+    df["source"] = (
+        df["source"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    df["scheme_code"] = (
+        df["scheme_code"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    gold_scheme["rta"] = (
+        gold_scheme["rta"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    gold_scheme["scheme_code"] = (
+        gold_scheme["scheme_code"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    # =====================================================
+    # MAP TO GOLD.SCHEME.ID
+    # =====================================================
+
+    df = df.merge(
+        gold_scheme[
+            [
+                "id",
+                "rta",
+                "scheme_code"
+            ]
+        ],
+        left_on=[
+            "source",
+            "scheme_code"
+        ],
+        right_on=[
+            "rta",
+            "scheme_code"
+        ],
+        how="left"
+    )
+
+    df.rename(
+        columns={
+            "id": "scheme_id"
+        },
+        inplace=True
+    )
+
+    print("=" * 80)
+    print("SCHEME ID VALIDATION")
+    print("=" * 80)
+    print("Total Rows :", len(df))
+    print("Matched    :", df["scheme_id"].notna().sum())
+    print("Missing    :", df["scheme_id"].isna().sum())
+
+    print("\nMissing Samples")
+    print(
+        df.loc[
+            df["scheme_id"].isna(),
+            ["source", "scheme_code"]
+        ]
+        .drop_duplicates()
+        .head(20)
+    )
+
+    # =====================================================
     # NAV DATE
-    # -------------------------------
+    # =====================================================
 
     df["nav_date"] = pd.to_datetime(
         df["traddate"],
         errors="coerce"
     )
 
-
-    # -------------------------------
-    # NAV VALUE
-    # -------------------------------
+    # =====================================================
+    # NAV
+    # =====================================================
 
     df["nav"] = pd.to_numeric(
         df["purprice"],
         errors="coerce"
     )
 
-
-    # -------------------------------
+    # =====================================================
     # REPURCHASE NAV
-    # Not available currently
-    # -------------------------------
-
-    # -------------------------------
-    # REPURCHASE NAV
-    # Using PURPRICE as Repurchase Price
-    # -------------------------------
+    # =====================================================
 
     df["repurchase_nav"] = None
-    # -------------------------------
-    # Source
-    # -------------------------------
 
-    df["source"] = df["source"]
-
-
-    # -------------------------------
-    # Final columns
-    # -------------------------------
+    # =====================================================
+    # FINAL DATAFRAME
+    # =====================================================
 
     gold_df = df[
         [
@@ -137,9 +201,7 @@ def transform_scheme_nav(df):
         ]
     ]
 
-
-    # remove invalid rows
-
+    # Remove invalid rows
     gold_df = gold_df[
         gold_df["scheme_id"].notna()
         &
@@ -148,11 +210,7 @@ def transform_scheme_nav(df):
         gold_df["nav"].notna()
     ]
 
-
     # Deduplicate
-    # requirement:
-    # dedup by scheme_id + nav_date
-
     gold_df = gold_df.drop_duplicates(
         subset=[
             "scheme_id",
@@ -161,18 +219,12 @@ def transform_scheme_nav(df):
         keep="last"
     )
 
-
     print("\nTransformation Completed")
     print("-" * 80)
-
     print("Rows ready :", len(gold_df))
-
     print(gold_df.head())
 
-
     return gold_df
-
-
 
 # =====================================================
 # LOAD
