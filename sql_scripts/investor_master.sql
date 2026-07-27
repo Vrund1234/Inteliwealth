@@ -1,0 +1,190 @@
+DROP TABLE IF EXISTS investor_master;
+
+CREATE TABLE investor_master (
+
+    -- Common / Merged Columns
+    folio_no TEXT,
+    investor_name TEXT,
+    joint_name_1 TEXT,
+    joint_name_2 TEXT,
+
+    address1 TEXT,
+    address2 TEXT,
+    address3 TEXT,
+    city TEXT,
+    state TEXT,
+    country TEXT,
+    pincode TEXT,
+
+    dob TEXT,
+    mobile_no TEXT,
+    email TEXT,
+    phone_res TEXT,
+    phone_off TEXT,
+
+    tax_status TEXT,
+    holding_nature TEXT,
+
+    pan_no TEXT,
+    joint1_pan TEXT,
+    joint2_pan TEXT,
+    guardian_pan TEXT,
+
+    bank_name TEXT,
+    bank_account_no TEXT,
+    account_type TEXT,
+    branch TEXT,
+    ifsc_code TEXT,
+
+    bank_address1 TEXT,
+    bank_address2 TEXT,
+    bank_address3 TEXT,
+    bank_city TEXT,
+    bank_state TEXT,
+    bank_country TEXT,
+
+    nominee1_name TEXT,
+    nominee1_relation TEXT,
+    nominee1_address1 TEXT,
+    nominee1_address2 TEXT,
+    nominee1_address3 TEXT,
+    nominee1_city TEXT,
+    nominee1_state TEXT,
+    nominee1_pincode TEXT,
+    nominee1_phone TEXT,
+    nominee1_email TEXT,
+    nominee1_percentage TEXT,
+
+    nominee2_name TEXT,
+    nominee2_relation TEXT,
+    nominee2_address1 TEXT,
+    nominee2_address2 TEXT,
+    nominee2_address3 TEXT,
+    nominee2_city TEXT,
+    nominee2_state TEXT,
+    nominee2_pincode TEXT,
+    nominee2_phone TEXT,
+    nominee2_email TEXT,
+    nominee2_percentage TEXT,
+
+    nominee3_name TEXT,
+    nominee3_relation TEXT,
+    nominee3_address1 TEXT,
+    nominee3_address2 TEXT,
+    nominee3_address3 TEXT,
+    nominee3_city TEXT,
+    nominee3_state TEXT,
+    nominee3_pincode TEXT,
+    nominee3_phone TEXT,
+    nominee3_email TEXT,
+    nominee3_percentage TEXT,
+
+    broker_code TEXT,
+    dp_id TEXT,
+    demat_flag TEXT,
+
+    ckyc_no TEXT,
+    jh1_ckyc TEXT,
+    jh2_ckyc TEXT,
+    guardian_ckyc_no TEXT,
+
+    guardian_name TEXT,
+
+    report_date TEXT,
+    report_time TEXT,
+    folio_date TEXT,
+
+    occupation TEXT,
+    occupation_description TEXT,
+
+    product_code TEXT,
+    scheme_name TEXT,
+
+    -- Balances (CAMS)
+    closing_balance TEXT,
+    rupee_balance TEXT,
+
+    -- CAMS Unique Columns
+    foliochk TEXT,
+    product TEXT,
+    sch_name TEXT,
+    rep_date TEXT,
+    clos_bal TEXT,
+    rupee_bal TEXT,
+    uin_no TEXT,
+    inv_iin TEXT,
+    subbroker TEXT,
+    brokcode TEXT,
+    reinv_flag TEXT,
+    b_pincode TEXT,
+    nom_ph_off TEXT,
+    nom2_ph_off TEXT,
+    nom3_ph_off TEXT,
+    tpa_linked TEXT,
+    g_ckyc_no TEXT,
+    jh1_dob TEXT,
+    jh2_dob TEXT,
+    guardian_dob TEXT,
+    amc_code TEXT,
+    gst_state_code TEXT,
+    folio_old TEXT,
+    scheme_folio_number TEXT,
+
+    -- KFin Unique Columns
+    fund TEXT,
+    folio TEXT,
+    fund_description TEXT,
+    tpin TEXT,
+    f_name TEXT,
+    m_name TEXT,
+
+    phone_res1 TEXT,
+    phone_res2 TEXT,
+    phone_off1 TEXT,
+    phone_off2 TEXT,
+    fax_residence TEXT,
+    fax_office TEXT,
+
+    occ_code TEXT,
+
+    bank_phone TEXT,
+
+    investor_id TEXT,
+    client_id TEXT,
+
+    dividend_option TEXT,
+    mode_of_holding_description TEXT,
+    mapin_id TEXT,
+    pan2 TEXT,
+    pan3 TEXT,
+    category TEXT,
+    categorydesc TEXT,
+    statusdesc TEXT,
+
+    kyc1flag TEXT,
+    kyc2flag TEXT,
+    kyc3flag TEXT,
+    lastupdateddate TEXT,
+    commonaccno TEXT,
+
+    holder_1_aadhaar_info TEXT,
+    holder_2_aadhaar_info TEXT,
+    holder_3_aadhaar_info TEXT,
+    guardian_aadhaar_info TEXT,
+
+    joint_holder_1st_resi_phone_no TEXT,
+    joint_holder_2nd_resi_phone_no TEXT,
+    joint_holder_1_contact_number TEXT,
+    joint_holder_2_contact_number TEXT,
+    joint_holder_1_email_id TEXT,
+    joint_holder_2_email_id TEXT,
+
+    investors_resi_faxno TEXT,
+    kycgflag TEXT,
+    nominee_opt_out_flag TEXT,
+    nominee_dob TEXT,
+    nominee_guardian_name TEXT,
+    emailconcern TEXT,
+    emailrelationship TEXT,
+    mobilerelationship TEXT
+);
