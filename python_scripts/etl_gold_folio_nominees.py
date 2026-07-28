@@ -2,15 +2,15 @@ import pandas as pd
 import hashlib 
 import uuid
 from sqlalchemy import create_engine, text
-
+from utils.db import engine
 
 # =====================================================
 # DATABASE CONNECTION
 # =====================================================
 
-engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-)
+# engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+# )
 
 
 # =====================================================

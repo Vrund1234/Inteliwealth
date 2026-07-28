@@ -274,11 +274,28 @@ if transform_btn:
                     "silver",
                     "sip_master_new"
                 )
+
+
             gold_data = {}
 
-            gold_data["Holdings"] = read_table(
+            gold_data["AMC"] = read_table(
                 "gold",
-                "holdings"
+                "amc"
+            )
+
+            gold_data["Scheme"] = read_table(
+                "gold",
+                "scheme"
+            )
+
+            gold_data["Scheme NAV"] = read_table(
+                "gold",
+                "scheme_nav"
+            )
+
+            gold_data["Clients"] = read_table(
+                "gold",
+                "clients"
             )
 
             gold_data["Transactions"] = read_table(
@@ -286,14 +303,19 @@ if transform_btn:
                 "transactions"
             )
 
+            gold_data["Holdings"] = read_table(
+                "gold",
+                "holdings"
+            )
+
+            gold_data["Folio Nominees"] = read_table(
+                "gold",
+                "folio_nominees"
+            )
+
             gold_data["SIP"] = read_table(
                 "gold",
                 "sip"
-            )
-
-            gold_data["Clients"] = read_table(
-                "gold",
-                "clients"
             )
 
             st.session_state.gold_data = gold_data

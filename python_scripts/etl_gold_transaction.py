@@ -1,32 +1,27 @@
 import pandas as pd
-
-from sqlalchemy import create_engine
-
+# from sqlalchemy import create_engine
 import traceback
-
-
+from utils.db import engine, master_engine
 
 # =====================================================
 
 # DATABASE CONNECTION
 
-# =====================================================
+# ====================================================
+
+# engine = create_engine(
+
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+
+# )
 
 
 
-engine = create_engine(
+# master_engine = create_engine(
 
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
 
-)
-
-
-
-master_engine = create_engine(
-
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
-
-)
+# )
 
 # =====================================================
 

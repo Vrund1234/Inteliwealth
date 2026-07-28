@@ -21,14 +21,30 @@ def read_file(file):
 
         file.seek(0)
 
-        try:
-            text = file.read().decode("utf-8")
-        except UnicodeDecodeError:
-            file.seek(0)
-            text = file.read().decode("latin1")
+        # try:
+        #     text = file.read().decode("utf-8")
+        # except UnicodeDecodeError:
+        #     file.seek(0)
+        #     text = file.read().decode("latin1")
 
+
+        raw = file.read()
+
+        for encoding in ("utf-8", "utf-16", "utf-16le", "utf-16be", "latin1"):
+            try:
+                text = raw.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise ValueError("Unable to decode uploaded file.")
 
         # FIX WINDOWS NEWLINE ISSUE
+        # text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # Remove NULL characters
+        text = text.replace("\x00", "")
+
+        # Normalize newlines
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
 

@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
-
+from utils.db import engine
 from pyparsing import col
-from sqlalchemy import create_engine
-
+# from sqlalchemy import create_engine
+# from utils.db import engine, master_engine
 from mapping import INVESTOR_MASTER_MAPPING
 
 
@@ -11,9 +11,9 @@ from mapping import INVESTOR_MASTER_MAPPING
 # DATABASE CONNECTION
 # =====================================================
 
-engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-)
+# engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+# )
 
 
 # =====================================================

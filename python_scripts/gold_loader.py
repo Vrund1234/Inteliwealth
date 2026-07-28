@@ -1,6 +1,29 @@
 # =====================================================
 # GOLD LAYER LOADER
 # =====================================================
+from etl_gold_amc import (
+    extract_amc,
+    transform_amc,
+    load_amc
+)
+
+from etl_gold_scheme import (
+    extract_scheme,
+    transform_scheme,
+    load_scheme
+)
+
+from etl_gold_scheme_nav import (
+    extract_scheme_nav,
+    transform_scheme_nav,
+    load_scheme_nav
+)
+
+from etl_gold_folio_nominees import (
+    extract_folio_nominees,
+    transform_folio_nominees,
+    load_folio_nominees
+)
 
 from etl_gold_transaction import (
     extract_transactions,
@@ -17,11 +40,12 @@ from etl_gold_holdings import (
 
 # Import only if functions exist
 try:
-    from etl_sip import (
+    from etl_gold_sip import (
         extract_sip,
         transform_sip,
         load_sip
     )
+
     SIP_AVAILABLE = True
 
 except ImportError:
@@ -30,7 +54,7 @@ except ImportError:
 
 
 try:
-    from etl_investor_master import (
+    from etl_gold_clients import (
         extract_clients,
         transform_clients,
         load_clients
@@ -52,252 +76,147 @@ def load_gold():
     print("STARTING GOLD LAYER LOAD")
     print("=" * 80)
 
-
     # =================================================
     # GOLD TRANSACTIONS
     # =================================================
-
     try:
-
         print("\nLoading Gold Transactions")
-
         transaction_df = extract_transactions()
-
-        print(
-            f"Silver Transactions Rows : {len(transaction_df)}"
-        )
-
-
-        transaction_gold_df = transform_transactions(
-            transaction_df
-        )
-
-
-        print(
-            f"Gold Transactions Rows : {len(transaction_gold_df)}"
-        )
-
+        transaction_gold_df = transform_transactions(transaction_df)
 
         if not transaction_gold_df.empty:
-
-            load_transactions(
-                transaction_gold_df
-            )
-
-            print(
-                "Transactions loaded successfully"
-            )
-
-        else:
-
-            print(
-                "No transaction data to load"
-            )
-
+            load_transactions(transaction_gold_df)
+            print("Transactions loaded successfully")
 
     except Exception as e:
-
-        print(
-            "Transaction Gold Failed"
-        )
-
+        print("Transaction Gold Failed")
         print(e)
-
-
 
     # =================================================
     # GOLD HOLDINGS
     # =================================================
-
     try:
-
         print("\nLoading Gold Holdings")
-
-
         holdings_df = extract_holdings()
-
-
-        print(
-            f"Silver Holdings Rows : {len(holdings_df)}"
-        )
-
-
-        holdings_gold_df = transform_holdings(
-            holdings_df
-        )
-
-
-        print(
-            f"Gold Holdings Rows : {len(holdings_gold_df)}"
-        )
-
+        holdings_gold_df = transform_holdings(holdings_df)
 
         if not holdings_gold_df.empty:
-
-            load_holdings(
-                holdings_gold_df
-            )
-
-            print(
-                "Holdings loaded successfully"
-            )
-
-        else:
-
-            print(
-                "No holdings data to load"
-            )
-
+            load_holdings(holdings_gold_df)
+            print("Holdings loaded successfully")
 
     except Exception as e:
-
-        print(
-            "Holdings Gold Failed"
-        )
-
+        print("Holdings Gold Failed")
         print(e)
-
-
 
     # =================================================
     # GOLD SIP
     # =================================================
-
     if SIP_AVAILABLE:
-
         try:
-
             print("\nLoading Gold SIP")
-
-
             sip_df = extract_sip()
-
-
-            print(
-                f"Silver SIP Rows : {len(sip_df)}"
-            )
-
-
-            sip_gold_df = transform_sip(
-                sip_df
-            )
-
-
-            print(
-                f"Gold SIP Rows : {len(sip_gold_df)}"
-            )
-
+            sip_gold_df = transform_sip(sip_df)
 
             if not sip_gold_df.empty:
-
-                load_sip(
-                    sip_gold_df
-                )
-
-                print(
-                    "SIP loaded successfully"
-                )
-
+                load_sip(sip_gold_df)
+                print("SIP loaded successfully")
 
         except Exception as e:
-
-            print(
-                "SIP Gold Failed"
-            )
-
+            print("SIP Gold Failed")
             print(e)
-
-    else:
-
-        print(
-            "\nSIP ETL not available"
-        )
-
-
 
     # =================================================
     # GOLD CLIENTS
     # =================================================
-
     if CLIENT_AVAILABLE:
-
         try:
-
             print("\nLoading Gold Clients")
-
-
             client_df = extract_clients()
-
-
-            print(
-                f"Silver Clients Rows : {len(client_df)}"
-            )
-
-
-            client_gold_df = transform_clients(
-                client_df
-            )
-
-
-            print(
-                f"Gold Clients Rows : {len(client_gold_df)}"
-            )
-
+            client_gold_df = transform_clients(client_df)
 
             if not client_gold_df.empty:
-
-                load_clients(
-                    client_gold_df
-                )
-
-                print(
-                    "Clients loaded successfully"
-                )
-
+                load_clients(client_gold_df)
+                print("Clients loaded successfully")
 
         except Exception as e:
-
-            print(
-                "Clients Gold Failed"
-            )
-
+            print("Clients Gold Failed")
             print(e)
 
-    else:
+    # =================================================
+    # GOLD AMC
+    # =================================================
+    try:
+        print("\nLoading Gold AMC")
+        amc_df = extract_amc()
+        amc_gold_df = transform_amc(amc_df)
 
-        print(
-            "\nClient ETL not available"
+        if not amc_gold_df.empty:
+            load_amc(amc_gold_df)
+            print("AMC loaded successfully")
+
+    except Exception as e:
+        print("AMC Gold Failed")
+        print(e)
+
+    # =================================================
+    # GOLD SCHEME
+    # =================================================
+    try:
+
+        print("\nLoading Gold Scheme")
+
+        transaction_df, investor_df = extract_scheme()
+
+        scheme_gold_df = transform_scheme(
+            transaction_df,
+            investor_df
         )
 
+        if not scheme_gold_df.empty:
+
+            load_scheme(
+                scheme_gold_df
+            )
+
+            print("Scheme loaded successfully")
+
+    except Exception as e:
+
+        print("Scheme Gold Failed")
+        print(e)
+
+    # =================================================
+    # GOLD SCHEME NAV
+    # =================================================
+    try:
+        print("\nLoading Gold Scheme NAV")
+        nav_df = extract_scheme_nav()
+        nav_gold_df = transform_scheme_nav(nav_df)
+
+        if not nav_gold_df.empty:
+            load_scheme_nav(nav_gold_df)
+            print("Scheme NAV loaded successfully")
+
+    except Exception as e:
+        print("Scheme NAV Gold Failed")
+        print(e)
+
+    # =================================================
+    # GOLD FOLIO NOMINEES
+    # =================================================
+    try:
+        print("\nLoading Gold Folio Nominees")
+        folio_df = extract_folio_nominees()
+        folio_gold_df = transform_folio_nominees(folio_df)
+
+        if not folio_gold_df.empty:
+            load_folio_nominees(folio_gold_df)
+            print("Folio Nominees loaded successfully")
+
+    except Exception as e:
+        print("Folio Nominees Gold Failed")
+        print(e)
 
     print("=" * 80)
     print("GOLD LAYER COMPLETED")
-    print("=" * 80)
-
-    transaction_df = extract_transactions()
-    print("Extracted:", len(transaction_df))
-
-    transaction_gold_df = transform_transactions(transaction_df)
-    print("Transformed:", len(transaction_gold_df))
-
-    result = load_transactions(transaction_gold_df)
-    print("Load result:", result)
-
-def load_gold():
-
-    print("=" * 80)
-    print("STARTING GOLD LAYER")
-    print("=" * 80)
-
-    print("Loading Gold Transactions...")
-
-    transaction_df = extract_transactions()
-    print("Silver rows:", len(transaction_df))
-
-    transaction_gold_df = transform_transactions(transaction_df)
-    print("Gold rows:", len(transaction_gold_df))
-
-    result = load_transactions(transaction_gold_df)
-    print("Insert Result:", result)
-
     print("=" * 80)

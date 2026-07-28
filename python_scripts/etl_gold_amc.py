@@ -1,15 +1,16 @@
 import pandas as pd
-from sqlalchemy import create_engine
+# from sqlalchemy import create_engine
 import traceback
+from utils.db import engine
 
 
-# =====================================================
-# DATABASE CONNECTION
-# =====================================================
+# # =====================================================
+# # DATABASE CONNECTION
+# # =====================================================
 
-engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-)
+# engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+# )
 
 
 
@@ -45,9 +46,6 @@ def extract_amc():
 
     return df
 
-
-
-
 # =====================================================
 # TRANSFORM
 # =====================================================
@@ -63,8 +61,6 @@ def transform_amc(df):
 
     gold_df = pd.DataFrame()
 
-
-
     # =================================================
     # RTA
     # =================================================
@@ -77,8 +73,6 @@ def transform_amc(df):
         .str.upper()
     )
 
-
-
     # =================================================
     # AMC CODE
     #
@@ -89,25 +83,17 @@ def transform_amc(df):
 
     gold_df["amc_code"] = None
 
-
-
     cams_mask = gold_df["rta"] == "CAMS"
 
     kfin_mask = gold_df["rta"] == "KFIN"
-
-
 
     gold_df.loc[cams_mask, "amc_code"] = (
         df.loc[cams_mask, "prodcode"]
     )
 
-
-
     gold_df.loc[kfin_mask, "amc_code"] = (
         df.loc[kfin_mask, "td_fund"]
     )
-
-
 
     gold_df["amc_code"] = (
         gold_df["amc_code"]
@@ -116,8 +102,6 @@ def transform_amc(df):
         .str.strip()
         .str.upper()
     )
-
-
 
     # =================================================
     # NAME
@@ -154,8 +138,6 @@ def transform_amc(df):
         amc_lookup.set_index("amc_code")["amc_name"]
     )
 
-
-
     # =================================================
     # Remaining fields
     # =================================================
@@ -165,8 +147,6 @@ def transform_amc(df):
     gold_df["logo_url"] = None
 
     gold_df["status"] = None
-
-
 
     # =================================================
     # Select required columns only
@@ -183,8 +163,6 @@ def transform_amc(df):
         ]
     ]
 
-
-
     # =================================================
     # Remove only invalid AMC codes
     # =================================================
@@ -192,8 +170,6 @@ def transform_amc(df):
     gold_df = gold_df[
         gold_df["amc_code"] != ""
     ]
-
-
 
     # =================================================
     # AMC MASTER CREATION
@@ -214,8 +190,6 @@ def transform_amc(df):
         )
         .reset_index(drop=True)
     )
-
-
 
     # =================================================
     # Length validation
@@ -274,9 +248,6 @@ def transform_amc(df):
 
     return gold_df
 
-
-
-
 # =====================================================
 # LOAD
 # =====================================================
@@ -310,8 +281,6 @@ def load_amc(gold_df):
 
         return True
 
-
-
     except Exception:
 
         print("\nERROR while loading gold.amc")
@@ -320,18 +289,13 @@ def load_amc(gold_df):
 
         return False
 
-
-
-
 # =====================================================
 # MAIN
 # =====================================================
 
 if __name__ == "__main__":
 
-
     df = extract_amc()
-
 
     if df.empty:
 
@@ -341,11 +305,7 @@ if __name__ == "__main__":
 
         exit()
 
-
-
     gold_df = transform_amc(df)
-
-
 
     print("\nAMC Length Validation")
     print("=" * 80)
@@ -361,7 +321,6 @@ if __name__ == "__main__":
         "status":20
 
     }
-
 
 
     for col, limit in limits.items():

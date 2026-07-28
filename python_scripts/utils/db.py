@@ -1,15 +1,22 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 import pandas as pd
 
 HOST = "localhost"
 PORT = "5432"
-DATABASE = "tr_project"
 USER = "postgres"
 PASSWORD = "postgres123"
 
+PROJECT_DATABASE = "tr_project"
+MASTER_DATABASE = "inteliwealth_sh"
 
+# Project Database
 engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{DATABASE}"
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}"
+)
+
+# Master Database
+master_engine = create_engine(
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
 )
 
 

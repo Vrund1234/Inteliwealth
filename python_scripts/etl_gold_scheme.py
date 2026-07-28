@@ -2,18 +2,20 @@ import pandas as pd
 import json
 from sqlalchemy import create_engine, text
 import uuid
+from utils.db import engine
+from utils.db import master_engine
 
 # =====================================================
 # DATABASE CONNECTION
 # =====================================================
 
-engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-)
+# engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+# )
 
-master_engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
-)
+# master_engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
+# )
 
 scheme_master = pd.read_sql("""
     SELECT

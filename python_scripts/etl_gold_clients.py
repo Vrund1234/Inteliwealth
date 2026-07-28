@@ -1,15 +1,15 @@
 import pandas as pd
+from utils.db import engine
+# from sqlalchemy import create_engine
 
-from sqlalchemy import create_engine
 
+# # =====================================================
+# # DATABASE CONNECTION
+# # =====================================================
 
-# =====================================================
-# DATABASE CONNECTION
-# =====================================================
-
-engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-)
+# engine = create_engine(
+#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
+# )
 
 
 # =====================================================
