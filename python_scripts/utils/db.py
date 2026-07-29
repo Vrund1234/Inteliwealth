@@ -7,7 +7,7 @@ USER = "postgres"
 PASSWORD = "postgres123"
 
 PROJECT_DATABASE = "tr_project"
-MASTER_DATABASE = "inteliwealth_sh"
+MASTER_DATABASE = "intelliwealth_new_dump"
 
 # Project Database
 engine = create_engine(

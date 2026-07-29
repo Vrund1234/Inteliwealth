@@ -168,14 +168,35 @@ if extract_btn:
 
             name = file.name.lower()
 
-            if "inv" in name:
-                uploaded_types["investor"] = True
+            uploaded_types = {
+                "investor": False,
+                "transaction": False,
+                "sip": False
+            }
 
-            elif "trans" in name:
-                uploaded_types["transaction"] = True
+            for file in uploaded_files:
 
-            elif "sip" in name:
-                uploaded_types["sip"] = True
+                name = file.name.lower()
+
+                # ---------- CAMS ----------
+                if name.endswith("r9.csv"):
+                    uploaded_types["investor"] = True
+
+                elif name.endswith("r2.csv"):
+                    uploaded_types["transaction"] = True
+
+                elif name.endswith("r49.csv"):
+                    uploaded_types["sip"] = True
+
+                # ---------- KFIN ----------
+                elif "mfsd211" in name:
+                    uploaded_types["investor"] = True
+
+                elif "mfsd201" in name:
+                    uploaded_types["transaction"] = True
+
+                elif "mfsd243" in name:
+                    uploaded_types["sip"] = True
 
         st.session_state.uploaded_types = uploaded_types
 

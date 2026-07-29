@@ -240,34 +240,34 @@ def extract_and_push(uploaded_files):
         name = file.name.lower()
         df = read_file(file)
 
-        if "trans" in name:
-            if "cams" in name:
-                cams_transaction.append(df)
+        # ===========================
+        # CAMS Files
+        # ===========================
 
-            elif "kfin" in name or "karvy" in name:
-                kfin_transaction.append(df)
+        if name.endswith("r2.csv"):
+            cams_transaction.append(df)
 
-            else:
-                cams_transaction.append(df)
+        elif name.endswith("r9.csv"):
+            cams_investor.append(df)
 
-        elif "inv" in name:
+        elif name.endswith("r49.csv"):
+            cams_sip.append(df)
 
-            if "cams" in name:
-                cams_investor.append(df)
+        # ===========================
+        # KFIN Files
+        # ===========================
 
-            elif "kfin" in name or "karvy" in name:
-                kfin_investor.append(df)
+        elif "mfsd201" in name:
+            kfin_transaction.append(df)
 
-            else:
-                cams_investor.append(df)
+        elif "mfsd211" in name:
+            kfin_investor.append(df)
 
-        elif "sip" in name:
+        elif "mfsd243" in name:
+            kfin_sip.append(df)
 
-            if "cams" in name:
-                cams_sip.append(df)
-
-            elif "kfin" in name or "karvy" in name:
-                kfin_sip.append(df)
+        else:
+            print(f"Unknown file type: {file.name}")
 
     # =====================================================
     # Transactions
