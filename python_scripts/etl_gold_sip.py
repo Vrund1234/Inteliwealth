@@ -26,26 +26,52 @@ def extract_sip():
     print("Extracting data for Gold SIP")
     print("=" * 80)
 
+    # -------------------------------------------------
+    # Last loaded timestamp from Gold
+    # -------------------------------------------------
+
+    last_time = pd.read_sql(
+        """
+        SELECT COALESCE(
+            MAX(created_at),
+            TIMESTAMP '1900-01-01'
+        ) AS last_time
+        FROM gold.sip
+        """,
+        engine
+    ).iloc[0]["last_time"]
+
+    last_time = pd.Timestamp(last_time)
+
+    if last_time.tzinfo is None:
+        last_time = last_time.tz_localize("UTC")
 
 
     query = """
-
     SELECT
-
         *
-
     FROM silver.sip_master_new
-
     """
-
-
 
     df = pd.read_sql(
         query,
         engine
     )
 
+    # -------------------------------------------------
+    # Load only new records
+    # -------------------------------------------------
 
+    if not df.empty:
+
+        df["created_at"] = pd.to_datetime(
+            df["created_at"],
+            utc=True
+        )
+
+        df = df[
+            df["created_at"] > last_time
+        ]
 
     print()
     print("Extraction Completed")
@@ -497,7 +523,9 @@ def transform_sip(df):
         .str[:100]
     )
 
-
+    # Preserve timestamp till load
+    if "created_at" in df.columns:
+        gold_df["created_at"] = df["created_at"].values
 
     return gold_df
 
@@ -629,7 +657,11 @@ def load_sip(gold_df):
 
 
     try:
-
+        # Remove helper column before insert
+        gold_df = gold_df.drop(
+            columns=["created_at"],
+            errors="ignore"
+)
 
         gold_df.to_sql(
 

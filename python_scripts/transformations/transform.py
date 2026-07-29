@@ -242,6 +242,14 @@ def append_new_rows(
         errors="coerce"
     )
 
+    last_time = pd.Timestamp(last_time)
+
+    # Make BOTH timezone-naive
+    if getattr(df["created_at"].dt, "tz", None) is not None:
+        df["created_at"] = df["created_at"].dt.tz_localize(None)
+
+    if last_time.tzinfo is not None:
+        last_time = last_time.tz_localize(None)
 
     df = df[
         df["created_at"] > last_time
