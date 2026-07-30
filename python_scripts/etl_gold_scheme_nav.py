@@ -1,304 +1,625 @@
 import pandas as pd
-import hashlib
-import uuid
-from sqlalchemy import create_engine, text
+import traceback
 from utils.db import engine
 
-# =====================================================
-# DATABASE CONNECTION
-# =====================================================
-
-# engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-# )
-
 
 # =====================================================
-# EXTRACT
+# SAFE READ
+# =====================================================
+
+def safe_read(query):
+
+    try:
+
+        return pd.read_sql(
+            query,
+            engine
+        )
+
+    except Exception as e:
+
+        print("SQL ERROR :", e)
+
+        return pd.DataFrame()
+
+
+
+# =====================================================
+# GET LAST PROCESSED TIME
+# =====================================================
+
+def get_last_processed_time():
+
+    try:
+
+        result = pd.read_sql(
+            """
+            SELECT
+                MAX(created_at) AS last_time
+            FROM gold.scheme_nav
+            """,
+            engine
+        )
+
+
+        last_time = result.iloc[0]["last_time"]
+
+
+        if pd.isna(last_time):
+
+            return pd.Timestamp(
+                "1900-01-01"
+            )
+
+
+        return pd.to_datetime(
+            last_time
+        )
+
+
+    except Exception:
+
+        return pd.Timestamp(
+            "1900-01-01"
+        )
+
+
+
+# =====================================================
+# NORMALIZE DATA FOR COMPARE
+# =====================================================
+
+def normalize_for_compare(df):
+
+    df = df.copy()
+
+
+    df = df.drop(
+        columns=[
+            "created_at",
+            "updated_at"
+        ],
+        errors="ignore"
+    )
+
+
+    for col in df.columns:
+
+
+        if pd.api.types.is_datetime64_any_dtype(
+            df[col]
+        ):
+
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    errors="coerce"
+                )
+                .dt.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+
+        else:
+
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.strip()
+            )
+
+
+    return df
+
+
+
+# =====================================================
+# CREATE ROW KEY
+# =====================================================
+
+def create_row_key(df):
+
+    df = normalize_for_compare(df)
+
+
+    return (
+        df.fillna("")
+        .astype(str)
+        .agg("|".join, axis=1)
+    )
+
+
+
+# =====================================================
+# EXTRACT GOLD SCHEME NAV
 # =====================================================
 
 def extract_scheme_nav():
 
     print("=" * 80)
-    print("Extracting Scheme NAV Data")
+    print("Extracting Gold Scheme NAV")
     print("=" * 80)
 
 
-    query = """
+    last_time = get_last_processed_time()
+
+
+
+    df = safe_read(
+
+        """
         SELECT
+
             source,
-            amc_code,
             prodcode AS scheme_code,
             traddate,
-            purprice
+            purprice,
+            created_at
+
         FROM silver.transaction_master_new
+
         WHERE purprice IS NOT NULL
-    """
 
+        """
 
-    df = pd.read_sql(
-        query,
-        engine
     )
 
 
-    print("\nExtraction Completed")
-    print("-" * 80)
+    if df.empty:
 
-    print("Rows fetched :", len(df))
+        print(
+            "No data found in Silver."
+        )
 
-    print("\nPreview")
-    print(df.head())
+        return df
+
+
+
+    df["created_at"] = pd.to_datetime(
+        df["created_at"],
+        errors="coerce"
+    )
+
+
+
+    if last_time.tzinfo is not None:
+
+        last_time = (
+            last_time
+            .tz_localize(None)
+        )
+
+
+    if getattr(
+        df["created_at"].dt,
+        "tz",
+        None
+    ) is not None:
+
+        df["created_at"] = (
+            df["created_at"]
+            .dt.tz_localize(None)
+        )
+
+
+
+    df = df[
+        df["created_at"] > last_time
+    ]
+
+
+
+    print()
+
+    print(
+        "Rows fetched :",
+        len(df)
+    )
+
+
+    print(
+        "Columns :",
+        len(df.columns)
+    )
+
+
+    if not df.empty:
+
+        print(df.head())
 
 
     return df
 
+
+
 # =====================================================
-# TRANSFORM
+# TRANSFORM GOLD SCHEME NAV
 # =====================================================
 
 def transform_scheme_nav(df):
 
+
     print("=" * 80)
-    print("Transforming Scheme NAV")
+    print("Transforming Gold Scheme NAV")
     print("=" * 80)
 
-    df = df.copy()
+
+    gold_df = pd.DataFrame()
+
+
 
     # =====================================================
     # LOAD GOLD SCHEME
     # =====================================================
 
-    gold_scheme = pd.read_sql(
+
+    gold_scheme = safe_read(
+
         """
+
         SELECT
+
             id,
             rta,
             scheme_code
+
         FROM gold.scheme
-        """,
-        engine
+
+        """
+
     )
 
-    # =====================================================
-    # CLEAN KEYS
-    # =====================================================
+
 
     df["source"] = (
+
         df["source"]
-        .fillna("")
-        .astype(str)
+        .astype("string")
         .str.strip()
         .str.upper()
+
     )
+
 
     df["scheme_code"] = (
+
         df["scheme_code"]
-        .fillna("")
-        .astype(str)
+        .astype("string")
         .str.strip()
         .str.upper()
+
     )
+
+
 
     gold_scheme["rta"] = (
+
         gold_scheme["rta"]
-        .fillna("")
-        .astype(str)
+        .astype("string")
         .str.strip()
         .str.upper()
+
     )
+
 
     gold_scheme["scheme_code"] = (
+
         gold_scheme["scheme_code"]
-        .fillna("")
-        .astype(str)
+        .astype("string")
         .str.strip()
         .str.upper()
+
     )
 
+
+
     # =====================================================
-    # MAP TO GOLD.SCHEME.ID
+    # MAP SCHEME ID
     # =====================================================
 
+
     df = df.merge(
+
         gold_scheme[
+
             [
                 "id",
                 "rta",
                 "scheme_code"
             ]
+
         ],
+
         left_on=[
+
             "source",
             "scheme_code"
+
         ],
+
         right_on=[
+
             "rta",
             "scheme_code"
+
         ],
+
         how="left"
+
     )
 
+
     df.rename(
+
         columns={
-            "id": "scheme_id"
+            "id":"scheme_id"
         },
+
         inplace=True
+
     )
+
+
 
     print("=" * 80)
     print("SCHEME ID VALIDATION")
     print("=" * 80)
-    print("Total Rows :", len(df))
-    print("Matched    :", df["scheme_id"].notna().sum())
-    print("Missing    :", df["scheme_id"].isna().sum())
 
-    print("\nMissing Samples")
+
     print(
-        df.loc[
-            df["scheme_id"].isna(),
-            ["source", "scheme_code"]
-        ]
-        .drop_duplicates()
-        .head(20)
+        "Total Rows :",
+        len(df)
     )
 
-    # =====================================================
-    # NAV DATE
-    # =====================================================
 
-    df["nav_date"] = pd.to_datetime(
-        df["traddate"],
-        errors="coerce"
+    print(
+        "Matched :",
+        df["scheme_id"].notna().sum()
     )
 
+
+    print(
+        "Missing :",
+        df["scheme_id"].isna().sum()
+    )
+
+
+
     # =====================================================
-    # NAV
+    # FINAL GOLD DATA
     # =====================================================
 
-    df["nav"] = pd.to_numeric(
+
+    gold_df["scheme_id"] = df["scheme_id"]
+
+
+    gold_df["nav_date"] = (
+
+        pd.to_datetime(
+            df["traddate"],
+            errors="coerce"
+        )
+        .dt.date
+
+    )
+
+
+    gold_df["nav"] = pd.to_numeric(
+
         df["purprice"],
+
         errors="coerce"
+
     )
 
-    # =====================================================
-    # REPURCHASE NAV
-    # =====================================================
 
-    df["repurchase_nav"] = None
+    gold_df["repurchase_nav"] = None
 
-    # =====================================================
-    # FINAL DATAFRAME
-    # =====================================================
 
-    gold_df = df[
-        [
-            "scheme_id",
-            "nav_date",
-            "nav",
-            "repurchase_nav",
-            "source"
-        ]
-    ]
+    gold_df["source"] = df["source"]
 
-    # Remove invalid rows
+
+
+    gold_df["created_at"] = df["created_at"]
+
+
+    gold_df["updated_at"] = None
+
+
+
     gold_df = gold_df[
+
         gold_df["scheme_id"].notna()
         &
         gold_df["nav_date"].notna()
         &
         gold_df["nav"].notna()
+
     ]
 
-    # Deduplicate
-    gold_df = gold_df.drop_duplicates(
-        subset=[
-            "scheme_id",
-            "nav_date"
-        ],
-        keep="last"
+
+
+    print()
+
+    print(
+        "Rows Ready :",
+        len(gold_df)
     )
 
-    print("\nTransformation Completed")
-    print("-" * 80)
-    print("Rows ready :", len(gold_df))
-    print(gold_df.head())
+
+    print(
+        gold_df.head()
+    )
+
 
     return gold_df
 
+
+
 # =====================================================
-# LOAD
+# LOAD GOLD SCHEME NAV
 # =====================================================
 
-def load_scheme_nav(df):
+def load_scheme_nav(gold_df):
+
 
     print("=" * 80)
     print("Loading Gold Scheme NAV")
     print("=" * 80)
 
 
-    with engine.begin() as conn:
 
-        conn.execute(
-            text(
-                "TRUNCATE TABLE gold.scheme_nav"
+    if gold_df.empty:
+
+        print(
+            "No new records."
+        )
+
+        return True
+
+
+
+    try:
+
+
+        existing = pd.read_sql(
+
+            """
+
+            SELECT *
+
+            FROM gold.scheme_nav
+
+            """,
+
+            engine
+
+        )
+
+
+    except Exception:
+
+
+        existing = pd.DataFrame()
+
+
+
+    # =====================================================
+    # REMOVE DUPLICATES
+    # =====================================================
+
+
+    if not existing.empty:
+
+
+        old_keys = set(
+
+            create_row_key(
+                existing
             )
+
         )
 
 
-        df.to_sql(
-            name="scheme_nav",
+        new_keys = create_row_key(
+
+            gold_df
+
+        )
+
+
+        gold_df = gold_df.loc[
+
+            ~new_keys.isin(
+                old_keys
+            )
+
+        ]
+
+
+
+    if gold_df.empty:
+
+
+        print(
+            "Duplicate NAV data skipped."
+        )
+
+
+        return True
+
+
+
+    # =====================================================
+    # GOLD AUDIT TIME
+    # =====================================================
+
+
+    load_time = pd.Timestamp.now()
+
+
+    gold_df["created_at"] = load_time
+
+
+    gold_df["updated_at"] = load_time
+
+
+
+    # =====================================================
+    # INSERT
+    # =====================================================
+
+
+    try:
+
+
+        gold_df.to_sql(
+
+            "scheme_nav",
+
+            engine,
+
             schema="gold",
-            con=conn,
+
             if_exists="append",
+
             index=False,
-            chunksize=1000
+
+            method="multi",
+
+            chunksize=5000
+
         )
 
 
-    print("\nLoad Completed")
-    print("-" * 80)
 
-    print(
-        "Rows Inserted :",
-        len(df)
-    )
+        print()
 
-
-    # Validation
-
-    preview = pd.read_sql(
-        """
-        SELECT *
-        FROM gold.scheme_nav
-        LIMIT 10
-        """,
-        engine
-    )
+        print(
+            f"{len(gold_df)} rows inserted into Gold Scheme NAV."
+        )
 
 
-    print("\nGold Scheme NAV Preview")
-    print("-" * 80)
-
-    print(preview)
+        return True
 
 
 
-    count = pd.read_sql(
-        """
-        SELECT COUNT(*) AS total_rows
-        FROM gold.scheme_nav
-        """,
-        engine
-    )
+    except Exception:
 
 
-    print("\nRow Count")
-    print("-" * 80)
+        print(
+            "FAILED LOADING GOLD SCHEME NAV"
+        )
 
-    print(
-        count.iloc[0]["total_rows"]
-    )
+
+        traceback.print_exc(
+            limit=5
+        )
+
+
+        return False
+
 
 
 
@@ -306,14 +627,19 @@ def load_scheme_nav(df):
 # MAIN
 # =====================================================
 
-def main():
+if __name__ == "__main__":
+
+
+    print()
 
     print("=" * 80)
     print("STARTING GOLD SCHEME NAV ETL")
     print("=" * 80)
 
 
+
     df = extract_scheme_nav()
+
 
 
     gold_df = transform_scheme_nav(
@@ -321,16 +647,30 @@ def main():
     )
 
 
-    load_scheme_nav(
+
+    status = load_scheme_nav(
         gold_df
     )
 
 
-    print("\n" + "=" * 80)
-    print("GOLD SCHEME NAV ETL COMPLETED")
-    print("=" * 80)
+
+    if status:
 
 
+        print()
 
-if __name__ == "__main__":
-    main()
+        print("=" * 80)
+        print(
+            "GOLD SCHEME NAV ETL COMPLETED SUCCESSFULLY"
+        )
+        print("=" * 80)
+
+
+    else:
+
+
+        print()
+
+        print(
+            "GOLD SCHEME NAV ETL FAILED"
+        )

@@ -1,165 +1,503 @@
 import pandas as pd
-# from sqlalchemy import create_engine
 import traceback
-from utils.db import engine, master_engine
+
+from utils.db import engine
+
+
 
 # =====================================================
-
-# DATABASE CONNECTION
-
-# ====================================================
-
-# engine = create_engine(
-
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-
-# )
-
-
-
-# master_engine = create_engine(
-
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
-
-# )
-
+# SAFE READ
 # =====================================================
 
-# EXTRACT
+def safe_read(query):
+
+    try:
+
+        return pd.read_sql(
+            query,
+            engine
+        )
+
+    except Exception as e:
+
+        print("SQL ERROR :", e)
+
+        return pd.DataFrame()
+
+
 
 # =====================================================
+# GET LAST PROCESSED TIME FROM GOLD
+# =====================================================
+
+def get_last_processed_time():
+
+    try:
+
+        result = pd.read_sql(
+
+            """
+            SELECT
+                MAX(created_at) AS last_time
+
+            FROM gold.transactions
+
+            """,
+
+            engine
+
+        )
+
+
+        last_time = result.iloc[0]["last_time"]
+
+
+        if pd.isna(last_time):
+
+            return pd.Timestamp(
+                "1900-01-01"
+            )
+
+
+        return pd.to_datetime(
+            last_time
+        )
+
+
+    except Exception:
+
+
+        return pd.Timestamp(
+            "1900-01-01"
+        )
 
 
 
-def extract_transactions():
+# =====================================================
+# NORMALIZE DATA FOR DUPLICATE CHECK
+# =====================================================
+
+def normalize_for_compare(df):
 
 
-
-    print("=" * 80)
-
-    print("Reading data from silver.transaction_master_new")
-
-    print("=" * 80)
+    df = df.copy()
 
 
+    # remove audit columns
 
-    query = """
+    df = df.drop(
 
-        SELECT *
+        columns=[
 
-        FROM silver.transaction_master_new
+            "created_at",
 
-    """
+            "updated_at"
+
+        ],
+
+        errors="ignore"
+
+    )
 
 
-
-    df = pd.read_sql(query, engine)
-
+    for col in df.columns:
 
 
-    print(f"Rows fetched : {len(df)}")
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
 
-    print(f"Columns : {len(df.columns)}")
+
+            df[col] = (
+
+                pd.to_datetime(
+
+                    df[col],
+
+                    errors="coerce"
+
+                )
+
+                .dt.strftime(
+                    "%Y-%m-%d"
+                )
+
+            )
+
+
+        else:
+
+
+            df[col] = (
+
+                df[col]
+
+                .astype("string")
+
+                .str.strip()
+
+            )
+
 
     return df
 
 
 
 # =====================================================
-
-# NORMALIZE SCHEME NAME
-
+# CREATE ROW KEY
 # =====================================================
 
+def create_row_key(df):
 
 
-def normalize_scheme_name(series):
+    df = normalize_for_compare(df)
+
 
     return (
 
-        series.fillna("")
+        df.fillna("")
 
         .astype(str)
 
-        .str.upper()
+        .agg(
 
-        .str.replace(" - ", " ", regex=False)
+            "|".join,
 
-        .str.replace("-", " ", regex=False)
+            axis=1
 
-        .str.replace("PLAN", "", regex=False)
-
-        .str.replace("OPTION", "", regex=False)
-
-        .str.replace("GROWTH", "GR", regex=False)
-
-        .str.replace("REGULAR", "REG", regex=False)
-
-        .str.replace("DIRECT", "DIR", regex=False)
-
-        .str.replace("IDCW", "DIV", regex=False)
-
-        .str.replace("DIVIDEND", "DIV", regex=False)
-
-        .str.replace(r"[^A-Z0-9]", "", regex=True)
+        )
 
     )
 
 
 
 # =====================================================
-
-# TRANSFORM (RENAME ONLY)
-
+# GET GOLD TABLE COLUMNS
 # =====================================================
 
+def get_table_columns():
 
+
+    query = """
+
+    SELECT
+
+        column_name
+
+    FROM information_schema.columns
+
+    WHERE table_schema='gold'
+
+    AND table_name='transactions'
+
+    ORDER BY ordinal_position
+
+    """
+
+
+    return pd.read_sql(
+
+        query,
+
+        engine
+
+    )["column_name"].tolist()
+
+
+
+# =====================================================
+# EXTRACT GOLD TRANSACTIONS SOURCE
+# =====================================================
+
+def extract_transactions():
+
+
+    print("=" * 80)
+    print("Extracting Gold Transactions")
+    print("=" * 80)
+
+
+
+    last_time = get_last_processed_time()
+
+
+
+    print(
+        "Last Processed Time :",
+        last_time
+    )
+
+
+
+    df = safe_read(
+
+        """
+
+        SELECT *
+
+        FROM silver.transaction_master_new
+
+        """
+
+    )
+
+
+
+    if df.empty:
+
+
+        print(
+            "No data found in Silver."
+        )
+
+
+        return df
+
+
+
+
+    # =================================================
+    # TIMESTAMP FILTER
+    # =================================================
+
+
+    df["created_at"] = pd.to_datetime(
+
+        df["created_at"],
+
+        errors="coerce"
+
+    )
+
+
+
+    last_time = pd.Timestamp(
+        last_time
+    )
+
+
+
+    # remove timezone mismatch
+
+    if getattr(df["created_at"].dt, "tz", None) is not None:
+
+
+        df["created_at"] = (
+
+            df["created_at"]
+
+            .dt.tz_localize(None)
+
+        )
+
+
+
+    if last_time.tzinfo is not None:
+
+
+        last_time = last_time.tz_localize(None)
+
+
+
+    df = df[
+
+        df["created_at"] > last_time
+
+    ]
+
+
+
+    print()
+
+    print(
+        "Rows fetched :",
+        len(df)
+    )
+
+
+    print(
+        "Columns fetched :",
+        len(df.columns)
+    )
+
+
+    return df
+
+# =====================================================
+# CLASSIFY TRANSACTION TYPE
+# =====================================================
+
+def classify_transaction(row):
+
+
+    desc = str(
+        row.get(
+            "trxn_nature",
+            ""
+        )
+    ).lower()
+
+
+
+    raw = str(
+        row.get(
+            "trxntype",
+            ""
+        )
+    ).lower()
+
+
+
+    text = desc + " " + raw
+
+
+
+    if (
+        raw in ["swi", "switch in"]
+        or "switch in" in text
+        or "switchin" in text
+        or "swin" in text
+    ):
+
+        return "SWITCH_IN"
+
+
+
+    if (
+        raw in ["swo", "switch out"]
+        or "switch out" in text
+        or "switchout" in text
+        or "swout" in text
+    ):
+
+        return "SWITCH_OUT"
+
+
+
+    if (
+        "redemption" in text
+        or "redeem" in text
+        or raw == "red"
+    ):
+
+        return "REDEMPTION"
+
+
+
+    if (
+        "sip" in text
+        or "systematic" in text
+    ):
+
+        return "SIP"
+
+
+
+    if "stp" in text:
+
+        return "STP"
+
+
+
+    if "dividend" in text:
+
+        return "DIVIDEND"
+
+
+
+    if (
+        "transfer-in" in text
+        or "transfer in" in text
+    ):
+
+        return "TRANSFER_IN"
+
+
+
+    if (
+        "transfer-out" in text
+        or "transfer out" in text
+    ):
+
+        return "TRANSFER_OUT"
+
+
+
+    if (
+        "purchase" in text
+        or "fresh purchase" in text
+        or "additional purchase" in text
+        or raw == "pur"
+    ):
+
+        return "PURCHASE"
+
+
+
+    return "OTHER"
+
+
+
+
+
+# =====================================================
+# TRANSFORM GOLD TRANSACTIONS
+# =====================================================
 
 def transform_transactions(df):
 
 
+    print("=" * 80)
+    print("Transforming Gold Transactions")
+    print("=" * 80)
 
-    # Step 1: Rename columns
+
 
     gold_df = pd.DataFrame()
 
 
 
-    # Feed columns
+    # =====================================================
+    # BASIC DETAILS
+    # =====================================================
+
 
     gold_df["rta"] = (
 
         df["source"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
         .str.upper()
 
+        .str[:10]
+
     )
+
+
 
     gold_df["rta_txn_no"] = (
 
         df["trxnno"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
+        .str.replace(
+            ".0",
+            "",
+            regex=False
+        )
+
+        .replace(
+            "",
+            None
+        )
+
+        .str[:50]
+
     )
-
-    print("Before drop:", len(gold_df))
-
-    print(gold_df["rta_txn_no"].isna().sum())
-
-    gold_df.loc[gold_df["rta_txn_no"] == "", "rta_txn_no"] = None
-
-    # gold_df = gold_df.dropna(subset=["rta_txn_no"])
 
 
 
@@ -167,19 +505,26 @@ def transform_transactions(df):
 
         df["pan"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
         .str.upper()
 
-        .str.replace(".0", "", regex=False)
+        .str.replace(
+            ".0",
+            "",
+            regex=False
+        )
+
+        .replace(
+            "",
+            None
+        )
+
+        .str[:10]
 
     )
-
-    gold_df.loc[gold_df["pan"] == "", "pan"] = None
 
 
 
@@ -187,91 +532,205 @@ def transform_transactions(df):
 
         df["folio_no"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
-        .str.replace(".0", "", regex=False)
+        .str.replace(
+            ".0",
+            "",
+            regex=False
+        )
+
+        .replace(
+            "",
+            None
+        )
+
+        .str[:40]
 
     )
 
-    gold_df.loc[gold_df["folio_number"] == "", "folio_number"] = None
+
+
+    # =====================================================
+    # TRANSACTION DETAILS
+    # =====================================================
+
+
+    gold_df["txn_type"] = (
+
+        df.apply(
+
+            classify_transaction,
+
+            axis=1
+
+        )
+
+    )
 
 
 
-    # Business fields
+    gold_df["txn_type_raw"] = (
 
-    gold_df["txn_type"] = df.apply(classify_transaction, axis=1)          # We'll derive this next
+        df["trxntype"]
 
-    gold_df["txn_type_raw"] = df["trxntype"]
+        .astype("string")
 
-    gold_df["txn_desc"] = df["trxn_nature"]
+        .str.strip()
 
+        .str[:40]
 
-
-    gold_df["txn_date"] = pd.to_datetime(
-
-        df["traddate"],
-
-        errors="coerce",
-
-    ).dt.date
+    )
 
 
 
-    gold_df["post_date"] = pd.to_datetime(
+    gold_df["txn_desc"] = (
 
-        df["postdate"],
+        df["trxn_nature"]
 
-        errors="coerce",
+        .astype("string")
 
-        # dayfirst=True
+        .str.strip()
 
-    ).dt.date
+        .str[:120]
 
-
-
-    gold_df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-
-    gold_df["units"] = pd.to_numeric(df["units"], errors="coerce")
-
-    gold_df["nav"] = pd.to_numeric(df["purprice"], errors="coerce")
+    )
 
 
 
-    gold_df["load_amount"] = pd.to_numeric(df["load"], errors="coerce")
+    gold_df["txn_date"] = (
 
-    gold_df["stt"] = pd.to_numeric(df["stt"], errors="coerce")
+        pd.to_datetime(
 
-    gold_df["stamp_duty"] = pd.to_numeric(df["stamp_duty"], errors="coerce")
+            df["traddate"],
+
+            errors="coerce"
+
+        )
+
+        .dt.date
+
+    )
 
 
 
-    # GST = IGST + CGST + SGST
+    gold_df["post_date"] = (
+
+        pd.to_datetime(
+
+            df["postdate"],
+
+            errors="coerce"
+
+        )
+
+        .dt.date
+
+    )
+
+
+
+    # =====================================================
+    # AMOUNT DETAILS
+    # =====================================================
+
+
+    gold_df["amount"] = pd.to_numeric(
+
+        df["amount"],
+
+        errors="coerce"
+
+    )
+
+
+    gold_df["units"] = pd.to_numeric(
+
+        df["units"],
+
+        errors="coerce"
+
+    )
+
+
+    gold_df["nav"] = pd.to_numeric(
+
+        df["purprice"],
+
+        errors="coerce"
+
+    )
+
+
+    gold_df["load_amount"] = pd.to_numeric(
+
+        df["load"],
+
+        errors="coerce"
+
+    )
+
+
+    gold_df["stt"] = pd.to_numeric(
+
+        df["stt"],
+
+        errors="coerce"
+
+    )
+
+
+    gold_df["stamp_duty"] = pd.to_numeric(
+
+        df["stamp_duty"],
+
+        errors="coerce"
+
+    )
+
+
 
     gold_df["gst"] = (
 
-        pd.to_numeric(df["igst_amount"], errors="coerce").fillna(0)
+        pd.to_numeric(
+            df["igst_amount"],
+            errors="coerce"
+        ).fillna(0)
 
-        + pd.to_numeric(df["cgst_amount"], errors="coerce").fillna(0)
+        +
 
-        + pd.to_numeric(df["sgst_amount"], errors="coerce").fillna(0)
+        pd.to_numeric(
+            df["cgst_amount"],
+            errors="coerce"
+        ).fillna(0)
+
+        +
+
+        pd.to_numeric(
+            df["sgst_amount"],
+            errors="coerce"
+        ).fillna(0)
 
     )
 
+
+
+    # =====================================================
+    # OTHER DETAILS
+    # =====================================================
 
 
     gold_df["arn"] = (
 
         df["brokcode"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
+
+        .str[:20]
 
     )
 
@@ -281,23 +740,25 @@ def transform_transactions(df):
 
         df["euin"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
+        .str[:20]
+
     )
+
+
 
     gold_df["sip_ref"] = (
 
         df["siptrxnno"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
+
+        .str[:50]
 
     )
 
@@ -307,77 +768,27 @@ def transform_transactions(df):
 
         df["trxnstat"]
 
-        .fillna("")
-
-        .astype(str)
+        .astype("string")
 
         .str.strip()
 
+        .str.upper()
+
+        .str[:20]
+
     )
 
-
-
-
-
     # =====================================================
+# SCHEME ID LOOKUP
+# =====================================================
 
-    # SCHEME ID LOOKUP USING SCHEME NAME
-
-    # =====================================================
-
-
-
-    # =====================================================
-
-    # SCHEME ID LOOKUP
-
-    #
-
-    # transaction.prodcode
-
-    #          |
-
-    #          ↓
-
-    # gold.scheme.scheme_code
-
-    #          |
-
-    #          ↓
-
-    # gold.scheme.id
-
-    #
-
-    # =====================================================
+    print("=" * 80)
+    print("Mapping Scheme ID")
+    print("=" * 80)
 
 
 
-
-
-    # =====================================================
-
-    # SCHEME ID LOOKUP
-
-    # transaction.prodcode
-
-    #        |
-
-    #        ↓
-
-    # gold.scheme.scheme_code
-
-    #        |
-
-    #        ↓
-
-    # gold.scheme.id
-
-    # =====================================================
-
-
-
-    gold_scheme = pd.read_sql(
+    gold_scheme = safe_read(
 
         """
 
@@ -389,26 +800,28 @@ def transform_transactions(df):
 
             scheme_code
 
+
         FROM gold.scheme
 
-        """,
-
-        engine
+        """
 
     )
 
 
 
+    print(
+
+        "Gold Scheme Rows :",
+
+        len(gold_scheme)
+
+    )
 
 
-    print("Gold Scheme Rows:", len(gold_scheme))
 
-
-
-
-
-    # Clean transaction keys
-
+    # =====================================================
+    # CLEAN JOIN KEYS
+    # =====================================================
 
 
     df["source"] = (
@@ -440,12 +853,6 @@ def transform_transactions(df):
         .str.upper()
 
     )
-
-
-
-
-
-    # Clean scheme master keys
 
 
 
@@ -481,34 +888,9 @@ def transform_transactions(df):
 
 
 
-
-
-    # Check before merge
-
-
-
-    print("\nChecking B02G mapping")
-
-
-
-    print(
-
-        gold_scheme[
-
-            (gold_scheme["rta"]=="CAMS") &
-
-            (gold_scheme["scheme_code"]=="B02G")
-
-        ]
-
-    )
-
-
-
-
-
-    # Merge only scheme id
-
+    # =====================================================
+    # MERGE SCHEME ID
+    # =====================================================
 
 
     df = df.merge(
@@ -543,17 +925,9 @@ def transform_transactions(df):
 
         ],
 
-        how="left",
-
-        suffixes=("","_scheme")
+        how="left"
 
     )
-
-
-
-
-
-    # Create scheme_id safely
 
 
 
@@ -561,31 +935,20 @@ def transform_transactions(df):
 
 
 
-
-
-
-
     # =====================================================
-
-    # VALIDATION
-
+    # SCHEME VALIDATION
     # =====================================================
 
 
-
-
-
-    print("="*80)
-
+    print("=" * 80)
     print("SCHEME ID VALIDATION")
-
-    print("="*80)
+    print("=" * 80)
 
 
 
     print(
 
-        "Total Transactions:",
+        "Total Transactions :",
 
         len(gold_df)
 
@@ -595,7 +958,7 @@ def transform_transactions(df):
 
     print(
 
-        "Matched scheme_id:",
+        "Matched Scheme ID :",
 
         gold_df["scheme_id"].notna().sum()
 
@@ -605,7 +968,7 @@ def transform_transactions(df):
 
     print(
 
-        "Missing scheme_id:",
+        "Missing Scheme ID :",
 
         gold_df["scheme_id"].isna().sum()
 
@@ -613,149 +976,49 @@ def transform_transactions(df):
 
 
 
+    if gold_df["scheme_id"].isna().sum() > 0:
 
 
-    print("\nMissing Scheme Samples")
+        print("\nMissing Scheme Samples")
 
 
+        print(
 
+            df.loc[
 
+                gold_df["scheme_id"].isna(),
 
-    missing_scheme = gold_df["scheme_id"].isna()
+                [
 
+                    "source",
 
+                    "prodcode",
 
+                    "scheme",
 
+                    "funddesc"
 
-    print(
-
-        df.loc[
-
-            missing_scheme,
-
-            [
-
-                "source",
-
-                "prodcode",
-
-                "scheme",
-
-                "funddesc"
+                ]
 
             ]
 
-        ]
+            .drop_duplicates()
 
-        .drop_duplicates()
+            .head(20)
 
-        .head(20)
+        )
 
-    )
 
-    # # Validation
 
+    # =====================================================
+    # APPLICATION MANAGED COLUMNS
+    # =====================================================
 
-
-    # print("="*80)
-
-    # print("SCHEME ID VALIDATION")
-
-    # print("="*80)
-
-
-
-
-
-    # print("Total transactions :", len(gold_df))
-
-
-
-
-
-    # print(
-
-    #     "Matched scheme_id :",
-
-    #     gold_df["scheme_id"].notna().sum()
-
-    # )
-
-
-
-
-
-    # print(
-
-    #     "Missing scheme_id :",
-
-    #     gold_df["scheme_id"].isna().sum()
-
-    # )
-
-
-
-
-
-    # print("\nTransaction scheme samples")
-
-    # print(
-
-    #     df[
-
-    #         ["scheme","scheme_name_clean"]
-
-    #     ]
-
-    #     .head(10)
-
-    # )
-
-
-
-
-
-    print("\nMissing Scheme Samples")
-
-
-
-    missing_scheme = gold_df["scheme_id"].isna()
-
-
-
-    print(
-
-        df.loc[
-
-            missing_scheme,
-
-            [
-
-                "source",
-
-                "prodcode",
-
-                "scheme",
-
-                "funddesc"
-
-            ]
-
-        ]
-
-        .drop_duplicates()
-
-        .head(20)
-
-    )
-
-    # App-managed columns
 
     gold_df["client_id"] = None
 
     gold_df["amc_id"] = None
 
-    # gold_df["scheme_id"] = None
 
     gold_df["txn_sub_type"] = None
 
@@ -765,20 +1028,36 @@ def transform_transactions(df):
 
     gold_df["sip_id"] = None
 
+
+
     gold_df["source"] = df["source"]
+
+
 
     gold_df["source_file_id"] = None
 
 
 
-    print("=" * 80)
+    # =====================================================
+    # TIMESTAMP LOGIC
+    # SAME AS GOLD SIP
+    # =====================================================
 
-    print("Gold Transaction Preview")
 
-    print("=" * 80)
+    gold_df["created_at"] = (
 
-    print(gold_df.head())
+        df["created_at"]
 
+    )
+
+
+    gold_df["updated_at"] = None
+
+
+
+    # =====================================================
+    # FINAL COLUMN ORDER
+    # =====================================================
 
 
     gold_df = gold_df[
@@ -841,7 +1120,11 @@ def transform_transactions(df):
 
             "source",
 
-            "source_file_id"
+            "source_file_id",
+
+            "created_at",
+
+            "updated_at"
 
         ]
 
@@ -849,169 +1132,28 @@ def transform_transactions(df):
 
 
 
-    # Deduplicate
-
-    gold_df["rta"] = (
-
-        gold_df["rta"]
-
-        .astype("string")
-
-        .str[:10]
-
-    )
-
-
-
-    gold_df["pan"] = (
-
-        gold_df["pan"]
-
-        .astype("string")
-
-        .str[:10]
-
-    )
-
-
-
-    gold_df["txn_type"] = (
-
-        gold_df["txn_type"]
-
-        .astype("string")
-
-        .str[:30]
-
-    )
-
-
-
-    gold_df["arn"] = (
-
-        gold_df["arn"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
-
-
-    gold_df["euin"] = (
-
-        gold_df["euin"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
-
-
-    gold_df["status"] = (
-
-        gold_df["status"]
-
-        .astype("string")
-
-        .str[:10]
-
-    )
-
-
-
-    gold_df["rta_txn_no"] = gold_df["rta_txn_no"].where(
-
-        gold_df["rta_txn_no"].isna(),
-
-        gold_df["rta_txn_no"].astype(str).str[:50]
-
-    )
-
-
-
-    gold_df["folio_number"] = gold_df["folio_number"].where(
-
-        gold_df["folio_number"].isna(),
-
-        gold_df["folio_number"].astype(str).str[:40]
-
-    )
-
-
-
-    gold_df["txn_type_raw"] = (
-
-        gold_df["txn_type_raw"]
-
-        .astype("string")
-
-        .str[:40]
-
-    )
-
-
-
-    gold_df["txn_desc"] = (
-
-        gold_df["txn_desc"]
-
-        .astype("string")
-
-        .str[:120]
-
-    )
-
-
-
-    gold_df["sip_ref"] = (
-
-        gold_df["sip_ref"]
-
-        .astype("string")
-
-        .str[:50]
-
-    )
-
-
-
-    gold_df["txn_desc"] = gold_df["txn_desc"].where(
-
-        gold_df["txn_desc"].isna(),
-
-        gold_df["txn_desc"].astype(str).str[:120]
-
-    )
-
-
-
-    gold_df["sip_ref"] = gold_df["sip_ref"].where(
-
-        gold_df["sip_ref"].isna(),
-
-        gold_df["sip_ref"].astype(str).str[:50]
-
-    )
-
-
-
-    # Remove rows where mandatory RTA transaction number is missing
-
-    gold_df = gold_df.dropna(subset=["rta_txn_no"])
-
-    # gold_df.drop(columns=["scheme_code"], inplace=True)
+    print("=" * 80)
+    print("Gold Transaction Preview")
+    print("=" * 80)
 
 
 
     print(
 
-        "Final scheme_id NULL:",
+        gold_df.head()
 
-        gold_df["scheme_id"].isna().sum()
+    )
+
+
+
+    print()
+
+
+    print(
+
+        "Rows Ready :",
+
+        len(gold_df)
 
     )
 
@@ -1019,203 +1161,165 @@ def transform_transactions(df):
 
     return gold_df
 
-
-
 # =====================================================
-
-# LOAD
-
+# LOAD GOLD TRANSACTIONS
 # =====================================================
-
-
 
 def load_transactions(gold_df):
 
 
-
+    print("=" * 80)
+    print("Loading Gold Transactions")
     print("=" * 80)
 
-    print("Loading into gold.transactions")
-
-    print("=" * 80)
-
-    print(gold_df.dtypes)
-
-    print(gold_df.shape)
-
-    print(gold_df.head())
 
 
+    if gold_df.empty:
 
-    try:
 
-        gold_df.to_sql(
-
-            name="transactions",
-
-            con=engine,
-
-            schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+        print(
+            "No new records."
         )
 
-
-
-        print(f"{len(gold_df)} rows inserted successfully.")
 
         return True
 
 
 
-    except Exception as e:
+    # =====================================================
+    # LOAD EXISTING GOLD DATA
+    # =====================================================
 
-        print("\nERROR while loading gold.transactions")
 
-        traceback.print_exc()
+    try:
 
-        print("\nActual PostgreSQL error:")
 
-        print(e)
+        existing = pd.read_sql(
 
-        return False
+            """
 
+            SELECT *
 
+            FROM gold.transactions
 
-def classify_transaction(row):
+            """,
 
+            engine
 
+        )
 
-    desc = str(row.get("trxn_nature", "")).lower()
 
-    raw = str(row.get("trxntype", "")).lower()
+    except Exception:
 
 
+        existing = pd.DataFrame()
 
-    text = desc + " " + raw
 
 
+    # =====================================================
+    # REMOVE DUPLICATES
+    # =====================================================
 
-    if raw in ["swi", "switch in"] or "switch in" in text or "switchin" in text or "swin" in text:
 
-        return "SWITCH_IN"
+    if not existing.empty:
 
 
+        print(
 
-    if raw in ["swo", "switch out"] or "switch out" in text or "switchout" in text or "swout" in text:
+            "Existing Gold Rows :",
 
-        return "SWITCH_OUT"
+            len(existing)
 
+        )
 
 
-    if "redemption" in text or "redeem" in text or raw == "red":
+        old_keys = set(
 
-        return "REDEMPTION"
+            create_row_key(
 
+                existing
 
+            )
 
-    if "sip" in text or "systematic" in text:
+        )
 
-        return "SIP"
 
 
+        new_keys = create_row_key(
 
-    if "stp" in text:
+            gold_df
 
-        return "STP"
+        )
 
 
 
-    if "dividend" in text:
+        gold_df = gold_df.loc[
 
-        return "DIVIDEND"
+            ~new_keys.isin(old_keys)
 
-   
+        ]
 
-    if "transfer-in" in text or "transfer in" in text:
 
-        return "TRANSFER_IN"
 
+    if gold_df.empty:
 
 
-    if "transfer-out" in text or "transfer out" in text:
+        print(
+            "Duplicate data skipped."
+        )
 
-        return "TRANSFER_OUT"
 
+        return True
 
 
-    if (
 
-        "purchase" in text
+    # =====================================================
+    # GOLD AUDIT TIMESTAMP
+    # SAME AS SIP
+    # =====================================================
 
-        or "fresh purchase" in text
 
-        or "additional purchase" in text
+    load_time = pd.Timestamp.now()
 
-        or raw == "pur"
 
-    ):
 
-        return "PURCHASE"
+    gold_df["created_at"] = load_time
 
-    return "OTHER"
 
+    gold_df["updated_at"] = load_time
 
 
-# =====================================================
 
-# MAIN
+    # =====================================================
+    # MATCH DATABASE COLUMNS
+    # =====================================================
 
-# =====================================================
 
+    db_cols = get_table_columns()
 
 
-if __name__ == "__main__":
 
+    for col in db_cols:
 
 
-    df = extract_transactions()
+        if col not in gold_df.columns:
 
-    print(df.shape)
 
-    print(df.head())
+            gold_df[col] = None
 
 
 
-    if df.empty:
+    gold_df = gold_df[db_cols]
 
-        print("No records found in silver.transaction_master_new")
 
-        exit()
 
+    # =====================================================
+    # VARCHAR VALIDATION
+    # =====================================================
 
 
-    gold_df = transform_transactions(df)
+    varchar_limits = {
 
-    print(gold_df.shape)
-
-    print(gold_df.head())
-
-    print("\nTransaction Classification Preview")
-
-    print("=" * 80)
-
-    print(gold_df[["txn_desc", "txn_type_raw", "txn_type"]].head(10))
-
-
-
-    print("\nChecking string lengths...")
-
-
-
-    limits = {
 
         "rta": 10,
 
@@ -1237,33 +1341,211 @@ if __name__ == "__main__":
 
         "sip_ref": 50,
 
-        "status": 10,
+        "status": 20,
+
+        "txn_sub_type": 50
+
 
     }
 
 
 
-    for col, limit in limits.items():
+    for col, limit in varchar_limits.items():
+
 
         if col in gold_df.columns:
 
-            max_len = gold_df[col].fillna("").astype(str).str.len().max()
 
-            print(f"{col:<20} Max={max_len:<5} Limit={limit}")
+            max_length = (
+
+                gold_df[col]
+
+                .fillna("")
+
+                .astype(str)
+
+                .str.len()
+
+                .max()
+
+            )
+
+
+            print(
+
+                f"{col:<25} Max Length : {max_length}"
+
+            )
 
 
 
-    success = load_transactions(gold_df)
+            if max_length > limit:
+
+
+                raise Exception(
+
+                    f"{col} length {max_length} exceeds limit {limit}"
+
+                )
 
 
 
-    if success:
+    # =====================================================
+    # INSERT INTO GOLD
+    # =====================================================
 
-        print("\nGold Transaction ETL Completed Successfully.")
+
+    try:
+
+
+        gold_df.to_sql(
+
+            "transactions",
+
+            engine,
+
+            schema="gold",
+
+            if_exists="append",
+
+            index=False,
+
+            method="multi",
+
+            chunksize=5000
+
+        )
+
+
+        print()
+
+        print(
+
+            f"{len(gold_df)} rows inserted into Gold."
+
+        )
+
+
+        return True
+
+
+
+    except Exception as e:
+
+
+        print(
+
+            "\nFAILED LOADING GOLD TRANSACTIONS\n"
+
+        )
+
+
+        traceback.print_exc(limit=5)
+
+
+
+        if hasattr(e, "orig"):
+
+
+            print(e.orig)
+
+
+
+        return False
+
+# =====================================================
+# MAIN EXECUTION
+# =====================================================
+
+if __name__ == "__main__":
+
+
+    print()
+
+    print("=" * 80)
+    print("STARTING GOLD TRANSACTION ETL")
+    print("=" * 80)
+
+
+
+    # =================================================
+    # EXTRACT
+    # =================================================
+
+
+    df = extract_transactions()
+
+
+
+    if df.empty:
+
+
+        print()
+
+        print(
+            "No new silver transaction data found."
+        )
+
 
     else:
 
-        print("\nGold Transaction ETL Failed.")
+
+
+        # =================================================
+        # TRANSFORM
+        # =================================================
+
+
+        gold_df = transform_transactions(
+
+            df
+
+        )
 
 
 
+        # =================================================
+        # LOAD
+        # =================================================
+
+
+        status = load_transactions(
+
+            gold_df
+
+        )
+
+
+
+        # =================================================
+        # FINAL STATUS
+        # =================================================
+
+
+        if status:
+
+
+            print()
+
+            print("=" * 80)
+
+            print(
+                "GOLD TRANSACTION ETL COMPLETED SUCCESSFULLY"
+            )
+
+            print("=" * 80)
+
+
+
+        else:
+
+
+            print()
+
+            print("=" * 80)
+
+            print(
+                "GOLD TRANSACTION ETL FAILED"
+            )
+
+            print("=" * 80)

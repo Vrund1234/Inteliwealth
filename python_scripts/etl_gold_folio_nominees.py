@@ -1,6 +1,7 @@
 import pandas as pd
 import hashlib 
 import uuid
+import traceback
 from sqlalchemy import create_engine, text
 from utils.db import engine
 
@@ -14,6 +15,35 @@ from utils.db import engine
 
 
 # =====================================================
+# GET LAST PROCESSED TIME
+# =====================================================
+
+def get_last_processed_time():
+
+    try:
+
+        result = pd.read_sql(
+            """
+            SELECT MAX(created_at) AS last_time
+            FROM gold.folio_nominees
+            """,
+            engine
+        )
+
+        last_time = result.iloc[0]["last_time"]
+
+        if pd.isna(last_time):
+
+            return pd.Timestamp("1900-01-01", tz="UTC")
+
+        return pd.to_datetime(last_time)
+
+    except Exception:
+
+        return pd.Timestamp("1900-01-01", tz="UTC")
+
+
+# =====================================================
 # EXTRACT FOLIO NOMINEES DATA
 # =====================================================
 
@@ -23,6 +53,8 @@ def extract_folio_nominees():
     print("Extracting data for Gold Folio Nominees")
     print("=" * 80)
 
+    last_time = get_last_processed_time()
+
     query = """
         SELECT *
         FROM silver.investor_master
@@ -30,12 +62,32 @@ def extract_folio_nominees():
 
     df = pd.read_sql(query, engine)
 
+    if not df.empty:
+
+        df["created_at"] = pd.to_datetime(
+            df["created_at"],
+            errors="coerce"
+        )
+
+        last_time = pd.Timestamp(last_time)
+
+        if getattr(df["created_at"].dt, "tz", None) is not None:
+            df["created_at"] = df["created_at"].dt.tz_localize(None)
+
+        if last_time.tzinfo is not None:
+            last_time = last_time.tz_localize(None)
+
+        df = df[
+            df["created_at"] > last_time
+        ]
+
     print("\nExtraction Completed")
     print("-" * 80)
     print(f"Rows fetched    : {len(df)}")
     print(f"Columns fetched : {len(df.columns)}")
 
     if not df.empty:
+
         print("\nSample Data")
         print("-" * 80)
         print(df.head())
@@ -120,7 +172,8 @@ def transform_folio_nominees(df):
                 "guardian_name": None,
                 "id_type": None,
                 "id_no": None,
-                "address": None
+                "address": None,
+                "created_at": row["created_at"]
             })
 
     gold_df = pd.DataFrame(
@@ -136,7 +189,8 @@ def transform_folio_nominees(df):
             "guardian_name",
             "id_type",
             "id_no",
-            "address"
+            "address",
+            "created_at"
         ]
     )
 
@@ -164,52 +218,64 @@ def load_folio_nominees(df):
     print("Loading Gold Folio Nominees")
     print("=" * 80)
 
-    with engine.begin() as conn:
+    if df.empty:
 
-        # Clear existing data
-        conn.execute(text("TRUNCATE TABLE gold.folio_nominees"))
+        print("No new records to load.")
+        return
 
-        # Load transformed data
+    try:
+
         df.to_sql(
             name="folio_nominees",
             schema="gold",
-            con=conn,
+            con=engine,
             if_exists="append",
             index=False,
             method="multi",
             chunksize=1000
         )
 
-    print("\nLoading Completed")
-    print("-" * 80)
-    print(f"Rows inserted : {len(df)}")
+        print("\nLoading Completed")
+        print("-" * 80)
+        print(f"Rows inserted : {len(df)}")
 
-    # Preview
-    preview = pd.read_sql(
-        """
-        SELECT *
-        FROM gold.folio_nominees
-        LIMIT 10
-        """,
-        engine
-    )
+        preview = pd.read_sql(
+            """
+            SELECT *
+            FROM gold.folio_nominees
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            engine
+        )
 
-    print("\nGold Folio Nominees Preview")
-    print("-" * 80)
-    print(preview)
+        print("\nGold Folio Nominees Preview")
+        print("-" * 80)
+        print(preview)
 
-    # Row count
-    count = pd.read_sql(
-        """
-        SELECT COUNT(*) AS total_rows
-        FROM gold.folio_nominees
-        """,
-        engine
-    )
+        count = pd.read_sql(
+            """
+            SELECT COUNT(*) AS total_rows
+            FROM gold.folio_nominees
+            """,
+            engine
+        )
 
-    print("\nGold Row Count")
-    print("-" * 80)
-    print(count.iloc[0]["total_rows"])
+        print("\nGold Row Count")
+        print("-" * 80)
+        print(count.iloc[0]["total_rows"])
+
+    except Exception as e:
+
+        print("\nERROR while loading gold.folio_nominees")
+
+        traceback.print_exc(limit=5)
+
+        if hasattr(e, "orig"):
+
+            print("\n========== POSTGRES ERROR ==========")
+            print(e.orig)
+            print("====================================")
 
 # =====================================================
 # MAIN
@@ -221,23 +287,17 @@ def main():
     print("STARTING GOLD FOLIO NOMINEES ETL")
     print("=" * 80)
 
-    # Extract
     silver_df = extract_folio_nominees()
 
-    # Transform
+    if silver_df.empty:
+
+        print("\nNo new records found.")
+        return
+
     gold_df = transform_folio_nominees(silver_df)
 
-    # Load
     load_folio_nominees(gold_df)
 
     print("\n" + "=" * 80)
     print("GOLD FOLIO NOMINEES ETL COMPLETED SUCCESSFULLY")
     print("=" * 80)
-
-
-# =====================================================
-# RUN SCRIPT
-# =====================================================
-
-if __name__ == "__main__":
-    main()
