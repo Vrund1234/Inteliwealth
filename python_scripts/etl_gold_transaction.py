@@ -365,7 +365,7 @@ def transform_transactions(df):
     )
 
     gold_df.loc[kfin_mask, "pan"] = (
-        df.loc[kfin_mask, "pangno"]
+        df.loc[kfin_mask, "pan"]
     )
 
     gold_df["pan"] = (
