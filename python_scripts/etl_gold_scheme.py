@@ -5,17 +5,15 @@ import uuid
 from utils.db import engine
 from utils.db import master_engine
 
+
 # =====================================================
-# DATABASE CONNECTION
+# FIXED SCHEME UUID NAMESPACE
+# NEVER CHANGE THIS VALUE
 # =====================================================
 
-# engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-# )
-
-# master_engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/inteliwealth_sh"
-# )
+SCHEME_NAMESPACE = uuid.UUID(
+    "a3f8c9d1-5b8e-4f11-9d2a-7e6c4b8f1234"
+)
 
 scheme_master = pd.read_sql("""
     SELECT
@@ -184,27 +182,21 @@ def transform_scheme(transaction_df, investor_df):
         keep="first"
     )
 
-
     print("Unique Transaction Schemes :", len(transaction_scheme))
     print("Unique Investor Schemes    :", len(investor_scheme))
 
 
     # =================================================
-    # BASE = TRANSACTION SCHEME
+    # FULL OUTER MERGE OF TRANSACTION + INVESTOR
     # =================================================
 
-    gold_df = transaction_scheme.copy()
-
-    # =================================================
-    # JOIN INVESTOR
-    # =================================================
-
-    gold_df = gold_df.merge(
+    gold_df = transaction_scheme.merge(
         investor_scheme[
             [
                 "source",
                 "amc_code",
                 "join_scheme_code",
+                "scheme_name",
                 "fund_description",
                 "categorydesc"
             ]
@@ -214,8 +206,13 @@ def transform_scheme(transaction_df, investor_df):
             "amc_code",
             "join_scheme_code"
         ],
-        how="left"
+        how="left",
+        suffixes=("_txn", "_inv")
     )
+
+    print("\nAfter Left Merge")
+    print("-" * 80)
+    print("Rows :", len(gold_df))
 
     # gold_df["amfi_code"] = gold_df["scheme_code_master"]
 
@@ -226,16 +223,15 @@ def transform_scheme(transaction_df, investor_df):
 
     scheme_name = (
         gold_df["funddesc"]
-        .fillna(gold_df["scheme"])
-        .fillna(gold_df["fund_description"])
+            .fillna(gold_df["scheme"])
+            .fillna(gold_df["scheme_name"])
+            .fillna(gold_df["fund_description"])
     )
     # =================================================
     # GOLD MAPPING
     # =================================================
 
     gold_df = pd.DataFrame({
-
-        "id": [uuid.uuid4() for _ in range(len(gold_df))],
 
         "rta": gold_df["source"],
 
@@ -282,6 +278,7 @@ def transform_scheme(transaction_df, investor_df):
         "status": None
 
     })
+    
 
     # =================================================
     # CHECK MATCH WITH SCHEME MASTER
@@ -311,8 +308,8 @@ def transform_scheme(transaction_df, investor_df):
     print("\nScheme Master Match")
     print("-" * 80)
     print("Total     :", len(gold_df))
-    print("Matched   :", gold_df["id_master"].notna().sum())
-    print("Unmatched :", gold_df["id_master"].isna().sum())
+    print("Matched   :", gold_df["id"].notna().sum())
+    print("Unmatched :", gold_df["id"].isna().sum())
     # =================================================
     # CLEAN
     # =================================================
@@ -357,7 +354,7 @@ def transform_scheme(transaction_df, investor_df):
         columns=[
             "amc_code",
             "name_norm",
-            "id_master",
+            "id",          # ✅ Drop id_master, NOT id
             "scheme_code_master",
             "name",
             "name_norm_loose"
@@ -366,27 +363,72 @@ def transform_scheme(transaction_df, investor_df):
         errors="ignore"
     )
 
-
     # =================================================
     # FINAL DEDUP
     # =================================================
 
-    gold_df = gold_df.drop_duplicates(
-        subset=[
-            "rta",
-            "scheme_code"
-        ],
-        keep="first"
+    print("\nRows before final dedup :", len(gold_df))
+    print("\nRows before final dedup :", len(gold_df))
+
+    gold_df = (
+        gold_df
+        .sort_values(["rta", "scheme_code"])
+        .drop_duplicates(
+            subset=["rta", "scheme_code"],
+            keep="first"
+        )
+        .reset_index(drop=True)
     )
+
+    print("Rows after final dedup :", len(gold_df))
+
+    print("Rows after final dedup  :", len(gold_df))
+
+    # =====================================================
+    # GENERATE DETERMINISTIC UUID (AFTER DEDUP)
+    # =====================================================
+
+    gold_df["id"] = gold_df.apply(
+        lambda x: uuid.uuid5(
+            SCHEME_NAMESPACE,
+            f"{str(x['rta']).strip().lower()}|"
+            f"{str(x['scheme_code']).strip().lower()}"
+        ),
+        axis=1
+    )
+
+    # =====================================================
+    # VALIDATE UUID UNIQUENESS
+    # =====================================================
+
+    dup_ids = gold_df[
+        gold_df.duplicated(subset=["id"], keep=False)
+    ]
+
+    if not dup_ids.empty:
+        print("\nDuplicate UUIDs after final dedup:")
+        print(
+            dup_ids[
+                ["rta", "scheme_code", "scheme_name", "id"]
+            ].sort_values("id")
+        )
+
+        raise Exception(
+            f"Duplicate UUIDs still exist after final dedup: {len(dup_ids)} rows"
+        )
+
+    print("\nUUID validation passed.")
 
 
     print("\nFinal Gold Scheme")
-    print("-"*80)
+    print("-" * 80)
 
     print("Rows :", len(gold_df))
 
     print(gold_df.head())
 
+    cols = ["id"] + [c for c in gold_df.columns if c != "id"]
+    gold_df = gold_df[cols]
 
     return gold_df
 # =====================================================
@@ -402,12 +444,12 @@ def load_scheme(df):
 
     with engine.begin() as conn:
 
-        # Clear existing gold data
-        conn.execute(
-            text(
-                "TRUNCATE TABLE gold.scheme"
-            )
-        )
+        # # Clear existing gold data
+        # conn.execute(
+        #     text(
+        #         "TRUNCATE TABLE gold.scheme"
+        #     )
+        # )
 
 
         print("\nColumns Loaded")
