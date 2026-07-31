@@ -288,16 +288,167 @@ def transform_amc(df):
 def load_amc(gold_df):
 
     print("=" * 80)
-    print("Loading Gold AMC")
+    print("LOADING DATA INTO GOLD.AMC")
     print("=" * 80)
+
 
     if gold_df.empty:
 
-        print("No new records found.")
+        print("No new AMC records found.")
 
         return True
 
+
+
+    # =====================================================
+    # CHECK EXISTING AMC
+    # Natural Key:
+    # amc_code
+    # =====================================================
+
+
+    print()
+
+    print("Checking existing gold AMC records")
+
+
+
+    existing_amc = pd.read_sql(
+
+        """
+
+        SELECT
+
+            amc_code,
+
+            created_at
+
+        FROM gold.amc
+
+        """,
+
+        engine
+
+    )
+
+
+
+    print(
+
+        "Existing AMC records:",
+
+        len(existing_amc)
+
+    )
+
+
+
+    if len(existing_amc) > 0:
+
+
+        existing_amc["amc_code"] = (
+
+            existing_amc["amc_code"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+
+        gold_df["amc_code"] = (
+
+            gold_df["amc_code"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+
+        gold_df = gold_df.merge(
+
+            existing_amc,
+
+            on="amc_code",
+
+            how="left",
+
+            suffixes=(
+
+                "_new",
+
+                "_old"
+
+            )
+
+        )
+
+
+
+        gold_df = gold_df[
+
+            gold_df["created_at_old"].isna()
+
+        ]
+
+
+
+        gold_df = gold_df.drop(
+
+            columns=[
+
+                "created_at_old"
+
+            ]
+
+        )
+
+
+
+    print(
+
+        "Rows after duplicate check:",
+
+        len(gold_df)
+
+    )
+
+
+
+    if len(gold_df) == 0:
+
+
+        print(
+
+            "No new AMC records to insert"
+
+        )
+
+
+        return True
+
+
+
+    # =====================================================
+    # INSERT
+    # =====================================================
+
+
     try:
+
 
         gold_df.to_sql(
 
@@ -317,18 +468,15 @@ def load_amc(gold_df):
 
         )
 
-        print(f"{len(gold_df)} rows inserted into Gold AMC.")
+        print()
+        print(f"Inserted Rows : {len(gold_df)}")
 
         return True
 
     except Exception:
-
         print("FAILED LOADING GOLD AMC")
-
         traceback.print_exc(limit=5)
-
         return False
-
 
 # =====================================================
 # MAIN

@@ -199,46 +199,26 @@ def transform_holdings(df):
 
 
     df["prodcode"] = (
-
         df["prodcode"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
 
     )
-
-
 
     # =====================================================
     # LOAD GOLD SCHEME
     # prodcode -> scheme_id
     # =====================================================
 
-
     gold_scheme = pd.read_sql(
-
-        """
-
-        SELECT
-
+        """SELECT
             id,
-
             rta,
-
             scheme_code
-
-        FROM gold.scheme
-
-
-        """,
-
+        FROM gold.scheme""",
         engine
-
     )
 
 
@@ -247,188 +227,90 @@ def transform_holdings(df):
         len(gold_scheme)
     )
 
-
-
     # =====================================================
     # CLEAN SCHEME KEYS
     # =====================================================
 
-
     gold_scheme["scheme_code"] = (
-
         gold_scheme["scheme_code"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
-
-
 
     gold_scheme["rta"] = (
-
         gold_scheme["rta"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
-
-
 
     df["source"] = (
-
         df["source"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
-
-
 
     # =====================================================
     # MAP SCHEME ID
     # =====================================================
 
-
     df = df.merge(
-
         gold_scheme[
-
             [
-
                 "id",
-
                 "rta",
-
                 "scheme_code"
-
             ]
-
         ],
-
 
         left_on=[
-
             "source",
-
             "prodcode"
-
         ],
-
 
         right_on=[
-
             "rta",
-
             "scheme_code"
-
         ],
 
-
         how="left"
-
     )
-
-
 
     df.rename(
-
         columns={
-
             "id":"scheme_id"
-
         },
-
         inplace=True
-
     )
-
-
 
     print("=" * 80)
     print("SCHEME ID VALIDATION")
     print("=" * 80)
 
+    print("Total Holdings:",len(df))
 
+    print("Matched scheme_id:",df["scheme_id"].notna().sum())
 
-    print(
-
-        "Total Holdings:",
-
-        len(df)
-
-    )
-
-
-
-    print(
-
-        "Matched scheme_id:",
-
-        df["scheme_id"].notna().sum()
-
-    )
-
-
-
-    print(
-
-        "Missing scheme_id:",
-
-        df["scheme_id"].isna().sum()
-
-    )
-
-
+    print("Missing scheme_id:",df["scheme_id"].isna().sum())
 
     print("\nMissing Scheme Samples")
 
-
-
-    print(
-
-        df.loc[
-
-            df["scheme_id"].isna(),
-
+    print(df.loc[df["scheme_id"].isna(),
             [
-
                 "source",
-
                 "prodcode",
-
                 "scheme",
-
                 "funddesc"
-
             ]
-
         ]
-
         .drop_duplicates()
-
         .head(20)
-
     )
-
-
 
     return create_holdings_columns(df, gold_df)
 
@@ -436,9 +318,7 @@ def transform_holdings(df):
 # CREATE GOLD HOLDINGS COLUMNS
 # =====================================================
 
-
 def create_holdings_columns(df, gold_df):
-
 
     # =====================================================
     # RTA
@@ -446,132 +326,74 @@ def create_holdings_columns(df, gold_df):
 
 
     gold_df["rta"] = (
-
         df["source"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
-
-
 
     # =====================================================
     # PAN
     # =====================================================
 
-
     gold_df["pan"] = (
-
         df["pan"]
-
         .astype("string")
-
         .str.strip()
-
         .str.upper()
-
         .str.replace(".0", "", regex=False)
-
     )
 
 
     gold_df.loc[
-
         gold_df["pan"].isna()
-
         |
-
         (gold_df["pan"].str.len() != 10),
-
         "pan"
-
     ] = None
-
-
 
     # =====================================================
     # FOLIO NUMBER
     # =====================================================
 
-
     folio = (
-
         df["folio_no"]
-
         .astype("string")
-
         .str.strip()
-
         .str.replace(".0", "", regex=False)
-
     )
-
-
 
     scheme_folio = (
-
         df["scheme_folio_number"]
-
         .astype("string")
-
         .str.strip()
-
         .str.replace(".0", "", regex=False)
-
     )
-
-
 
     gold_df["folio_number"] = (
-
         folio
-
         .fillna(scheme_folio)
-
     )
 
-
-
     gold_df.loc[
-
         gold_df["folio_number"] == "",
-
         "folio_number"
-
     ] = None
-
-
 
     # =====================================================
     # HOLDING VALUES
     # =====================================================
 
-
     gold_df["units"] = pd.to_numeric(
-
         df["units"],
-
         errors="coerce"
-
     )
-
-
 
     gold_df["market_value"] = pd.to_numeric(
-
         df["amount"],
-
         errors="coerce"
-
     )
-
-
 
     # =====================================================
     # DATES
@@ -579,64 +401,37 @@ def create_holdings_columns(df, gold_df):
 
 
     gold_df["as_on_date"] = (
-
         pd.to_datetime(
-
             df["rep_date"],
-
             errors="coerce"
-
         )
-
         .dt.date
-
     )
-
-
 
     gold_df["folio_date"] = (
-
         pd.to_datetime(
-
             df["traddate"],
-
             errors="coerce"
-
         )
-
         .dt.date
-
     )
-
-
 
     # =====================================================
     # ARN
     # =====================================================
 
-
     gold_df["arn"] = (
-
         df["investor_broker_code"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
 
 
     gold_df.loc[
-
         gold_df["arn"] == "",
-
         "arn"
-
     ] = None
-
-
 
     # =====================================================
     # HOLDING DETAILS
@@ -644,95 +439,51 @@ def create_holdings_columns(df, gold_df):
 
 
     gold_df["holding_nature"] = (
-
         df["investor_holding_nature"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
-
-
 
     gold_df["nominee_name"] = (
-
         df["investor_nominee_name"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
-
-
 
     gold_df["nominee_relation"] = (
-
         df["investor_nominee_relation"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
-
-
 
     gold_df["nominee_pct"] = (
-
         df["investor_nominee_percentage"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
-
-
 
     # =====================================================
     # KYC STATUS
     # =====================================================
 
-
     gold_df["kyc_status"] = None
 
-
-
     kyc_available = (
-
         df["investor_ckyc_no"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         != ""
-
     )
 
-
-
     gold_df.loc[
-
         kyc_available,
-
         "kyc_status"
-
     ] = "Verified"
-
-
 
     # =====================================================
     # BANK DETAILS
@@ -819,18 +570,12 @@ def create_holdings_columns(df, gold_df):
     # APPLICATION MANAGED FIELDS
     # =====================================================
 
-
     gold_df["client_id"] = None
-
-
     gold_df["amc_id"] = None
-
 
     # mapped from gold.scheme bridge
 
     gold_df["scheme_id"] = df["scheme_id"]
-
-
 
     gold_df["purchase_date"] = None
 
@@ -1402,7 +1147,7 @@ if __name__ == "__main__":
             print("GOLD HOLDINGS ETL FAILED")
 
             print("=" * 80)
-            
+
     except Exception as e:
 
         print("\n")
