@@ -1,75 +1,24 @@
 import pandas as pd
-import traceback
 import uuid
 
+from datetime import datetime, timezone
+
 from utils.db import engine
-
-# =====================================================
-# SAFE READ
-# =====================================================
-
-def safe_read(query):
-
-    try:
-
-        return pd.read_sql(
-            query,
-            engine
-        )
-
-    except Exception as e:
-
-        print("SQL ERROR :", e)
-
-        return pd.DataFrame()
+from utils.db import master_engine
 
 
 
 # =====================================================
-# GET LAST PROCESSED TIME
+# DATABASE CONNECTION CHECK
 # =====================================================
 
-def get_last_processed_time():
 
-    try:
-
-        result = pd.read_sql(
-
-            """
-            SELECT
-                MAX(created_at) AS last_time
-
-            FROM gold.holdings
-
-            """,
-
-            engine
-
-        )
-
-
-        last_time = result.iloc[0]["last_time"]
-
-
-        if pd.isna(last_time):
-
-            return pd.Timestamp(
-                "1900-01-01"
-            )
-
-
-        return pd.to_datetime(
-            last_time
-        )
-
-
-    except Exception:
-
-
-        return pd.Timestamp(
-            "1900-01-01"
-        )
-
+print(
+    pd.read_sql(
+        "SELECT current_database();",
+        master_engine
+    )
+)
 
 
 
@@ -77,69 +26,27 @@ def get_last_processed_time():
 # EXTRACT GOLD HOLDINGS DATA
 # =====================================================
 
+
 def extract_holdings():
 
-
     print("=" * 80)
-    print("Extracting Silver Data For Gold Holdings")
+    print("EXTRACTING DATA FOR GOLD HOLDINGS")
     print("=" * 80)
-
-
-
-    last_time = get_last_processed_time()
-
-
-
-    print(
-        "Last Processed Time :",
-        last_time
-    )
 
 
 
     query = """
 
-    SELECT
-
-        t.*,
-
-        i.holding_nature AS investor_holding_nature,
-
-        i.nominee1_name AS investor_nominee_name,
-
-        i.nominee1_relation AS investor_nominee_relation,
-
-        i.nominee1_percentage AS investor_nominee_percentage,
-
-        i.bank_name AS investor_bank_name,
-
-        i.bank_account_no AS investor_bank_account_no,
-
-        i.demat_flag AS investor_demat_flag,
-
-        i.ckyc_no AS investor_ckyc_no,
-
-        i.broker_code AS investor_broker_code
-
-
-    FROM silver.transaction_master_new t
-
-
-
-    LEFT JOIN
-
+    WITH investor_base AS
     (
 
         SELECT DISTINCT ON
-
         (
 
             source,
-
             folio_no
 
         )
-
 
             source,
 
@@ -170,13 +77,44 @@ def extract_holdings():
         ORDER BY
 
             source,
+            folio_no
 
-            folio_no,
-
-            created_at DESC
+    )
 
 
-    ) i
+    SELECT
+
+
+        t.*,
+
+
+        i.holding_nature AS investor_holding_nature,
+
+        i.nominee1_name AS investor_nominee_name,
+
+        i.nominee1_relation AS investor_nominee_relation,
+
+        i.nominee1_percentage AS investor_nominee_percentage,
+
+
+        i.bank_name AS investor_bank_name,
+
+        i.bank_account_no AS investor_bank_account_no,
+
+
+        i.demat_flag AS investor_demat_flag,
+
+        i.ckyc_no AS investor_ckyc_no,
+
+        i.broker_code AS investor_broker_code
+
+
+
+    FROM silver.transaction_master_new t
+
+
+
+    LEFT JOIN investor_base i
 
 
     ON t.source = i.source
@@ -184,98 +122,55 @@ def extract_holdings():
     AND t.folio_no = i.folio_no
 
 
-
     """
 
 
 
-    df = safe_read(query)
+    df = pd.read_sql(
 
+        query,
 
-
-    if df.empty:
-
-
-        print(
-            "No data found in Silver"
-        )
-
-
-        return df
-
-
-
-
-    # =====================================================
-    # TIMESTAMP FILTER
-    # =====================================================
-
-
-    df["created_at"] = pd.to_datetime(
-
-        df["created_at"],
-
-        errors="coerce"
+        engine
 
     )
-
-
-
-    df = df[
-
-        df["created_at"] > last_time
-
-    ]
 
 
 
     print()
 
+    print("Extraction Completed")
+
+    print("-" * 80)
+
+
     print(
-        "Rows fetched :",
+        "Rows fetched:",
         len(df)
     )
 
 
     print(
-        "Columns fetched :",
+        "Columns fetched:",
         len(df.columns)
     )
 
 
-
-    if not df.empty:
-
-        print(df.head())
-
+    print(df.head())
 
 
     return df
 
 # =====================================================
-# TRANSFORM GOLD HOLDINGS
+# TRANSFORM GOLD HOLDINGS DATA
 # =====================================================
+
 
 def transform_holdings(df):
 
 
     print("=" * 80)
-    print("Transforming Gold Holdings")
+    print("TRANSFORMING GOLD HOLDINGS")
     print("=" * 80)
-
-
-
-    if df.empty:
-
-        print(
-            "No data available for transformation"
-        )
-
-        return pd.DataFrame()
-
-
-
-    df = df.copy()
 
 
 
@@ -284,7 +179,7 @@ def transform_holdings(df):
 
 
     # =====================================================
-    # GENERATE ID
+    # GENERATE HOLDING ID
     # =====================================================
 
 
@@ -299,7 +194,7 @@ def transform_holdings(df):
 
 
     # =====================================================
-    # CLEAN PROD CODE
+    # CLEAN PRODUCT CODE
     # =====================================================
 
 
@@ -321,10 +216,11 @@ def transform_holdings(df):
 
     # =====================================================
     # LOAD GOLD SCHEME
+    # prodcode -> scheme_id
     # =====================================================
 
 
-    gold_scheme = safe_read(
+    gold_scheme = pd.read_sql(
 
         """
 
@@ -336,19 +232,39 @@ def transform_holdings(df):
 
             scheme_code
 
-
         FROM gold.scheme
 
-        """
+
+        """,
+
+        engine
 
     )
 
 
     print(
-
-        "Gold Scheme Rows :",
-
+        "Gold Scheme Rows:",
         len(gold_scheme)
+    )
+
+
+
+    # =====================================================
+    # CLEAN SCHEME KEYS
+    # =====================================================
+
+
+    gold_scheme["scheme_code"] = (
+
+        gold_scheme["scheme_code"]
+
+        .fillna("")
+
+        .astype(str)
+
+        .str.strip()
+
+        .str.upper()
 
     )
 
@@ -370,9 +286,9 @@ def transform_holdings(df):
 
 
 
-    gold_scheme["scheme_code"] = (
+    df["source"] = (
 
-        gold_scheme["scheme_code"]
+        df["source"]
 
         .fillna("")
 
@@ -454,7 +370,7 @@ def transform_holdings(df):
 
     print(
 
-        "Total Rows :",
+        "Total Holdings:",
 
         len(df)
 
@@ -464,7 +380,7 @@ def transform_holdings(df):
 
     print(
 
-        "Matched scheme_id :",
+        "Matched scheme_id:",
 
         df["scheme_id"].notna().sum()
 
@@ -474,7 +390,7 @@ def transform_holdings(df):
 
     print(
 
-        "Missing scheme_id :",
+        "Missing scheme_id:",
 
         df["scheme_id"].isna().sum()
 
@@ -482,42 +398,50 @@ def transform_holdings(df):
 
 
 
-    if df["scheme_id"].isna().sum() > 0:
+    print("\nMissing Scheme Samples")
 
 
-        print("\nMissing Scheme Samples")
 
+    print(
 
-        print(
+        df.loc[
 
-            df.loc[
+            df["scheme_id"].isna(),
 
-                df["scheme_id"].isna(),
+            [
 
-                [
+                "source",
 
-                    "source",
+                "prodcode",
 
-                    "prodcode",
+                "scheme",
 
-                    "scheme",
-
-                    "funddesc"
-
-                ]
+                "funddesc"
 
             ]
 
-            .drop_duplicates()
+        ]
 
-            .head(20)
+        .drop_duplicates()
 
-        )
+        .head(20)
 
+    )
+
+
+
+    return create_holdings_columns(df, gold_df)
+
+# =====================================================
+# CREATE GOLD HOLDINGS COLUMNS
+# =====================================================
+
+
+def create_holdings_columns(df, gold_df):
 
 
     # =====================================================
-    # BASIC DETAILS
+    # RTA
     # =====================================================
 
 
@@ -537,6 +461,11 @@ def transform_holdings(df):
 
 
 
+    # =====================================================
+    # PAN
+    # =====================================================
+
+
     gold_df["pan"] = (
 
         df["pan"]
@@ -547,23 +476,18 @@ def transform_holdings(df):
 
         .str.upper()
 
-        .str.replace(
-
-            ".0",
-
-            "",
-
-            regex=False
-
-        )
+        .str.replace(".0", "", regex=False)
 
     )
 
 
-
     gold_df.loc[
 
-        gold_df["pan"].str.len() != 10,
+        gold_df["pan"].isna()
+
+        |
+
+        (gold_df["pan"].str.len() != 10),
 
         "pan"
 
@@ -576,7 +500,7 @@ def transform_holdings(df):
     # =====================================================
 
 
-    gold_df["folio_number"] = (
+    folio = (
 
         df["folio_no"]
 
@@ -584,17 +508,34 @@ def transform_holdings(df):
 
         .str.strip()
 
-        .str.replace(
-
-            ".0",
-
-            "",
-
-            regex=False
-
-        )
+        .str.replace(".0", "", regex=False)
 
     )
+
+
+
+    scheme_folio = (
+
+        df["scheme_folio_number"]
+
+        .astype("string")
+
+        .str.strip()
+
+        .str.replace(".0", "", regex=False)
+
+    )
+
+
+
+    gold_df["folio_number"] = (
+
+        folio
+
+        .fillna(scheme_folio)
+
+    )
+
 
 
     gold_df.loc[
@@ -605,7 +546,9 @@ def transform_holdings(df):
 
     ] = None
 
-        # =====================================================
+
+
+    # =====================================================
     # HOLDING VALUES
     # =====================================================
 
@@ -631,7 +574,7 @@ def transform_holdings(df):
 
 
     # =====================================================
-    # DATE FIELDS
+    # DATES
     # =====================================================
 
 
@@ -668,7 +611,7 @@ def transform_holdings(df):
 
 
     # =====================================================
-    # ARN DETAILS
+    # ARN
     # =====================================================
 
 
@@ -683,7 +626,6 @@ def transform_holdings(df):
         .str.strip()
 
     )
-
 
 
     gold_df.loc[
@@ -766,7 +708,7 @@ def transform_holdings(df):
 
 
 
-    kyc_check = (
+    kyc_available = (
 
         df["investor_ckyc_no"]
 
@@ -784,7 +726,7 @@ def transform_holdings(df):
 
     gold_df.loc[
 
-        kyc_check,
+        kyc_available,
 
         "kyc_status"
 
@@ -810,7 +752,6 @@ def transform_holdings(df):
     )
 
 
-
     gold_df.loc[
 
         gold_df["bank_name"] == "",
@@ -829,22 +770,13 @@ def transform_holdings(df):
 
         .astype(str)
 
-        .str.replace(
-
-            ".0",
-
-            "",
-
-            regex=False
-
-        )
+        .str.replace(".0", "", regex=False)
 
         .str.strip()
 
         .str[-4:]
 
     )
-
 
 
     gold_df.loc[
@@ -858,7 +790,7 @@ def transform_holdings(df):
 
 
     # =====================================================
-    # DEMAT DETAILS
+    # DEMAT FLAG
     # =====================================================
 
 
@@ -875,7 +807,6 @@ def transform_holdings(df):
     )
 
 
-
     gold_df.loc[
 
         gold_df["demat_flag"] == "",
@@ -884,165 +815,469 @@ def transform_holdings(df):
 
     ] = None
 
-    # =====================================================
+        # =====================================================
     # APPLICATION MANAGED FIELDS
     # =====================================================
 
+
     gold_df["client_id"] = None
+
 
     gold_df["amc_id"] = None
 
-    # mapped scheme id from gold.scheme
+
+    # mapped from gold.scheme bridge
 
     gold_df["scheme_id"] = df["scheme_id"]
 
+
+
     gold_df["purchase_date"] = None
+
 
     gold_df["arn_id"] = None
 
+
     gold_df["avg_cost_nav"] = None
+
 
     gold_df["invested_amount"] = None
 
+
     gold_df["current_nav"] = None
+
 
     gold_df["current_value"] = None
 
+
     gold_df["nav_date"] = None
+
 
     gold_df["unrealised_gain"] = None
 
+
     gold_df["xirr"] = None
+
 
     gold_df["first_purchase_date"] = None
 
+
     gold_df["source_file_id"] = None
 
-    # =====================================================
-    # AUDIT COLUMNS
-    # Same timestamp logic as SIP / Scheme
-    # =====================================================
 
-    gold_df["created_at"] = df["created_at"]
-
-    gold_df["updated_at"] = None
 
     # =====================================================
-    # CLEAN EMPTY VALUES
+    # TIMESTAMP FIELDS
     # =====================================================
 
 
-    text_columns = [
-        "rta",
-        "pan",
-        "folio_number",
-        "arn",
-        "holding_nature",
-        "nominee_name",
-        "nominee_relation",
-        "nominee_pct",
-        "bank_name",
-        "bank_ac_last4",
-        "demat_flag"
-    ]
+    current_time = datetime.now(
+        timezone.utc
+    )
 
-    for col in text_columns:
 
-        gold_df[col] = (
 
-            gold_df[col]
+    gold_df["last_synced_at"] = current_time
 
-            .replace(
-                "",
-                None
-            )
-        )
+
+
+    gold_df["created_at"] = datetime.now()
+
+
 
     # =====================================================
-    # FINAL COLUMN ORDER
+    # FINAL GOLD HOLDINGS COLUMN ORDER
     # =====================================================
+
 
     gold_df = gold_df[
 
         [
 
             "id",
+
             "rta",
+
             "pan",
+
             "folio_number",
+
             "units",
+
             "market_value",
+
             "as_on_date",
+
             "folio_date",
+
             "arn",
+
             "holding_nature",
+
             "nominee_name",
+
             "nominee_relation",
+
             "nominee_pct",
+
             "kyc_status",
+
             "bank_name",
+
             "bank_ac_last4",
+
             "demat_flag",
+
             "client_id",
+
             "amc_id",
+
             "scheme_id",
+
             "purchase_date",
+
             "arn_id",
+
             "avg_cost_nav",
+
             "invested_amount",
+
             "current_nav",
+
             "current_value",
+
             "nav_date",
+
             "unrealised_gain",
+
             "xirr",
+
             "first_purchase_date",
+
             "source_file_id",
-            "created_at",
-            "updated_at"
+
+            "last_synced_at",
+
+            "created_at"
+
         ]
+
     ]
 
+
+
     # =====================================================
-    # PREVIEW
+    # FINAL VALIDATION
     # =====================================================
 
+
     print("=" * 80)
+
     print("GOLD HOLDINGS PREVIEW")
+
     print("=" * 80)
 
-    print(
-        gold_df.head()
-    )
 
-    print()
+
+    print(gold_df.head())
+
+
 
     print(
-        "Rows Ready :",
+
+        "Total Gold Holdings:",
+
         len(gold_df)
+
     )
+
+
+
+    print(
+
+        "Missing Scheme IDs:",
+
+        gold_df["scheme_id"].isna().sum()
+
+    )
+
+
 
     return gold_df
 
 # =====================================================
-# LOAD GOLD HOLDINGS
+# LOAD GOLD HOLDINGS DATA
 # =====================================================
+
 
 def load_holdings(gold_df):
 
 
     print("=" * 80)
-    print("Loading data into gold.holdings")
+    print("LOADING DATA INTO GOLD.HOLDINGS")
     print("=" * 80)
 
 
-    if gold_df.empty:
+
+    # =====================================================
+    # VARCHAR VALIDATION
+    # =====================================================
+
+
+    varchar_limits = {
+
+
+        "rta": 10,
+
+        "pan": 10,
+
+        "folio_number": 40,
+
+        "arn": 20,
+
+        "holding_nature": 40,
+
+        "nominee_name": 255,
+
+        "nominee_relation": 40,
+
+        "nominee_pct": 20,
+
+        "kyc_status": 20,
+
+        "bank_name": 120,
+
+        "bank_ac_last4": 8,
+
+        "demat_flag": 4
+
+    }
+
+
+
+    for col, limit in varchar_limits.items():
+
+
+        if col in gold_df.columns:
+
+
+            max_len = (
+
+                gold_df[col]
+
+                .fillna("")
+
+                .astype(str)
+
+                .str.len()
+
+                .max()
+
+            )
+
+
+            print(
+
+                f"{col:<25} Max Length : {max_len}"
+
+            )
+
+
+            if max_len > limit:
+
+                raise ValueError(
+
+                    f"{col} length {max_len} exceeds limit {limit}"
+
+                )
+
+
+
+    # =====================================================
+    # TIMESTAMP DUPLICATION CHECK
+    # =====================================================
+
+
+    print()
+
+    print("Checking existing gold holdings")
+
+
+
+    existing_holdings = pd.read_sql(
+
+        """
+
+        SELECT
+
+
+            rta,
+
+            folio_number,
+
+            scheme_id,
+
+            last_synced_at
+
+
+        FROM gold.holdings
+
+
+        """,
+
+        engine
+
+    )
+
+
+
+    print(
+
+        "Existing holdings:",
+
+        len(existing_holdings)
+
+    )
+
+
+
+    if len(existing_holdings) > 0:
+
+
+
+        # normalize keys
+
+
+        for col in [
+
+            "rta",
+
+            "folio_number"
+
+        ]:
+
+
+            existing_holdings[col] = (
+
+                existing_holdings[col]
+
+                .fillna("")
+
+                .astype(str)
+
+                .str.strip()
+
+                .str.upper()
+
+            )
+
+
+
+            gold_df[col] = (
+
+                gold_df[col]
+
+                .fillna("")
+
+                .astype(str)
+
+                .str.strip()
+
+                .str.upper()
+
+            )
+
+
+
+        # merge with existing
+
+
+        compare_df = gold_df.merge(
+
+            existing_holdings,
+
+            on=[
+
+                "rta",
+
+                "folio_number",
+
+                "scheme_id"
+
+            ],
+
+            how="left",
+
+            suffixes=(
+
+                "_new",
+
+                "_old"
+
+            )
+
+        )
+
+
+
+        # keep only new or latest synced rows
+
+
+        compare_df = compare_df[
+
+            compare_df["last_synced_at_old"].isna()
+
+            |
+
+            (
+
+                compare_df["last_synced_at_new"]
+
+                >
+
+                compare_df["last_synced_at_old"]
+
+            )
+
+        ]
+
+
+
+        gold_df = compare_df[
+
+            gold_df.columns
+
+        ]
+
+
+
+    print(
+
+        "Rows after duplicate check:",
+
+        len(gold_df)
+
+    )
+
+
+
+    if len(gold_df) == 0:
+
 
         print(
-            "No new records to load"
+
+            "No new holdings to insert"
+
         )
+
 
         return True
 
+
+
+    # =====================================================
+    # INSERT INTO GOLD
+    # =====================================================
 
 
     try:
@@ -1067,73 +1302,113 @@ def load_holdings(gold_df):
         )
 
 
+
         print()
 
         print(
-            f"{len(gold_df)} rows inserted into gold.holdings"
-        )
 
+            "Inserted Rows:",
+
+            len(gold_df)
+
+        )
 
         return True
-
-
-
-    except Exception:
-
-
-        print(
-            "ERROR WHILE LOADING GOLD HOLDINGS"
-        )
-
-        traceback.print_exc()
+    
+    except Exception as e:
+        print()
+        print("ERROR WHILE LOADING GOLD HOLDINGS")
+        print(type(e).__name__)
+        print(e)
 
         return False
 
 # =====================================================
-# MAIN
+# MAIN EXECUTION
 # =====================================================
-
-def main():
-
-
-    print("=" * 80)
-    print("STARTING GOLD HOLDINGS ETL")
-    print("=" * 80)
-
-
-
-    silver_df = extract_holdings()
-
-
-
-    if silver_df.empty:
-
-        print(
-            "No new records found"
-        )
-
-        return
-
-
-
-    gold_df = transform_holdings(
-        silver_df
-    )
-
-
-
-    load_holdings(
-        gold_df
-    )
-
-
-
-    print("=" * 80)
-    print("GOLD HOLDINGS ETL COMPLETED")
-    print("=" * 80)
-
 
 
 if __name__ == "__main__":
 
-    main()
+
+    print("\n")
+
+    print("=" * 80)
+
+    print("STARTING GOLD HOLDINGS ETL")
+
+    print("=" * 80)
+
+
+
+    try:
+
+
+        # =================================================
+        # EXTRACT
+        # =================================================
+
+
+        df = extract_holdings()
+
+
+
+        # =================================================
+        # TRANSFORM
+        # =================================================
+
+
+        gold_df = transform_holdings(
+
+            df
+
+        )
+
+
+
+        # =================================================
+        # LOAD
+        # =================================================
+
+
+        status = load_holdings(
+
+            gold_df
+
+        )
+
+
+
+        if status:
+
+
+            print("\n")
+
+            print("=" * 80)
+
+            print("GOLD HOLDINGS ETL COMPLETED SUCCESSFULLY")
+
+            print("=" * 80)
+
+
+
+        else:
+
+
+            print("\n")
+
+            print("=" * 80)
+
+            print("GOLD HOLDINGS ETL FAILED")
+
+            print("=" * 80)
+            
+    except Exception as e:
+
+        print("\n")
+        print("=" * 80)
+        print("GOLD HOLDINGS ETL ERROR")
+        print("=" * 80)
+        print(type(e).__name__)
+        print(e)
+    

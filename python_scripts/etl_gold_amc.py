@@ -1,7 +1,27 @@
 import pandas as pd
 import traceback
+
 from utils.db import engine
 
+
+# =====================================================
+# SAFE READ
+# =====================================================
+
+def safe_read(query):
+
+    try:
+
+        return pd.read_sql(
+            query,
+            engine
+        )
+
+    except Exception as e:
+
+        print("SQL ERROR :", e)
+
+        return pd.DataFrame()
 
 
 # =====================================================
@@ -21,9 +41,7 @@ def get_last_processed_time():
             engine
         )
 
-
         last_time = result.iloc[0]["last_time"]
-
 
         if pd.isna(last_time):
 
@@ -31,9 +49,9 @@ def get_last_processed_time():
                 "1900-01-01"
             )
 
-
-        return pd.to_datetime(last_time)
-
+        return pd.to_datetime(
+            last_time
+        )
 
     except Exception:
 
@@ -42,332 +60,183 @@ def get_last_processed_time():
         )
 
 
-
 # =====================================================
-# EXTRACT AMC
+# EXTRACT GOLD AMC
 # =====================================================
 
 def extract_amc():
 
-
-    print("="*80)
-    print("Extracting Silver AMC Data")
-    print("="*80)
-
+    print("=" * 80)
+    print("Extracting Gold AMC")
+    print("=" * 80)
 
     last_time = get_last_processed_time()
 
-
-
-    df = pd.read_sql(
-
-        """
+    df = safe_read(
+        f"""
         SELECT
 
             source,
-            prodcode,
+            amc_code,
             td_fund,
             scheme,
             created_at
 
         FROM silver.transaction_master_new
 
-        """,
-
-        engine
+        WHERE created_at > '{last_time}'
+        """
     )
-
-
 
     if df.empty:
 
+        print("No new records found.")
+
         return df
-
-
-
-    # Timestamp cleaning
 
     df["created_at"] = pd.to_datetime(
         df["created_at"],
         errors="coerce"
     )
 
-
-    # Remove timezone difference
-
-    if getattr(
-        df["created_at"].dt,
-        "tz",
-        None
-    ) is not None:
+    if getattr(df["created_at"].dt, "tz", None) is not None:
 
         df["created_at"] = (
             df["created_at"]
             .dt.tz_localize(None)
         )
 
-
-
-    if last_time.tzinfo is not None:
-
-        last_time = last_time.tz_localize(None)
-
-
-
-    # Incremental extraction
-
-    df = df[
-        df["created_at"] > last_time
-    ]
-
-
-
-    print()
-
-    print(
-        "Rows fetched :",
-        len(df)
-    )
-
+    print("Rows fetched :", len(df))
 
     return df
 
-
-
 # =====================================================
-# TRANSFORM AMC
+# TRANSFORM GOLD AMC
 # =====================================================
 
 def transform_amc(df):
 
-
-    print("="*80)
+    print("=" * 80)
     print("Transforming Gold AMC")
-    print("="*80)
+    print("=" * 80)
 
+    if df.empty:
 
+        return pd.DataFrame()
 
-    gold_df = pd.DataFrame()
+    # =====================================================
+    # CLEAN SOURCE
+    # =====================================================
 
-
-
-    # ==========================
-    # RTA
-    # ==========================
-
-    gold_df["rta"] = (
-
+    df["source"] = (
         df["source"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
 
-
-
-    # ==========================
+    # =====================================================
     # AMC CODE
-    # ==========================
+    # =====================================================
 
-
-    gold_df["amc_code"] = None
-
-
-
-    cams_mask = (
-        gold_df["rta"]=="CAMS"
-    )
-
-
-    kfin_mask = (
-        gold_df["rta"]=="KFIN"
-    )
-
-
-
-    gold_df.loc[
-        cams_mask,
-        "amc_code"
-    ] = (
-        df.loc[
-            cams_mask,
-            "prodcode"
-        ]
-    )
-
-
-
-    gold_df.loc[
-        kfin_mask,
-        "amc_code"
-    ] = (
-        df.loc[
-            kfin_mask,
-            "td_fund"
-        ]
-    )
-
-
-
-    gold_df["amc_code"] = (
-
-        gold_df["amc_code"]
-
+    df["amc_code"] = (
+        df["amc_code"]
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
         .str.upper()
-
     )
 
-
-
-    # ==========================
+    # =====================================================
     # AMC NAME LOOKUP
-    # ==========================
+    # =====================================================
 
-
-    amc_lookup = pd.read_sql(
-
+    amc_lookup = safe_read(
         """
-
         SELECT
-
             amc_code,
             amc_name
-
         FROM bronze.amc_master
-
-        """,
-
-        engine
-
+        """
     )
 
+    if not amc_lookup.empty:
 
-
-    amc_lookup["amc_code"] = (
-
-        amc_lookup["amc_code"]
-
-        .fillna("")
-
-        .astype(str)
-
-        .str.strip()
-
-        .str.upper()
-
-    )
-
-
-
-    lookup_code = (
-
-        gold_df["amc_code"]
-
-        .str.extract(
-            r"^([A-Z]+)",
-            expand=False
+        amc_lookup["amc_code"] = (
+            amc_lookup["amc_code"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper()
         )
 
-    )
+        df = df.merge(
 
+            amc_lookup,
 
+            on="amc_code",
 
-    gold_df["name"] = (
+            how="left"
 
-        lookup_code
-
-        .map(
-            amc_lookup
-            .set_index("amc_code")
-            ["amc_name"]
         )
 
-    )
+    else:
 
+        df["amc_name"] = None
 
+    # =====================================================
+    # BUILD GOLD DATAFRAME
+    # =====================================================
 
-    # ==========================
-    # Remaining fields
-    # ==========================
+    gold_df = pd.DataFrame({
 
+        "amc_code": df["amc_code"],
 
-    gold_df["short_name"] = None
+        "name": df["amc_name"],
 
-    gold_df["logo_url"] = None
+        "short_name": None,
 
-    gold_df["status"] = None
+        "rta": df["source"],
 
+        "logo_url": None,
 
+        "status": None
 
-    # ==========================
-    # Timestamp
-    # ==========================
+    })
 
-
-    gold_df["created_at"] = (
-        df["created_at"]
-        .values
-    )
-
-
-
-    gold_df["updated_at"] = None
-
-
+    # =====================================================
+    # REMOVE INVALID ROWS
+    # =====================================================
 
     gold_df = gold_df[
 
-        [
-
-            "amc_code",
-
-            "name",
-
-            "short_name",
-
-            "rta",
-
-            "logo_url",
-
-            "status",
-
-            "created_at",
-
-            "updated_at"
-
-        ]
-
-    ]
-
-
-
-    # Remove invalid codes
-
-    gold_df = gold_df[
         gold_df["amc_code"] != ""
+
     ]
 
+        # =====================================================
+    # REMOVE DUPLICATES
+    # =====================================================
 
+    gold_df = gold_df.drop_duplicates(
 
-    # Length cleanup
+        subset=[
+            "amc_code"
+        ],
+
+        keep="first"
+
+    )
+
+    # =====================================================
+    # COLUMN LENGTH VALIDATION
+    # =====================================================
 
     gold_df["amc_code"] = (
         gold_df["amc_code"]
         .str[:20]
     )
-
 
     gold_df["name"] = (
         gold_df["name"]
@@ -375,19 +244,17 @@ def transform_amc(df):
         .str[:255]
     )
 
-
     gold_df["short_name"] = (
         gold_df["short_name"]
         .astype("string")
         .str[:50]
     )
 
-
     gold_df["rta"] = (
         gold_df["rta"]
+        .astype("string")
         .str[:20]
     )
-
 
     gold_df["logo_url"] = (
         gold_df["logo_url"]
@@ -395,52 +262,50 @@ def transform_amc(df):
         .str[:512]
     )
 
-
     gold_df["status"] = (
         gold_df["status"]
         .astype("string")
         .str[:20]
     )
 
+    # =====================================================
+    # AUDIT TIMESTAMP
+    # =====================================================
 
-
-    print()
-
-    print(
-        "Rows Ready :",
-        len(gold_df)
+    gold_df["created_at"] = (
+        pd.Timestamp.utcnow()
+        .tz_localize(None)
     )
 
-
-    print(gold_df.head())
-
+    print("Rows Ready :", len(gold_df))
 
     return gold_df
 
-
-
 # =====================================================
-# LOAD
+# LOAD GOLD AMC
 # =====================================================
 
 def load_amc(gold_df):
 
-
-    print("="*80)
+    print("=" * 80)
     print("Loading Gold AMC")
-    print("="*80)
+    print("=" * 80)
 
+    if gold_df.empty:
+
+        print("No new records found.")
+
+        return True
 
     try:
-
 
         gold_df.to_sql(
 
             name="amc",
 
-            schema="gold",
-
             con=engine,
+
+            schema="gold",
 
             if_exists="append",
 
@@ -452,25 +317,17 @@ def load_amc(gold_df):
 
         )
 
-
-
-        print(
-            "Rows inserted:",
-            len(gold_df)
-        )
-
+        print(f"{len(gold_df)} rows inserted into Gold AMC.")
 
         return True
 
-
-
     except Exception:
 
+        print("FAILED LOADING GOLD AMC")
 
-        traceback.print_exc()
+        traceback.print_exc(limit=5)
 
         return False
-
 
 
 # =====================================================
@@ -479,30 +336,30 @@ def load_amc(gold_df):
 
 if __name__ == "__main__":
 
+    print("=" * 80)
+    print("STARTING GOLD AMC ETL")
+    print("=" * 80)
 
     df = extract_amc()
 
+    if not df.empty:
 
+        gold_df = transform_amc(df)
 
-    if df.empty:
+        status = load_amc(gold_df)
 
-        print(
-            "No new AMC records found"
-        )
+        if status:
 
-        exit()
+            print("=" * 80)
+            print("GOLD AMC ETL COMPLETED SUCCESSFULLY")
+            print("=" * 80)
 
+        else:
 
+            print("=" * 80)
+            print("GOLD AMC ETL FAILED")
+            print("=" * 80)
 
-    gold_df = transform_amc(df)
+    else:
 
-
-
-    load_amc(
-        gold_df
-    )
-
-
-    print(
-        "Gold AMC ETL Completed"
-    )
+        print("No new AMC records to process.")

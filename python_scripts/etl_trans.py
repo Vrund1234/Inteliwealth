@@ -637,7 +637,7 @@ def process_transactions(cams=None, kfin=None):
         if_exists="append",
         index=False,
         method="multi",
-        chunksize=5000
+        chunksize=20000
     )
 
     print("=" * 80)

@@ -11,7 +11,8 @@ MASTER_DATABASE = "intelliwealth_new_dump"
 
 # Project Database
 engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}"
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}",
+    pool_pre_ping=True
 )
 
 # Master Database
