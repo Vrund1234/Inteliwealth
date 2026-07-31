@@ -24,3 +24,12 @@ Thumbs.db
 
 # CSV files (optional)
 *.csv
+
+# Airflow logs
+airflow/logs/
+logs/
+
+# Airflow runtime files
+airflow/__pycache__/
+__pycache__/
+*.pyc
