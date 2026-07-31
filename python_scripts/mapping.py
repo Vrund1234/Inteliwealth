@@ -31,10 +31,10 @@ INVESTOR_MASTER_MAPPING = {
     # ================= TAX / PAN =================
     "tax_status": ["tax_status", "status"],
     "holding_nature": ["holding_nature"],
-    "pan_no": ["pan_no", "pangno", "pan"],
+    "pan_no": ["pan_no", "pan"],
     "joint1_pan": ["joint1_pan"],
     "joint2_pan": ["joint2_pan"],
-    "guardian_pan": ["guardian_pan", "guard_pan"],
+    "guardian_pan": ["guardian_pan", "guard_pan","pangno"],
 
     # ================= BANK =================
     "bank_name": ["bank_name", "bname"],

@@ -1,14 +1,26 @@
 import pandas as pd
 import uuid
 import re
+from datetime import datetime
 
 from sqlalchemy import text
+
 from utils.db import engine
 from utils.db import master_engine
 
 
 # =====================================================
-# LOAD SCHEME MASTER (MASTER DATABASE)
+# FIXED SCHEME UUID NAMESPACE
+# NEVER CHANGE THIS VALUE
+# =====================================================
+
+SCHEME_NAMESPACE = uuid.UUID(
+    "a3f8c9d1-5b8e-4f11-9d2a-7e6c4b8f1234"
+)
+
+
+# =====================================================
+# LOAD SCHEME MASTER
 # =====================================================
 
 scheme_master = pd.read_sql(
@@ -26,90 +38,37 @@ scheme_master = pd.read_sql(
 
 
 # =====================================================
-# SAFE SQL READ
-# =====================================================
-
-def safe_read(query):
-
-    try:
-
-        return pd.read_sql(
-            query,
-            engine
-        )
-
-    except Exception as e:
-
-        print("SQL ERROR :", e)
-
-        return pd.DataFrame()
-
-
-# =====================================================
-# GET LAST GOLD LOAD TIME
-# =====================================================
-
-def get_last_processed_time():
-
-    try:
-
-        result = pd.read_sql(
-            """
-            SELECT
-                MAX(created_at) AS last_time
-            FROM gold.scheme
-            """,
-            engine
-        )
-
-        last_time = result.iloc[0]["last_time"]
-
-        if pd.isna(last_time):
-
-            return pd.Timestamp("1900-01-01", tz="UTC")
-
-        return pd.to_datetime(last_time)
-
-    except Exception:
-
-        return pd.Timestamp("1900-01-01", tz="UTC")
-
-
-# =====================================================
-# EXTRACT GOLD SCHEME SOURCE DATA
+# EXTRACT GOLD SCHEME DATA
 # =====================================================
 
 def extract_scheme():
 
     print("=" * 80)
-    print("Extracting Gold Scheme")
+    print("EXTRACTING DATA FOR GOLD SCHEME")
     print("=" * 80)
-
-
-    last_time = get_last_processed_time()
-
-    print("Last Processed Time :", last_time)
 
 
     # =================================================
     # TRANSACTION MASTER
     # =================================================
 
-    transaction_query = f"""
+    transaction_query = """
 
-        SELECT
+    SELECT
 
-            source,
-            amc_code,
-            prodcode,
-            scheme,
-            funddesc,
-            scheme_type,
-            created_at
+        source,
 
-        FROM silver.transaction_master_new
+        amc_code,
 
-        WHERE created_at > '{last_time}'
+        prodcode,
+
+        scheme,
+
+        funddesc,
+
+        scheme_type
+
+    FROM silver.transaction_master_new
 
     """
 
@@ -118,263 +77,439 @@ def extract_scheme():
     # INVESTOR MASTER
     # =================================================
 
-    investor_query = f"""
+    investor_query = """
 
-        SELECT
+    SELECT
 
-            source,
-            amc_code,
-            product_code,
-            scheme_name,
-            fund_description,
-            categorydesc,
-            created_at
+        source,
 
-        FROM silver.investor_master
+        amc_code,
 
-        WHERE created_at > '{last_time}'
+        product_code,
+
+        scheme_name,
+
+        fund_description,
+
+        categorydesc
+
+    FROM silver.investor_master
 
     """
 
 
-    transaction_df = safe_read(
-        transaction_query
-    )
-
-    investor_df = safe_read(
-        investor_query
+    transaction_df = pd.read_sql(
+        transaction_query,
+        engine
     )
 
 
-    # =================================================
-    # TIMEZONE FIX
-    # =================================================
-
-    for df in [transaction_df, investor_df]:
-
-        if not df.empty and "created_at" in df.columns:
-
-            df["created_at"] = pd.to_datetime(
-                df["created_at"],
-                errors="coerce"
-            )
+    investor_df = pd.read_sql(
+        investor_query,
+        engine
+    )
 
 
-            if getattr(df["created_at"].dt, "tz", None) is not None:
-
-                df["created_at"] = (
-                    df["created_at"]
-                    .dt.tz_localize(None)
-                )
-
-
-    print()
-
-    print("Extraction Completed")
+    print("\nExtraction Completed")
     print("-" * 80)
 
-    print("Transaction Rows :", len(transaction_df))
-    print("Investor Rows    :", len(investor_df))
+    print(
+        "Transaction Rows :",
+        len(transaction_df)
+    )
 
-    print()
+    print(
+        "Investor Rows    :",
+        len(investor_df)
+    )
 
-    print("Transaction Preview")
+
+    print("\nTransaction Preview")
     print("-" * 80)
-    print(transaction_df.head())
 
-    print()
+    print(
+        transaction_df.head()
+    )
 
-    print("Investor Preview")
+
+    print("\nInvestor Preview")
     print("-" * 80)
-    print(investor_df.head())
+
+    print(
+        investor_df.head()
+    )
 
 
     return (
+
         transaction_df,
+
         investor_df
+
     )
 
 # =====================================================
-# TRANSFORM GOLD SCHEME
+# TRANSFORM GOLD SCHEME DATA
 # =====================================================
 
-def transform_scheme(transaction_df, investor_df):
+def transform_scheme(
+    transaction_df,
+    investor_df
+):
 
     print("=" * 80)
-    print("Transforming Gold Scheme")
+    print("TRANSFORMING GOLD SCHEME")
     print("=" * 80)
+
 
     transaction_df = transaction_df.copy()
+
     investor_df = investor_df.copy()
+
 
     # =================================================
     # CLEAN SCHEME CODE
     # =================================================
 
-    transaction_df["scheme_code"] = (
+    transaction_df["join_scheme_code"] = (
+
         transaction_df["prodcode"]
+
         .astype("string")
+
         .str.strip()
+
         .str.upper()
+
     )
 
-    investor_df["scheme_code"] = (
+
+    investor_df["join_scheme_code"] = (
+
         investor_df["product_code"]
+
         .astype("string")
+
         .str.strip()
+
         .str.upper()
+
     )
 
-    # =================================================
-    # REMOVE DUPLICATES
-    # =================================================
-
-    transaction_df = transaction_df.drop_duplicates(
-        subset=[
-            "source",
-            "amc_code",
-            "scheme_code"
-        ]
-    )
-
-    investor_df = investor_df.drop_duplicates(
-        subset=[
-            "source",
-            "amc_code",
-            "scheme_code"
-        ]
-    )
-
-    print("Transaction schemes :", len(transaction_df))
-    print("Investor schemes    :", len(investor_df))
 
     # =================================================
-    # MERGE
+    # REMOVE SOURCE DUPLICATES
     # =================================================
 
-    gold_df = transaction_df.merge(
+    transaction_scheme = (
 
-        investor_df[
-            [
+        transaction_df
+
+        .drop_duplicates(
+
+            subset=[
+
                 "source",
+
                 "amc_code",
-                "scheme_code",
+
+                "join_scheme_code"
+
+            ],
+
+            keep="first"
+
+        )
+
+    )
+
+
+    investor_scheme = (
+
+        investor_df
+
+        .drop_duplicates(
+
+            subset=[
+
+                "source",
+
+                "amc_code",
+
+                "join_scheme_code"
+
+            ],
+
+            keep="first"
+
+        )
+
+    )
+
+
+    print(
+
+        "Unique Transaction Schemes :",
+
+        len(transaction_scheme)
+
+    )
+
+
+    print(
+
+        "Unique Investor Schemes    :",
+
+        len(investor_scheme)
+
+    )
+
+
+    # =================================================
+    # MERGE TRANSACTION + INVESTOR
+    # =================================================
+
+    gold_df = transaction_scheme.merge(
+
+        investor_scheme[
+
+            [
+
+                "source",
+
+                "amc_code",
+
+                "join_scheme_code",
+
+                "scheme_name",
+
                 "fund_description",
+
                 "categorydesc"
+
             ]
+
         ],
 
         on=[
+
             "source",
+
             "amc_code",
-            "scheme_code"
+
+            "join_scheme_code"
+
         ],
 
-        how="left"
+        how="left",
+
+        suffixes=(
+
+            "_txn",
+
+            "_inv"
+
+        )
 
     )
 
-    print("\nAfter Merge :", len(gold_df))
+
+    print("\nRows After Merge")
+    print("-" * 80)
+
+    print(len(gold_df))
+
 
     # =================================================
-    # SCHEME NAME
+    # SCHEME NAME PRIORITY
     # =================================================
 
     scheme_name = (
 
         gold_df["funddesc"]
-        .fillna(gold_df["scheme"])
-        .fillna(gold_df["fund_description"])
 
-    )
+        .fillna(
 
-    # =================================================
-    # PLAN
-    # =================================================
+            gold_df["scheme"]
 
-    plan = (
-        scheme_name
-        .astype("string")
-        .str.extract(
-            r"(Direct|Regular)",
-            expand=False
         )
+
+        .fillna(
+
+            gold_df["scheme_name"]
+
+        )
+
+        .fillna(
+
+            gold_df["fund_description"]
+
+        )
+
     )
+
 
     # =================================================
     # CREATE GOLD DATAFRAME
     # =================================================
 
-    gold_df = pd.DataFrame({
+    gold_df = pd.DataFrame(
 
-        "id": [
-            uuid.uuid4()
-            for _ in range(len(gold_df))
-        ],
+        {
 
-        "rta": gold_df["source"],
+            "rta":
 
-        "scheme_code": gold_df["scheme_code"],
+                gold_df["source"],
 
-        "scheme_name": scheme_name,
 
-        "category": (
-            gold_df["scheme_type"]
-            .fillna(gold_df["categorydesc"])
-        ),
+            "scheme_code":
 
-        "plan": plan,
+                gold_df["join_scheme_code"],
 
-        "isin": None,
 
-        "amc_code": gold_df["amc_code"],
+            "scheme_name":
 
-        "amfi_code": None,
+                scheme_name,
 
-        "category_id": None,
 
-        "plan_type": None,
+            "category":
 
-        "option_type": None,
+                gold_df["scheme_type"]
 
-        "rta_scheme_code": gold_df["scheme_code"],
+                .fillna(
 
-        "benchmark_id": None,
+                    gold_df["categorydesc"]
 
-        "expense_ratio": None,
+                ),
 
-        "exit_load_json": None,
 
-        "lock_in_months": None,
+            "plan":
 
-        "riskometer": None,
+                scheme_name
 
-        "status": None
+                .str.extract(
 
-    })
+                    r"(Direct|Regular)",
 
-    # =================================================
-    # NORMALIZE NAME
-    # =================================================
+                    expand=False
 
-    def normalize_name(x):
+                ),
 
-        if pd.isna(x):
-            return None
 
-        x = str(x).upper()
-        x = re.sub(r"[^A-Z0-9 ]", " ", x)
-        x = re.sub(r"\s+", " ", x)
+            "isin":
 
-        return x.strip()
+                None,
 
-    gold_df["name_norm"] = (
-        gold_df["scheme_name"]
-        .apply(normalize_name)
+
+            "amc_code":
+
+                gold_df["amc_code"],
+
+
+            "amfi_code":
+
+                None,
+
+
+            "category_id":
+
+                None,
+
+
+            "plan_type":
+
+                None,
+
+
+            "option_type":
+
+                None,
+
+
+            "rta_scheme_code":
+
+                gold_df["join_scheme_code"],
+
+
+            "benchmark_id":
+
+                None,
+
+
+            "expense_ratio":
+
+                None,
+
+
+            "exit_load_json":
+
+                None,
+
+
+            "lock_in_months":
+
+                None,
+
+
+            "riskometer":
+
+                None,
+
+
+            "status":
+
+                None
+
+        }
+
     )
 
+
     # =================================================
-    # MATCH SCHEME MASTER
+    # NORMALIZE SCHEME NAME
+    # =================================================
+
+    def normalize_name(name):
+
+        if pd.isna(name):
+
+            return None
+
+        name = str(name).upper()
+
+        name = re.sub(
+
+            r"[^A-Z0-9 ]",
+
+            " ",
+
+            name
+
+        )
+
+        name = re.sub(
+
+            r"\s+",
+
+            " ",
+
+            name
+
+        ).strip()
+
+        return name
+
+
+    gold_df["name_norm"] = (
+
+        gold_df["scheme_name"]
+
+        .apply(normalize_name)
+
+    )
+
+        # =================================================
+    # SCHEME MASTER LOOKUP
     # =================================================
 
     gold_df = gold_df.merge(
@@ -385,33 +520,103 @@ def transform_scheme(transaction_df, investor_df):
 
         how="left",
 
-        suffixes=("", "_master")
+        suffixes=(
+
+            "",
+
+            "_master"
+
+        )
 
     )
 
-    gold_df["amfi_code"] = gold_df["scheme_code_master"]
+
+    gold_df["amfi_code"] = (
+
+        gold_df["scheme_code_master"]
+
+    )
+
 
     print("\nScheme Master Match")
     print("-" * 80)
-    print("Matched   :", gold_df["id_master"].notna().sum())
-    print("Unmatched :", gold_df["id_master"].isna().sum())
+
+    print(
+        "Total     :",
+        len(gold_df)
+    )
+
+    print(
+        "Matched   :",
+        gold_df["id"].notna().sum()
+    )
+
+    print(
+        "Unmatched :",
+        gold_df["id"].isna().sum()
+    )
+
 
     # =================================================
-    # AMC LOOKUP
+    # CLEAN SCHEME CODE
+    # =================================================
+
+    gold_df["scheme_code"] = (
+
+        gold_df["scheme_code"]
+
+        .astype("string")
+
+        .str.strip()
+
+        .str.upper()
+
+    )
+
+
+    gold_df = gold_df[
+
+        gold_df["scheme_code"].notna()
+
+    ]
+
+
+    print("\nAMFI Code Populated")
+    print("-" * 80)
+
+    print(
+
+        gold_df["amfi_code"]
+
+        .notna()
+
+        .sum()
+
+    )
+
+
+    # =================================================
+    # AMC ID LOOKUP
     # =================================================
 
     amc_master = pd.read_sql(
 
         """
+
         SELECT
+
             amc_id,
+
             amc_code
+
         FROM bronze.amc_master
+
         """,
 
         engine
 
     )
+
 
     gold_df = gold_df.merge(
 
@@ -423,20 +628,22 @@ def transform_scheme(transaction_df, investor_df):
 
     )
 
-    # =================================================
-    # DROP EXTRA COLUMNS
-    # =================================================
 
     gold_df.drop(
 
         columns=[
 
             "amc_code",
-            "name_norm",
-            "id_master",
-            "scheme_code_master",
+
+            "id",
+
             "name",
-            "name_norm_loose"
+
+            "name_norm",
+
+            "name_norm_loose",
+
+            "scheme_code_master"
 
         ],
 
@@ -446,32 +653,185 @@ def transform_scheme(transaction_df, investor_df):
 
     )
 
-    # =================================================
-    # REMOVE NULL SCHEME CODE
-    # =================================================
-
-    gold_df = gold_df[
-        gold_df["scheme_code"].notna()
-    ]
 
     # =================================================
-    # REMOVE DUPLICATES
+    # FINAL DEDUPLICATION
     # =================================================
 
-    gold_df = gold_df.drop_duplicates(
+    print("\nRows Before Final Dedup")
+    print("-" * 80)
 
-        subset=[
-            "rta",
-            "scheme_code"
-        ],
+    print(len(gold_df))
 
-        keep="first"
+
+    gold_df = (
+
+        gold_df
+
+        .sort_values(
+
+            [
+
+                "rta",
+
+                "scheme_code"
+
+            ]
+
+        )
+
+        .drop_duplicates(
+
+            subset=[
+
+                "rta",
+
+                "scheme_code"
+
+            ],
+
+            keep="first"
+
+        )
+
+        .reset_index(
+
+            drop=True
+
+        )
 
     )
 
-    print("\nFinal Gold Scheme :", len(gold_df))
 
-    #print(gold_df.head())
+    print("\nRows After Final Dedup")
+    print("-" * 80)
+
+    print(len(gold_df))
+
+
+    # =================================================
+    # GENERATE DETERMINISTIC UUID
+    # =================================================
+
+    gold_df["id"] = gold_df.apply(
+
+        lambda x: uuid.uuid5(
+
+            SCHEME_NAMESPACE,
+
+            f"{str(x['rta']).strip().lower()}|"
+
+            f"{str(x['scheme_code']).strip().lower()}"
+
+        ),
+
+        axis=1
+
+    )
+
+
+    # =================================================
+    # VALIDATE UUID
+    # =================================================
+
+    duplicate_ids = gold_df[
+
+        gold_df.duplicated(
+
+            subset=["id"],
+
+            keep=False
+
+        )
+
+    ]
+
+
+    if not duplicate_ids.empty:
+
+        print("\nDuplicate UUIDs Found")
+        print("-" * 80)
+
+        print(
+
+            duplicate_ids[
+
+                [
+
+                    "rta",
+
+                    "scheme_code",
+
+                    "scheme_name",
+
+                    "id"
+
+                ]
+
+            ]
+
+        )
+
+        raise Exception(
+
+            "Duplicate UUIDs generated."
+
+        )
+
+
+    print("\nUUID Validation Passed")
+
+
+    # =================================================
+    # CREATED AT
+    # =================================================
+
+    gold_df["created_at"] = datetime.now()
+
+
+    # =================================================
+    # FINAL COLUMN ORDER
+    # =================================================
+
+    cols = [
+
+        "id"
+
+    ] + [
+
+        c
+
+        for c in gold_df.columns
+
+        if c != "id"
+
+    ]
+
+
+    gold_df = gold_df[cols]
+
+
+    print("\nTransformation Completed")
+    print("-" * 80)
+
+    print(
+
+        "Gold Rows :",
+
+        len(gold_df)
+
+    )
+
+
+    print("\nGold Scheme Preview")
+    print("-" * 80)
+
+    print(
+
+        gold_df.head()
+
+    )
+
 
     return gold_df
 
@@ -479,240 +839,265 @@ def transform_scheme(transaction_df, investor_df):
 # LOAD GOLD SCHEME
 # =====================================================
 
-def load_scheme(df):
+def load_scheme(gold_df):
 
     print("=" * 80)
-    print("Loading Gold Scheme")
+    print("LOADING GOLD SCHEME")
     print("=" * 80)
 
-    if df.empty:
 
-        print("No Scheme data found")
+    # =====================================================
+    # DUPLICATE CHECK
+    # =====================================================
 
-        return
-
-    # =================================================
-    # GET LAST LOAD TIME
-    # =================================================
-
-    try:
-
-        last_time = pd.read_sql(
-
-            """
-            SELECT
-                MAX(created_at) AS last_time
-            FROM gold.scheme
-            """,
-
-            engine
-
-        ).iloc[0]["last_time"]
-
-    except Exception:
-
-        last_time = None
+    print("\nChecking existing gold schemes")
 
 
-    if pd.isna(last_time):
+    existing_scheme = pd.read_sql(
 
-        last_time = pd.Timestamp("1900-01-01")
+        """
 
-    else:
+        SELECT
 
-        last_time = pd.to_datetime(last_time)
+            rta,
 
+            scheme_code,
 
-    print("Last Processed Time :", last_time)
+            created_at
 
-    # =================================================
-    # FILTER USING CREATED_AT
-    # =================================================
+        FROM gold.scheme
 
-    df["created_at"] = pd.to_datetime(
-        df["created_at"],
-        errors="coerce"
+        """,
+
+        engine
+
     )
 
-    if getattr(df["created_at"].dt, "tz", None) is not None:
-        df["created_at"] = df["created_at"].dt.tz_localize(None)
 
-    if getattr(last_time, "tzinfo", None) is not None:
-        last_time = last_time.tz_localize(None)
+    print(
 
-    df = df[
-        df["created_at"] > last_time
-    ]
+        "Existing schemes :",
+
+        len(existing_scheme)
+
+    )
 
 
-    if df.empty:
+    if len(existing_scheme) > 0:
 
-        print("No new Scheme records found.")
 
-        return
+        existing_scheme["rta"] = (
 
-    # =================================================
-    # READ EXISTING GOLD
-    # =================================================
+            existing_scheme["rta"]
 
-    try:
-
-        existing = pd.read_sql(
-
-            """
-            SELECT *
-            FROM gold.scheme
-            """,
-
-            engine
-
-        )
-
-    except Exception:
-
-        existing = pd.DataFrame()
-
-    # =================================================
-    # REMOVE DUPLICATES
-    # =================================================
-
-    if not existing.empty:
-
-        old_keys = set(
-
-            existing[
-                ["rta", "scheme_code"]
-            ]
             .fillna("")
+
             .astype(str)
-            .agg("|".join, axis=1)
+
+            .str.strip()
+
+            .str.upper()
 
         )
 
-        new_keys = (
 
-            df[
-                ["rta", "scheme_code"]
-            ]
+        existing_scheme["scheme_code"] = (
+
+            existing_scheme["scheme_code"]
+
             .fillna("")
+
             .astype(str)
-            .agg("|".join, axis=1)
+
+            .str.strip()
+
+            .str.upper()
 
         )
 
-        df = df.loc[
-            ~new_keys.isin(old_keys)
+
+        gold_df["rta"] = (
+
+            gold_df["rta"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+        gold_df["scheme_code"] = (
+
+            gold_df["scheme_code"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+        compare_df = gold_df.merge(
+
+            existing_scheme,
+
+            on=[
+
+                "rta",
+
+                "scheme_code"
+
+            ],
+
+            how="left",
+
+            suffixes=(
+
+                "_new",
+
+                "_old"
+
+            )
+
+        )
+
+
+        compare_df = compare_df[
+
+            compare_df["created_at_old"].isna()
+
+            |
+
+            (
+
+                compare_df["created_at_new"]
+
+                >
+
+                compare_df["created_at_old"]
+
+            )
+
         ]
 
-    if df.empty:
 
-        print("Duplicate Scheme data skipped")
+        gold_df = compare_df[
 
-        return
+            gold_df.columns
 
-    # =================================================
-    # MATCH DATABASE COLUMN ORDER
-    # =================================================
+        ]
 
-    db_cols = pd.read_sql(
 
-        """
-        SELECT column_name
+    print(
 
-        FROM information_schema.columns
+        "Rows after duplicate check :",
 
-        WHERE table_schema='gold'
-
-        AND table_name='scheme'
-
-        ORDER BY ordinal_position
-        """,
-
-        engine
-
-    )["column_name"].tolist()
-
-    for col in db_cols:
-
-        if col not in df.columns:
-
-            df[col] = None
-
-    df = df[db_cols]
-
-    # =================================================
-    # INSERT
-    # =================================================
-
-    df.to_sql(
-
-        "scheme",
-
-        engine,
-
-        schema="gold",
-
-        if_exists="append",
-
-        index=False,
-
-        method="multi",
-
-        chunksize=10000
+        len(gold_df)
 
     )
 
-    print("\nLoading Completed")
-    print("-" * 80)
-    print("Rows Inserted :", len(df))
 
-    # =================================================
-    # VALIDATION
-    # =================================================
+    if len(gold_df) == 0:
 
-    preview = pd.read_sql(
 
-        """
-        SELECT *
-        FROM gold.scheme
-        ORDER BY created_at DESC
-        LIMIT 10
-        """,
+        print(
 
-        engine
+            "No new schemes to insert"
 
-    )
+        )
 
-    #print("\nGold Scheme Preview")
-    #print("-" * 80)
-    #print(preview)
 
-    count = pd.read_sql(
+        return True
 
-        """
-        SELECT COUNT(*) total_rows
-        FROM gold.scheme
-        """,
 
-        engine
+    # =====================================================
+    # LOAD TO GOLD
+    # =====================================================
 
-    )
+    try:
 
-    print("\nGold Row Count")
-    print("-" * 80)
-    print(count)
+
+        gold_df.to_sql(
+
+            name="scheme",
+
+            schema="gold",
+
+            con=engine,
+
+            if_exists="append",
+
+            index=False,
+
+            chunksize=1000
+
+        )
+
+
+        print("\nLoading Completed")
+
+        print("-" * 80)
+
+        print(
+
+            "Rows Inserted :",
+
+            len(gold_df)
+
+        )
+
+
+        return True
+
+
+    except Exception as e:
+
+
+        print()
+
+        print(
+
+            "ERROR WHILE LOADING GOLD SCHEME"
+
+        )
+
+
+        print(
+
+            type(e).__name__
+
+        )
+
+
+        print(e)
+
+
+        return False
 
 # =====================================================
-# MAIN
+# MAIN EXECUTION
 # =====================================================
 
 def main():
+
+    print("\n")
 
     print("=" * 80)
     print("STARTING GOLD SCHEME ETL")
     print("=" * 80)
 
+
     try:
+
 
         # =================================================
         # EXTRACT
@@ -720,48 +1105,69 @@ def main():
 
         transaction_df, investor_df = extract_scheme()
 
-        if transaction_df.empty and investor_df.empty:
-
-            print("No Scheme data found")
-
-            return
 
         # =================================================
         # TRANSFORM
         # =================================================
 
-        gold_df = transform_scheme(
+        gold_scheme = transform_scheme(
 
             transaction_df,
+
             investor_df
 
         )
 
-        if gold_df.empty:
-
-            print("No Scheme records after transformation")
-
-            return
 
         # =================================================
         # LOAD
         # =================================================
 
-        load_scheme(gold_df)
+        status = load_scheme(
 
-        print("\n" + "=" * 80)
-        print("GOLD SCHEME LOADED SUCCESSFULLY")
-        print("=" * 80)
+            gold_scheme
+
+        )
+
+
+        if status:
+
+
+            print("\n")
+
+            print("=" * 80)
+            print("GOLD SCHEME ETL COMPLETED SUCCESSFULLY")
+            print("=" * 80)
+
+
+        else:
+
+
+            print("\n")
+
+            print("=" * 80)
+            print("GOLD SCHEME ETL FAILED")
+            print("=" * 80)
+
 
     except Exception as e:
 
-        print("=" * 80)
-        print("SCHEME GOLD FAILED")
-        print("=" * 80)
-        print(e)
 
-        import traceback
-        traceback.print_exc()
+        print("\n")
+
+        print("=" * 80)
+        print("GOLD SCHEME ETL ERROR")
+        print("=" * 80)
+
+
+        print(
+
+            type(e).__name__
+
+        )
+
+
+        print(e)
 
 
 # =====================================================
