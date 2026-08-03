@@ -45,6 +45,17 @@ def extract_sip():
         engine
     )
 
+    print(df[["subbroker", "sub_arn_code"]].head(20))
+
+    print("subbroker not null :", df["subbroker"].notna().sum())
+    print("sub_arn_code not null :", df["sub_arn_code"].notna().sum())
+
+    print("Unique subbroker:")
+    print(df["subbroker"].dropna().head(20))
+
+    print("Unique sub_arn_code:")
+    print(df["sub_arn_code"].dropna().head(20))
+
 
 
     print()
@@ -180,6 +191,32 @@ def transform_sip(df):
         .str.strip()
 
     )
+
+    # =================================================
+    # ARN
+    # =================================================
+
+    gold_df["arn"] = (
+        df["sub_arn_code"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # =================================================
+    # SUB ARN
+    # =================================================
+
+    gold_df["sub_arn"] = (
+        df["subbroker"]
+        .astype("string")
+        .str.strip()
+    )
+
+    print("\nARN Mapping")
+    print(gold_df[["arn", "sub_arn"]].head(20))
+
+    print("ARN not null :", gold_df["arn"].replace("", pd.NA).notna().sum())
+    print("Sub ARN not null :", gold_df["sub_arn"].replace("", pd.NA).notna().sum())
 
     # =================================================
     # SIP AMOUNT
@@ -404,6 +441,8 @@ def transform_sip(df):
             "bounced_installments",
 
             "ceased_reason",
+            "arn",
+            "sub_arn",
 
             "arn_id"
 
@@ -497,6 +536,17 @@ def transform_sip(df):
         .str[:100]
     )
 
+    gold_df["arn"] = (
+        gold_df["arn"]
+        .astype("string")
+        .str[:20]
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .astype("string")
+        .str[:20]
+    )
 
 
     return gold_df
@@ -516,7 +566,14 @@ def check_duplicates(gold_df):
 
     duplicates = (
         gold_df[gold_df["sip_reg_no"].notna()]
-        .groupby(["rta","sip_reg_no"])
+        .groupby(
+            [
+                "rta",
+                "sip_reg_no",
+                "folio_number",
+                "scheme_code"
+            ]
+        )
         .size()
         .reset_index(name="count")
         .query("count > 1")
@@ -584,6 +641,8 @@ def load_sip(gold_df):
         "status":20,
 
         "sip_type":20,
+        "arn": 20,
+        "sub_arn": 20,
 
         "ceased_reason":100
 

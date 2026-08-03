@@ -50,11 +50,11 @@ def extract_scheme():
             prodcode,
             scheme,
             funddesc,
-            scheme_type
+            scheme_type,
+            brokcode,
+            src_brk_code
         FROM silver.transaction_master_new
     """
-
-
     # =================================================
     # SIP MASTER
     # Additional source for:
@@ -275,7 +275,22 @@ def transform_scheme(transaction_df, investor_df):
 
         "lock_in_months": None,
         "riskometer": None,
-        "status": None
+        "status": None,
+
+        # NEW COLUMNS
+        "arn": (
+            gold_df["brokcode"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        ),
+
+        "sub_arn": (
+            gold_df["src_brk_code"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
 
     })
     
@@ -318,6 +333,18 @@ def transform_scheme(transaction_df, investor_df):
         gold_df["scheme_code"]
         .astype("string")
         .str.strip()
+    )
+
+    gold_df["arn"] = (
+        gold_df["arn"]
+        .astype("string")
+        .str[:50]
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .astype("string")
+        .str[:50]
     )
 
     # Remove records where scheme_code is missing

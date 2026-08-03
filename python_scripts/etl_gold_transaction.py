@@ -264,16 +264,29 @@ def transform_transactions(df):
 
 
     gold_df["arn"] = (
-
         df["brokcode"]
-
         .fillna("")
-
         .astype(str)
-
         .str.strip()
-
     )
+
+    gold_df.loc[
+        gold_df["arn"] == "",
+        "arn"
+    ] = None
+
+
+    gold_df["sub_arn"] = (
+        df["src_brk_code"]      # use the actual column name if different
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    gold_df.loc[
+        gold_df["sub_arn"] == "",
+        "sub_arn"
+    ] = None
 
 
 
@@ -289,17 +302,19 @@ def transform_transactions(df):
 
     )
 
-    gold_df["sip_ref"] = (
-
+    df["sip_key"] = (
         df["siptrxnno"]
-
-        .fillna("")
-
-        .astype(str)
-
+        .combine_first(df["trxnno"])
+        .astype("string")
         .str.strip()
-
     )
+
+    df["sip_key"] = df["sip_key"].replace(
+        ["", "nan", "<NA>"],
+        None
+    )
+
+    gold_df["sip_ref"] = df["sip_key"]
 
 
 
@@ -559,6 +574,146 @@ def transform_transactions(df):
 
     gold_df["scheme_id"] = df["id"]
 
+    # =====================================================
+    # SIP ID LOOKUP
+    # transaction.sip_ref
+    #          |
+    #          ↓
+    # gold.sip.sip_reg_no
+    #          |
+    #          ↓
+    # gold.sip.id
+    # =====================================================
+
+
+    gold_sip = pd.read_sql(
+        """
+        SELECT
+            id,
+            rta,
+            sip_reg_no
+        FROM gold.sip
+        """,
+        engine
+    )
+
+
+    print("Gold SIP Rows:", len(gold_sip))
+
+
+    gold_sip["rta"] = (
+        gold_sip["rta"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+
+    gold_sip["sip_reg_no"] = (
+        gold_sip["sip_reg_no"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+
+    gold_sip = gold_sip.drop_duplicates(
+        subset=[
+            "rta",
+            "sip_reg_no"
+        ]
+    )
+
+    df["sip_key"] = df["sip_key"].replace(
+        ["", "nan", "<NA>"],
+        None
+    )
+
+
+    print(
+        "Transaction SIP Reference Available:",
+        df["sip_key"].notna().sum()
+    )
+
+
+    gold_df["sip_key"] = df["sip_key"].values
+
+    gold_df = gold_df.merge(
+        gold_sip[
+            [
+                "id",
+                "rta",
+                "sip_reg_no"
+            ]
+        ],
+        left_on=[
+            "rta",
+            "sip_ref"
+        ],
+        right_on=[
+            "rta",
+            "sip_reg_no"
+        ],
+        how="left",
+        validate="many_to_one"
+    )
+
+
+    gold_df["sip_id"] = gold_df["id"]
+
+
+    print("="*80)
+    print("SIP LINK CHECK")
+    print("="*80)
+
+    print(
+        "Transactions with SIP reference:",
+        gold_df["sip_ref"].notna().sum()
+    )
+
+    print(
+        "Transactions linked to SIP master:",
+        gold_df["sip_id"].notna().sum()
+    )
+
+    print(
+        "SIP linkage missing:",
+        gold_df["sip_ref"].notna().sum()
+        -
+        gold_df["sip_id"].notna().sum()
+    )
+
+
+    gold_df.drop(
+        columns=[
+            "id",
+            "sip_reg_no"
+        ],
+        inplace=True,
+        errors="ignore"
+    )
+
+
+    print("="*80)
+    print("SIP ID VALIDATION")
+    print("="*80)
+
+    print(
+        "Total Transactions:",
+        len(gold_df)
+    )
+
+    print(
+        "Matched sip_id:",
+        gold_df["sip_id"].notna().sum()
+    )
+
+    print(
+        "Missing sip_id:",
+        gold_df["sip_id"].isna().sum()
+    )
+
 
 
 
@@ -759,11 +914,38 @@ def transform_transactions(df):
 
     gold_df["txn_sub_type"] = None
 
-    gold_df["rta_txn_id"] = None
+    # Deterministic ordering for duplicate transaction legs
+    gold_df = gold_df.sort_values(
+        by=[
+            "rta",
+            "rta_txn_no",
+            "scheme_id",
+            "txn_date",
+            "amount",
+            "units",
+            "folio_number"
+        ],
+        kind="stable"
+    ).reset_index(drop=True)
+
+    gold_df["txn_seq"] = (
+        gold_df.groupby(["rta", "rta_txn_no"])
+        .cumcount()
+    )
+
+    gold_df["rta_txn_id"] = (
+        gold_df["rta"].astype(str)
+        + "_"
+        + gold_df["rta_txn_no"].astype(str)
+        + "_"
+        + gold_df["txn_seq"].astype(str)
+    )
+
+    gold_df.drop(columns=["txn_seq"], inplace=True)
 
     gold_df["arn_id"] = None
 
-    gold_df["sip_id"] = None
+    # gold_df["sip_id"] = None
 
     gold_df["source"] = df["source"]
 
@@ -818,6 +1000,7 @@ def transform_transactions(df):
             "gst",
 
             "arn",
+            "sub_arn",
 
             "euin",
 
@@ -895,6 +1078,12 @@ def transform_transactions(df):
 
         .str[:20]
 
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .astype("string")
+        .str[:20]
     )
 
 
@@ -1216,29 +1405,18 @@ if __name__ == "__main__":
 
 
     limits = {
-
         "rta": 10,
-
         "rta_txn_no": 50,
-
         "pan": 10,
-
         "folio_number": 40,
-
         "txn_type": 30,
-
         "txn_type_raw": 40,
-
         "txn_desc": 120,
-
         "arn": 20,
-
+        "sub_arn": 20,      # <-- Add this
         "euin": 20,
-
         "sip_ref": 50,
-
         "status": 10,
-
     }
 
 

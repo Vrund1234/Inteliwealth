@@ -27,11 +27,13 @@ def extract_amc():
 
     query = """
         SELECT
-            source,
-            prodcode,
-            td_fund,
-            scheme
-        FROM silver.transaction_master_new
+        source,
+        prodcode,
+        td_fund,
+        scheme,
+        brokcode,
+        src_brk_code
+    FROM silver.transaction_master_new
     """
 
 
@@ -149,6 +151,32 @@ def transform_amc(df):
     gold_df["status"] = None
 
     # =================================================
+    # ARN
+    # =================================================
+
+    gold_df["arn"] = (
+        df["brokcode"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    # =================================================
+    # SUB ARN
+    # =================================================
+
+    gold_df["sub_arn"] = (
+        df["src_brk_code"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    gold_df["arn"] = gold_df["arn"].replace("", None)
+    gold_df["sub_arn"] = gold_df["sub_arn"].replace("", None)
+
+    # =================================================
     # Select required columns only
     # =================================================
 
@@ -159,7 +187,9 @@ def transform_amc(df):
             "short_name",
             "rta",
             "logo_url",
-            "status"
+            "status",
+            "arn",
+            "sub_arn"
         ]
     ]
 
@@ -179,17 +209,17 @@ def transform_amc(df):
     # Keep first available scheme name
     # =================================================
 
-    gold_df = (
-        gold_df
-        .drop_duplicates(
-            subset=[
-                "amc_code",
-                "rta"
-            ],
-            keep="first"
-        )
-        .reset_index(drop=True)
-    )
+    # gold_df = (
+    #     gold_df
+    #     .drop_duplicates(
+    #         subset=[
+    #             "amc_code",
+    #             "rta"
+    #         ],
+    #         keep="first"
+    #     )
+    #     .reset_index(drop=True)
+    # )
 
     # =================================================
     # Length validation
@@ -200,7 +230,6 @@ def transform_amc(df):
         gold_df["amc_code"]
         .str[:20]
     )
-
 
     gold_df["name"] = (
         gold_df["name"]
@@ -235,6 +264,17 @@ def transform_amc(df):
     )
 
 
+    gold_df["arn"] = (
+        gold_df["arn"]
+        .astype("string")
+        .str[:50]
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .astype("string")
+        .str[:50]
+    )
 
     print("=" * 80)
     print("Gold AMC Preview")
@@ -318,7 +358,9 @@ if __name__ == "__main__":
         "short_name":50,
         "rta":20,
         "logo_url":512,
-        "status":20
+        "status":20,
+         "arn":50,
+        "sub_arn":50
 
     }
 

@@ -30,7 +30,9 @@ def extract_scheme_nav():
             amc_code,
             prodcode AS scheme_code,
             traddate,
-            purprice
+            purprice,
+            brokcode AS arn,
+            src_brk_code AS sub_arn
         FROM silver.transaction_master_new
         WHERE purprice IS NOT NULL
     """
@@ -116,6 +118,30 @@ def transform_scheme_nav(df):
         .str.upper()
     )
 
+    df["arn"] = (
+        df["arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["arn"] == "",
+        "arn"
+    ] = None
+
+    df["sub_arn"] = (
+        df["sub_arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["sub_arn"] == "",
+        "sub_arn"
+    ] = None
+
     # =====================================================
     # MAP TO GOLD.SCHEME.ID
     # =====================================================
@@ -197,7 +223,9 @@ def transform_scheme_nav(df):
             "nav_date",
             "nav",
             "repurchase_nav",
-            "source"
+            "source",
+            "arn",
+            "sub_arn"
         ]
     ]
 

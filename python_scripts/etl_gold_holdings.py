@@ -51,12 +51,6 @@ print(
 
 )
 
-
-
-
-
-
-
 # =====================================================
 
 # EXTRACT GOLD HOLDINGS DATA
@@ -86,165 +80,71 @@ def extract_holdings():
 
 
     WITH investor_base AS
-
     (
-
-
-
         SELECT DISTINCT ON
-
         (
-
             source,
-
             folio_no
-
         )
-
-
-
             source,
-
-
-
             folio_no,
-
-
-
             holding_nature,
-
-
-
             nominee1_name,
-
-
-
             nominee1_relation,
-
-
-
             nominee1_percentage,
-
-
-
             bank_name,
-
-
-
             bank_account_no,
-
-
-
             demat_flag,
-
-
-
             ckyc_no,
-
-
-
-            broker_code
-
-
-
-
+            broker_code,
+            subbroker
 
         FROM silver.investor_master
 
-
-
-
-
         ORDER BY
-
             source,
-
             folio_no
-
-
-
     )
-
-
-
-
 
     SELECT
 
-
-
         t.*,
 
+        t.brokcode AS transaction_broker_code,
 
-
-
+        t.src_brk_code AS transaction_sub_arn,
 
         i.holding_nature AS investor_holding_nature,
 
-
-
         i.nominee1_name AS investor_nominee_name,
-
-
 
         i.nominee1_relation AS investor_nominee_relation,
 
-
-
         i.nominee1_percentage AS investor_nominee_percentage,
-
-
-
-
 
         i.bank_name AS investor_bank_name,
 
-
-
         i.bank_account_no AS investor_bank_account_no,
-
-
-
-
 
         i.demat_flag AS investor_demat_flag,
 
-
-
         i.ckyc_no AS investor_ckyc_no,
 
+        i.broker_code AS investor_broker_code,
 
-
-        i.broker_code AS investor_broker_code
-
-
-
-
+        i.subbroker AS investor_subbroker
 
     FROM silver.transaction_master_new t
 
-
-
-
-
     LEFT JOIN investor_base i
 
-
-
-
-
     ON t.source = i.source
-
-
 
     AND t.folio_no = i.folio_no
 
 
 
     """
-
-
-
 
 
     df = pd.read_sql(
@@ -1261,90 +1161,43 @@ def transform_holdings(df):
 
     )
 
-
-
-
-
-
-
-
-
-
-
     # =====================================================
-
-    # ARN
-
+    # ARN AND SUB ARN
     # =====================================================
-
-
-
 
 
     gold_df["arn"] = (
-
-
-
-        df["investor_broker_code"]
-
-
-
+        df["transaction_broker_code"]
         .fillna("")
-
-
-
         .astype(str)
-
-
-
         .str.strip()
-
-
-
     )
 
-
-
-
-
     gold_df.loc[
-
-
-
         gold_df["arn"] == "",
-
-
-
         "arn"
-
-
-
     ] = None
 
 
 
+    gold_df["sub_arn"] = (
+        df["transaction_sub_arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
 
-
-
-
-
-
-
-
-
-
+    gold_df.loc[
+        gold_df["sub_arn"] == "",
+        "sub_arn"
+    ] = None
     # =====================================================
 
     # HOLDING DETAILS
 
     # =====================================================
 
-
-
-
-
     gold_df["holding_nature"] = (
-
 
 
         df["investor_holding_nature"]
@@ -1643,54 +1496,25 @@ def transform_holdings(df):
 
     ] = None
 
-
-
-
-
-
-
-
-
-
-
     # =====================================================
 
     # DEMAT
 
     # =====================================================
 
-
-
-
-
     gold_df["demat_flag"] = (
-
-
 
         df["investor_demat_flag"]
 
-
-
         .fillna("")
 
-
-
         .astype(str)
-
-
 
         .str.strip()
 
 
 
     )
-
-
-
-
-
-
-
     gold_df.loc[
 
 
@@ -2050,118 +1874,34 @@ def transform_holdings(df):
 
 
             "arn",
-
-
-
+            "sub_arn",
             "holding_nature",
-
-
-
             "nominee_name",
-
-
-
             "nominee_relation",
-
-
-
             "nominee_pct",
-
-
-
             "kyc_status",
-
-
-
             "bank_name",
-
-
-
             "bank_ac_last4",
-
-
-
             "demat_flag",
-
-
-
             "client_id",
-
-
-
             "amc_id",
-
-
-
             "scheme_id",
-
-
-
             "purchase_date",
-
-
-
             "arn_id",
-
-
-
             "avg_cost_nav",
-
-
-
             "invested_amount",
-
-
-
             "current_nav",
-
-
-
             "current_value",
-
-
-
             "nav_date",
-
-
-
             "unrealised_gain",
-
-
-
             "xirr",
-
-
-
             "first_purchase_date",
-
-
-
             "source_file_id",
-
-
-
             "last_synced_at"
-
-
 
         ]
 
-
-
     ]
-
-
-
-
-
-
-
-
-
-
-
-
 
     # =====================================================
 
@@ -2288,6 +2028,7 @@ def load_holdings(gold_df):
 
 
         "arn": 20,
+        "sub_arn":20,
 
 
 

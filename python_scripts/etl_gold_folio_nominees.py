@@ -102,9 +102,13 @@ def transform_folio_nominees(df):
             )
 
             gold_rows.append({
-                "holding_id": holding_id, 
+
+                "holding_id": holding_id,
+
                 "seq": seq,
+
                 "name": nominee_name,
+
                 "relationship": (
                     None
                     if nominee_name is None
@@ -114,15 +118,35 @@ def transform_folio_nominees(df):
                         else None
                     )
                 ),
-                "percentage": percentage,
-                "dob": None,
-                "is_minor": None,
-                "guardian_name": None,
-                "id_type": None,
-                "id_no": None,
-                "address": None
-            })
 
+                "percentage": percentage,
+
+                "dob": None,
+
+                "is_minor": None,
+
+                "guardian_name": None,
+
+                "id_type": None,
+
+                "id_no": None,
+
+                "address": None,
+
+                # ARN mapping from investor master
+                "arn": (
+                    str(row.get("broker_code")).strip()
+                    if pd.notna(row.get("broker_code"))
+                    else None
+                ),
+
+                "sub_arn": (
+                    str(row.get("subbroker")).strip()
+                    if pd.notna(row.get("subbroker"))
+                    else None
+                )
+
+            })
     gold_df = pd.DataFrame(
         gold_rows,
         columns=[
@@ -136,7 +160,9 @@ def transform_folio_nominees(df):
             "guardian_name",
             "id_type",
             "id_no",
-            "address"
+            "address",
+            "arn",
+            "sub_arn"
         ]
     )
 
@@ -151,6 +177,22 @@ def transform_folio_nominees(df):
     print("\nNominee Distribution")
     print("-" * 80)
     print(gold_df.groupby("seq").size().reset_index(name="count"))
+
+    gold_df["arn"] = (
+        gold_df["arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", None)
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", None)
+    )
 
     return gold_df
 

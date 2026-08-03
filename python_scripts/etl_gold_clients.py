@@ -138,7 +138,24 @@ def transform_clients(df):
 
     gold["pan"] = df["pan"]
 
+    gold["arn"] = (
+        df["broker_code"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .replace("", pd.NA)
+    )
 
+
+    gold["sub_arn"] = (
+        df["subbroker"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .replace("", pd.NA)
+    )
 
     # -------------------------------
     # App managed fields
