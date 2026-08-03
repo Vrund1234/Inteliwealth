@@ -33,3 +33,4 @@ logs/
 airflow/__pycache__/
 __pycache__/
 *.pyc
+docker-compose.yml
