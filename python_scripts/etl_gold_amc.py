@@ -268,15 +268,6 @@ def transform_amc(df):
         .str[:20]
     )
 
-    # =====================================================
-    # AUDIT TIMESTAMP
-    # =====================================================
-
-    gold_df["created_at"] = (
-        pd.Timestamp.utcnow()
-        .tz_localize(None)
-    )
-
     print("Rows Ready :", len(gold_df))
 
     return gold_df

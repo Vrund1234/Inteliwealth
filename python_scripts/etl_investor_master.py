@@ -6,16 +6,6 @@ from pyparsing import col
 # from utils.db import engine, master_engine
 from mapping import INVESTOR_MASTER_MAPPING
 
-
-# =====================================================
-# DATABASE CONNECTION
-# =====================================================
-
-# engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-# )
-
-
 # =====================================================
 # CLEAN COLUMN NAMES
 # =====================================================

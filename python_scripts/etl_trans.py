@@ -7,15 +7,6 @@ from zoneinfo import ZoneInfo
 from utils.db import engine
 
 # =====================================================
-# DATABASE CONNECTION
-# =====================================================
-
-# engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-# )
-
-
-# =====================================================
 # CLEAN COLUMN NAMES
 # =====================================================
 
