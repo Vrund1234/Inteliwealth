@@ -1,56 +1,80 @@
 import pandas as pd
+from datetime import datetime
+
 from utils.db import engine
-# from sqlalchemy import create_engine
 
-
-# # =====================================================
-# # DATABASE CONNECTION
-# # =====================================================
-
-# engine = create_engine(
-#     "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-# )
 
 
 # =====================================================
-# EXTRACT
+# EXTRACT GOLD CLIENT DATA
 # =====================================================
 
 def extract_clients():
 
     print("=" * 80)
-    print("STARTING GOLD CLIENTS ETL")
+    print("EXTRACTING DATA FOR GOLD CLIENTS")
     print("=" * 80)
 
 
     query = """
+
     SELECT
+
         i.*,
+
         t.pan AS txn_pan,
+
         s.pan AS sip_pan
+
     FROM silver.investor_master i
 
-    LEFT JOIN (
+
+    LEFT JOIN
+    (
+
         SELECT
+
             folio_no,
+
             MAX(pan) AS pan
+
         FROM silver.transaction_master_new
+
         WHERE pan IS NOT NULL
+
         AND TRIM(pan) <> ''
+
         GROUP BY folio_no
+
     ) t
+
+
     ON i.folio_no = t.folio_no
 
-    LEFT JOIN (
+
+
+    LEFT JOIN
+    (
+
         SELECT
+
             folio_no,
+
             MAX(pan) AS pan
+
         FROM silver.sip_master_new
+
         WHERE pan IS NOT NULL
+
         AND TRIM(pan) <> ''
+
         GROUP BY folio_no
+
     ) s
+
+
     ON i.folio_no = s.folio_no
+
     """
 
 
@@ -59,6 +83,7 @@ def extract_clients():
 
     print("\nExtraction Completed")
     print("-" * 80)
+
     print(f"Rows fetched    : {len(df)}")
     print(f"Columns fetched : {len(df.columns)}")
 
@@ -66,31 +91,37 @@ def extract_clients():
     return df
 
 # =====================================================
-# TRANSFORM
+# TRANSFORM GOLD CLIENT DATA
 # =====================================================
 
 def transform_clients(df):
 
     print("=" * 80)
-    print("Transforming Gold Clients")
+    print("TRANSFORMING GOLD CLIENTS")
     print("=" * 80)
 
-
-    # Normalize column names
 
     df.columns = df.columns.str.lower()
 
 
-    # -------------------------------
-    # Clean PAN
-    # -------------------------------
+
+    # =====================================================
+    # CLEAN PAN
+    # =====================================================
+
 
     def clean_pan(series):
+
         return (
+
             series.fillna("")
+
             .astype(str)
+
             .str.upper()
+
             .str.strip()
+
             .replace(
                 [
                     "",
@@ -101,42 +132,74 @@ def transform_clients(df):
                 ],
                 pd.NA
             )
+
             .str[:10]
+
         )
 
-    # Clean PAN from Investor Master
+
+
     df["pan_no"] = clean_pan(df["pan_no"])
 
-    # Clean PAN from Transaction Master
     df["txn_pan"] = clean_pan(df["txn_pan"])
+
     df["sip_pan"] = clean_pan(df["sip_pan"])
 
-    # Use Investor PAN first; if missing, use Transaction PAN
+
+
+    # =====================================================
+    # PAN PRIORITY
+    # Investor Master > Transaction > SIP
+    # =====================================================
+
+
     df["pan"] = (
+
         df["pan_no"]
+
         .fillna(df["txn_pan"])
+
         .fillna(df["sip_pan"])
+
     )
+
+
 
     df.reset_index(drop=True, inplace=True)
 
 
 
-    # -------------------------------
-    # Create Gold dataframe
-    # -------------------------------
+    # =====================================================
+    # CREATE GOLD DATAFRAME
+    # =====================================================
+
 
     gold = pd.DataFrame()
 
 
 
-    # Required fields
+    # =====================================================
+    # REQUIRED FIELDS
+    # =====================================================
 
-    gold["status"] = None
+
+    gold["status"] = "ACTIVE"
+
 
     gold["full_name"] = df["investor_name"]
 
+
     gold["pan"] = df["pan"]
+
+
+    gold["pan_verified"] = False
+
+
+    gold["pan_verified_at"] = None
+
+    # =====================================================
+    # ARN
+    # =====================================================
 
     gold["arn"] = (
         df["broker_code"]
@@ -147,6 +210,9 @@ def transform_clients(df):
         .replace("", pd.NA)
     )
 
+    # =====================================================
+    # SUB ARN
+    # =====================================================
 
     gold["sub_arn"] = (
         df["subbroker"]
@@ -157,9 +223,24 @@ def transform_clients(df):
         .replace("", pd.NA)
     )
 
-    # -------------------------------
-    # App managed fields
-    # -------------------------------
+
+    print("\nPAN Statistics")
+    print("-" * 80)
+
+    print("Investor PAN :", df["pan_no"].notna().sum())
+
+    print("Transaction PAN :", df["txn_pan"].notna().sum())
+
+    print("SIP PAN :", df["sip_pan"].notna().sum())
+
+    print("Final PAN :", df["pan"].notna().sum())
+
+    print("Missing PAN :", df["pan"].isna().sum())
+
+        # =====================================================
+    # APP MANAGED FIELDS
+    # =====================================================
+
 
     gold["client_label"] = None
 
@@ -180,14 +261,6 @@ def transform_clients(df):
     gold["aadhaar"] = None
 
 
-
-    # pan_verified has database default FALSE
-    # so not adding it here
-
-
-    gold["pan_verified_at"] = None
-
-
     gold["email"] = None
 
     gold["date_of_birth"] = None
@@ -203,7 +276,6 @@ def transform_clients(df):
 
     gold["can"] = None
 
-
     gold["occupation"] = None
 
 
@@ -211,21 +283,16 @@ def transform_clients(df):
 
     gold["family_id"] = None
 
-
     gold["family_relation"] = None
 
 
     gold["gender"] = None
 
-
     gold["investor_type"] = None
-
 
     gold["tax_status"] = None
 
-
     gold["kyc_status"] = None
-
 
     gold["risk_profile"] = None
 
@@ -234,32 +301,32 @@ def transform_clients(df):
 
     gold["branch_id"] = None
 
-
     gold["arn_id"] = None
 
 
     gold["onboarded_at"] = None
 
 
+    # source is app managed
     gold["source"] = None
 
 
-    print("\nPAN Statistics")
-    print("-" * 80)
-    print("Investor PAN :", df["pan_no"].notna().sum())
-    print("Transaction PAN :", df["txn_pan"].notna().sum())
-    print("SIP PAN         :", df["sip_pan"].notna().sum())
-    print("Final PAN :", df["pan"].notna().sum())
-    print("Missing PAN :", df["pan"].isna().sum())
+
+    # =====================================================
+    # TIMESTAMP
+    # =====================================================
+
+
+    gold["created_at"] = datetime.now()
+
+
+
+    # =====================================================
+    # ROW COUNT VALIDATION
+    # =====================================================
+
 
     print("\nTransformation Completed")
-    print("-" * 80)
-
-    print(f"Rows ready for Gold : {len(gold)}")
-    # Check varchar(10) fields
-
-    print("\nChecking length issues")
-    print("\nRow Count Validation")
     print("-" * 80)
 
     print(f"Silver rows : {len(df)}")
@@ -267,62 +334,427 @@ def transform_clients(df):
 
 
     if len(df) != len(gold):
+
         raise Exception(
             "Row count mismatch. Data loss detected between Silver and Gold"
         )
 
-    return gold
 
 
-
-# =====================================================
-# LOAD
-# =====================================================
-
-def load_clients(df):
-
-    print("=" * 80)
-    print("Loading Gold Clients")
-    print("=" * 80)
-
-    df.to_sql(
-        "clients",
-        engine,
-        schema="gold",
-        if_exists="append",
-        index=False,
-        chunksize=1000
-    )
-
-    print("\nLoad Completed")
-    print("-" * 80)
-    print(f"Rows inserted : {len(df)}")
+    # =====================================================
+    # FINAL GOLD CLIENT COLUMN ORDER
+    # =====================================================
 
 
+    gold = gold[
 
-# =====================================================
-# MAIN
-# =====================================================
+        [
 
-if __name__ == "__main__":
+            "status",
 
+            "full_name",
 
-    clients_df = extract_clients()
+            "client_label",
 
+            "phone",
 
-    gold_clients = transform_clients(
-        clients_df
-    )
+            "mobile_isd",
+
+            "mobile",
+
+            "whatsapp_same_as_mobile",
+
+            "whatsapp_isd",
+
+            "whatsapp_no",
+
+            "aadhaar",
+
+            "pan",
+
+            "pan_verified",
+
+            "pan_verified_at",
+
+            "arn",
+            "sub_arn",
+
+            "email",
+
+            "date_of_birth",
+
+            "marital_status",
+
+            "anniversary_date",
+
+            "blood_group",
+
+            "equity_ucc",
+
+            "can",
+
+            "occupation",
+
+            "user_id",
+
+            "family_id",
+
+            "family_relation",
+
+            "gender",
+
+            "investor_type",
+
+            "tax_status",
+
+            "kyc_status",
+
+            "risk_profile",
+
+            "rm_id",
+
+            "branch_id",
+
+            "arn_id",
+
+            "onboarded_at",
+
+            "source",
+
+            "created_at"
+
+        ]
+
+    ]
+
 
 
     print("\nGold Clients Preview")
     print("-" * 80)
 
+    print(gold.head())
+
+
+    return gold
+
+# =====================================================
+# LOAD GOLD CLIENT DATA
+# =====================================================
+
+def load_clients(gold_df):
+
+    print("=" * 80)
+    print("LOADING GOLD CLIENTS")
+    print("=" * 80)
+
+
+
+    # =====================================================
+    # DUPLICATE CHECK
+    # =====================================================
+
+
+    print("\nChecking existing gold clients")
+
+
+    existing_clients = pd.read_sql(
+
+        """
+
+        SELECT
+
+            pan,
+
+            created_at
+
+        FROM gold.clients
+
+        """,
+
+        engine
+
+    )
+
+
+
     print(
-        gold_clients.head()
+        "Existing clients:",
+        len(existing_clients)
     )
 
 
-    load_clients(
-        gold_clients
+
+    if len(existing_clients) > 0:
+
+
+        existing_clients["pan"] = (
+
+            existing_clients["pan"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+        gold_df["pan"] = (
+
+            gold_df["pan"]
+
+            .fillna("")
+
+            .astype(str)
+
+            .str.strip()
+
+            .str.upper()
+
+        )
+
+
+
+        compare_df = gold_df.merge(
+
+            existing_clients,
+
+            on="pan",
+
+            how="left",
+
+            suffixes=(
+
+                "_new",
+
+                "_old"
+
+            )
+
+        )
+
+
+
+        compare_df = compare_df[
+
+            compare_df["created_at_old"].isna()
+
+            |
+
+            (
+
+                compare_df["created_at_new"]
+
+                >
+
+                compare_df["created_at_old"]
+
+            )
+
+        ]
+
+
+
+        gold_df = compare_df[
+
+            gold_df.columns
+
+        ]
+
+
+
+    print(
+
+        "Rows after duplicate check:",
+
+        len(gold_df)
+
     )
+
+
+
+    if len(gold_df) == 0:
+
+
+        print(
+
+            "No new clients to insert"
+
+        )
+
+
+        return True
+
+
+
+    # =====================================================
+    # LOAD TO GOLD
+    # =====================================================
+
+
+    try:
+
+
+        gold_df.to_sql(
+
+            "clients",
+
+            engine,
+
+            schema="gold",
+
+            if_exists="append",
+
+            index=False,
+
+            chunksize=1000
+
+        )
+
+
+
+        print("\nLoad Completed")
+
+        print("-" * 80)
+
+        print(
+
+            f"Rows inserted : {len(gold_df)}"
+
+        )
+
+
+
+        return True
+
+
+
+    except Exception as e:
+
+
+        print()
+
+        print(
+
+            "ERROR WHILE LOADING GOLD CLIENTS"
+
+        )
+
+
+        print(
+
+            type(e).__name__
+
+        )
+
+
+        print(e)
+
+        return False
+
+# =====================================================
+# MAIN EXECUTION
+# =====================================================
+
+
+if __name__ == "__main__":
+
+
+    print("\n")
+
+    print("=" * 80)
+
+    print("STARTING GOLD CLIENTS ETL")
+
+    print("=" * 80)
+
+
+
+    try:
+
+
+        # =================================================
+        # EXTRACT
+        # =================================================
+
+
+        clients_df = extract_clients()
+
+
+
+        # =================================================
+        # TRANSFORM
+        # =================================================
+
+
+        gold_clients = transform_clients(
+
+            clients_df
+
+        )
+
+
+
+        # =================================================
+        # LOAD
+        # =================================================
+
+
+        status = load_clients(
+
+            gold_clients
+
+        )
+
+
+
+        if status:
+
+
+            print("\n")
+
+            print("=" * 80)
+
+            print("GOLD CLIENTS ETL COMPLETED SUCCESSFULLY")
+
+            print("=" * 80)
+
+
+
+        else:
+
+
+            print("\n")
+
+            print("=" * 80)
+
+            print("GOLD CLIENTS ETL FAILED")
+
+            print("=" * 80)
+
+
+
+
+    except Exception as e:
+
+
+        print("\n")
+
+        print("=" * 80)
+
+        print("GOLD CLIENTS ETL ERROR")
+
+        print("=" * 80)
+
+
+        print(
+
+            type(e).__name__
+
+        )
+
+
+        print(e)
