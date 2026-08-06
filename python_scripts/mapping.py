@@ -267,7 +267,7 @@ TRANSACTION_MASTER_MAPPING = {
     # ================= AMOUNT =================
     "units": ["units", "td_units"],
     "amount": ["amount", "td_amt"],
-    "purprice": ["nav", "td_nav"],                      # NAV
+    "purprice": ["purprice", "td_pop"],                     # NAV
     "load": ["load", "load1"],
     "stt": ["stt"],
     "stamp_duty": ["stamp_duty"],
@@ -332,7 +332,7 @@ TRANSACTION_MASTER_MAPPING = {
     "tax": ["tax"],
     "te_15h": ["te_15h"],
     "bank_name": ["bank_name"],
-    "ac_no": ["ac_no"],
+    "ac_no": ["ac_no", "BankAccno"],
     "micr_no": ["micr_no"],
     "inv_iin": ["inv_iin"],
     "invid": ["invid"],
