@@ -106,7 +106,7 @@ def extract_holdings():
 
         i.ckyc_no AS investor_ckyc_no,
 
-        i.broker_code AS investor_broker_code
+       t.brokcode AS investor_broker_code
 
 
 

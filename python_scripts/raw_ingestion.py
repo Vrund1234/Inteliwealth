@@ -144,6 +144,10 @@ def read_file(file):
             keep_default_na=False
         )
 
+    if "Product Code" in df.columns:
+        print(df["Product Code"].head())
+    print("KFIN Columns:")
+    print(df.columns.tolist())
     # =====================================================
     # CLEAN COLUMN NAMES
     # =====================================================
@@ -338,7 +342,9 @@ def extract_and_push(uploaded_files):
 
         process_sip(
             cams=cams_df,
-            kfin=kfin_df
+            kfin=kfin_df,
+            cams_source="CAMS",
+            kfin_source="KFIN"
         )
 
         sip_preview = pd.read_sql(

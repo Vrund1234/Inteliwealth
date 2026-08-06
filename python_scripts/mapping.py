@@ -404,12 +404,12 @@ SIP_MASTER_MAPPING = {
     # KFIN: Scheme (LP, EB, IO, TS...)
     "scheme_code": [
         "SCHEME_CODE",
-        "Scheme_code"
+        "Scheme"
     ],
 
     # Full scheme name
     "scheme_name": [
-        "SCHEME_NAME",
+        "SCHEME",
         "Scheme Name"
     ],
 
@@ -468,12 +468,12 @@ SIP_MASTER_MAPPING = {
     ],
 
     "auto_trno": [
-        "AUTO_TRNO",
-        "RegSlno"
+        "AUTO_TRNO"
     ],
 
     "ft_sip_regno": [
-        "FT_SIP_REGNO"
+        "FT_SIP_REGNO",
+        "RegSlno"
     ],
 
     "auto_amount": [
@@ -639,7 +639,8 @@ SIP_MASTER_MAPPING = {
     # =====================================================
 
     "amc_code": [
-        "AMC_CODE"
+        "AMC_CODE",
+        "Fund Code"
     ],
 
     "user_code": [
