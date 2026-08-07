@@ -258,7 +258,7 @@ TRANSACTION_MASTER_MAPPING = {
     "trxnmode": ["trxnmode", "trnmode"],                # Transaction Mode
     "trxnstat": ["trxnstat", "trnstat"],                # Transaction Status
     "trxntype": ["trxntype", "td_trtype"],              # Transaction Type
-    "trxnsubtyp": ["trxnsubtype", "subtrtype", "trxnsubtyp"],         # SubTranType
+    "trxnsubtyp": ["trxnsubtype", "subtrtype", "trxnsubtyp", "trnsub"],         # SubTranType
     "trxn_nature": ["trxn_nature", "trdesc"],           # Transaction Description
     "trflag": ["trflag"],
 
@@ -282,7 +282,7 @@ TRANSACTION_MASTER_MAPPING = {
     "brokcode": ["brokcode", "td_agent"],               # Agent Code
     "subbrok": ["subbrok", "td_broker"],                # Sub Broker Code
     "usercode": ["usercode", "branchcode"],             # Branch Code
-    "usrtrxno": ["usrtrxno", "ihno"],                   # IHNO
+    "usrtrxno": ["usrtrxno", "ihno", "inwardnum1"],                   # IHNO
 
     # ================= INVESTOR =================
     "pan": ["pan", "pan1"],
@@ -306,7 +306,7 @@ TRANSACTION_MASTER_MAPPING = {
     "euin_valid": ["euin_valid", "evalid"],
     "euin_opted": ["euin_opted", "edeclflag"],
     "sub_brk_arn": ["sub_brk_arn", "subarncode"],
-    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag"],
+    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag", "electrxnflag"],
     "remarks": ["remarks"],
     "altfolio": ["altfolio"],
 
@@ -315,7 +315,7 @@ TRANSACTION_MASTER_MAPPING = {
     "ft_accno": ["ft_accno", "ftaccno"],
     "rejtrnoor2": ["rejtrnoor2"],
     "to_product_code": ["targ_src_s", "prcode1"],
-    "reversal_c": ["reversal_c" "reversal_code"],
+    "reversal_c": ["reversal_c", "reversal_code"],
 
     # ================= LEGACY COLUMNS (KEEP) =================
     "td_fund": ["td_fund"],
@@ -379,6 +379,7 @@ TRANSACTION_MASTER_MAPPING = {
     "td_ptrno": ["td_ptrno"],
     "chqdate": ["chqdate"],
     "exchorgtrtype": ["exchorgtrtype"],
+    "sfunddt": ["sfunddt"],   
 
     # ================= SYSTEM =================
     "flag": [],

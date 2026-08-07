@@ -8,6 +8,7 @@ PASSWORD = "postgres123"
 
 PROJECT_DATABASE = "tr_project"
 MASTER_DATABASE = "intelliwealth_new_dump"
+RESTORE_DATABASE = "Intelliwealth_dump"
 
 # Project Database
 engine = create_engine(
@@ -18,6 +19,11 @@ engine = create_engine(
 # Master Database
 master_engine = create_engine(
     f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
+)
+
+# Restore Database
+restore_engine = create_engine(
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{RESTORE_DATABASE}"
 )
 
 
