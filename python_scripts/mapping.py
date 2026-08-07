@@ -258,7 +258,7 @@ TRANSACTION_MASTER_MAPPING = {
     "trxnmode": ["trxnmode", "trnmode"],                # Transaction Mode
     "trxnstat": ["trxnstat", "trnstat"],                # Transaction Status
     "trxntype": ["trxntype", "td_trtype"],              # Transaction Type
-    "trxnsubtyp": ["trxnsubtype", "subtrtype"],         # SubTranType
+    "trxnsubtyp": ["trxnsubtype", "subtrtype", "trxnsubtyp"],         # SubTranType
     "trxn_nature": ["trxn_nature", "trdesc"],           # Transaction Description
     "trflag": ["trflag"],
 
@@ -275,8 +275,8 @@ TRANSACTION_MASTER_MAPPING = {
     "load": ["load", "load1"],
     "stt": ["stt"],
     "stamp_duty": ["stamp_duty"],
-    "trxn_charges": ["trxn_charge", "trcharges"],
-    "total_tax": ["total_tds", "tdsamount"],
+    "trxn_charges": ["trxn_charge", "trcharges", "trxn_charges"],
+    "total_tax": ["total_tds", "tdsamount", "total_tax"],
 
     # ================= DISTRIBUTOR =================
     "brokcode": ["brokcode", "td_agent"],               # Agent Code
@@ -297,7 +297,7 @@ TRANSACTION_MASTER_MAPPING = {
     "siptrxnno": ["siptrxnno", "sipregslno"],
 
     # ================= SWITCH =================
-    "targ_src_scheme": ["targ_src_s", "prcode1"],
+    "targ_src_scheme": ["targ_src_s", "prcode1", "targ_src_scheme"],
 
     # ================= OTHER =================
     "scheme_type": ["scheme_type", "assettype"],
@@ -306,7 +306,7 @@ TRANSACTION_MASTER_MAPPING = {
     "euin_valid": ["euin_valid", "evalid"],
     "euin_opted": ["euin_opted", "edeclflag"],
     "sub_brk_arn": ["sub_brk_arn", "subarncode"],
-    "exchange_flag": ["exchange_f", "td_trxnmod"],
+    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag"],
     "remarks": ["remarks"],
     "altfolio": ["altfolio"],
 
@@ -315,7 +315,7 @@ TRANSACTION_MASTER_MAPPING = {
     "ft_accno": ["ft_accno", "ftaccno"],
     "rejtrnoor2": ["rejtrnoor2"],
     "to_product_code": ["targ_src_s", "prcode1"],
-    "reversal_c": ["reversal_c"],
+    "reversal_c": ["reversal_c" "reversal_code"],
 
     # ================= LEGACY COLUMNS (KEEP) =================
     "td_fund": ["td_fund"],
