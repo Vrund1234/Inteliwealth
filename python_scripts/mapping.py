@@ -34,19 +34,19 @@ INVESTOR_MASTER_MAPPING = {
     "pan_no": ["pan_no", "pan"],
     "joint1_pan": ["joint1_pan"],
     "joint2_pan": ["joint2_pan"],
-    "guardian_pan": ["guardian_pan", "guard_pan","pangno"],
+    "guardian_pan": ["guardian_pan", "guard_pan","pangno", "guardpanno"],
 
     # ================= BANK =================
     "bank_name": ["bank_name", "bname"],
-    "bank_account_no": ["bank_account_no", "bnkacno"],
-    "account_type": ["account_type", "bnkactype"],
+    "bank_account_no": ["bank_account_no", "bnkacno", "ac_no"],
+    "account_type": ["account_type", "bnkactype", "ac_type"],
     "branch": ["branch"],
     "ifsc_code": ["ifsc_code"],
 
-    "bank_address1": ["bank_address1", "badd1"],
-    "bank_address2": ["bank_address2", "badd2"],
-    "bank_address3": ["bank_address3", "badd3"],
-    "bank_city": ["bank_city", "bcity"],
+    "bank_address1": ["bank_address1", "badd1", "b_address1"],
+    "bank_address2": ["bank_address2", "badd2", "b_address2"],
+    "bank_address3": ["bank_address3", "badd3", "b_address3"],
+    "bank_city": ["bank_city", "bcity", "b_city"],
     "bank_state": ["bank_state"],
     "bank_country": ["bank_country"],
 
@@ -67,7 +67,7 @@ INVESTOR_MASTER_MAPPING = {
     "nominee2_name": ["nominee2_name", "nom2_name"],
     "nominee2_relation": ["nominee2_relation", "nom2_relation"],
     "nominee2_address1": ["nominee2_address1", "nom2_addr1"],
-    "nominee2_address2": ["nominee2_address2", "nom2_addr2"],
+    "nominee2_address2": ["nominee2_address2", "nom2_addr2"],   
     "nominee2_address3": ["nominee2_address3", "nom2_addr3"],
     "nominee2_city": ["nominee2_city", "nom2_city"],
     "nominee2_state": ["nominee2_state", "nom2_state"],
@@ -183,7 +183,7 @@ INVESTOR_MASTER_MAPPING = {
     "commonaccno": ["commonaccno"],
 
     # ================= AADHAAR =================
-    "holder_1_aadhaar_info": ["holder_1_aadhaar_info"],
+    "holder_1_aadhaar_info": ["holder_1_aadhaar_info", "aadhaar"],
     "holder_2_aadhaar_info": ["holder_2_aadhaar_info"],
     "holder_3_aadhaar_info": ["holder_3_aadhaar_info"],
     "guardian_aadhaar_info": ["guardian_aadhaar_info"],
@@ -196,16 +196,20 @@ INVESTOR_MASTER_MAPPING = {
         "joint_holder_2nd_resi_phone_no"
     ],
     "joint_holder_1_contact_number": [
-        "joint_holder_1_contact_number"
+        "joint_holder_1_contact_number",
+        "jh1_mobile_no"
     ],
     "joint_holder_2_contact_number": [
-        "joint_holder_2_contact_number"
+        "joint_holder_2_contact_number",
+        "jh2_mobile_no"
     ],
     "joint_holder_1_email_id": [
-        "joint_holder_1_email_id"
+        "joint_holder_1_email_id",
+        "jh1_email"
     ],
     "joint_holder_2_email_id": [
-        "joint_holder_2_email_id"
+        "joint_holder_2_email_id",
+        "jh2_email"
     ],
 
     # ================= ADDITIONAL DETAILS =================

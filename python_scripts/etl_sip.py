@@ -265,6 +265,10 @@ def apply_sip_mapping(raw_df, mapping, source):
     )
     print(raw_df.columns.tolist())
 
+    if "PERIOD_DAY" in raw_df.columns:
+        print("\n========== PERIOD_DAY BEFORE MAPPING ==========")
+        print(raw_df["PERIOD_DAY"].head(50).tolist())
+        print("==============================================\n")
     print("=" * 80)
     print("Applying SIP Mapping")
     print(f"Rows    : {len(raw_df)}")
@@ -334,6 +338,9 @@ def apply_sip_mapping(raw_df, mapping, source):
     mapped_df = normalize(mapped_df)
 
     mapped_df = clean_identifier_columns(mapped_df)
+    print("\n========== PERIOD_DAY AFTER MAPPING ==========")
+    print(mapped_df["period_day"].head(50).tolist())
+    print("=============================================\n")
 
     if "periodicity" in mapped_df.columns:
 

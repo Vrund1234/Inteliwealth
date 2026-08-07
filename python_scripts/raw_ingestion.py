@@ -226,6 +226,10 @@ def read_file(file):
     print("COLUMN NAMES :")
     print(df.columns.tolist())
     print("=" * 80 + "\n")
+    if "PERIOD_DAY" in df.columns:
+        print("\n========== PERIOD_DAY AFTER FILE READ ==========")
+        print(df["PERIOD_DAY"].head(50).tolist())
+        print("===============================================\n")
 
     return df
 
