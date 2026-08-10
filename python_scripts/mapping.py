@@ -7,138 +7,264 @@ INVESTOR_MASTER_MAPPING = {
     "source": ["source"],
 
     # ================= CORE IDENTIFIERS =================
-    "folio_no": ["foliochk", "folio", "FOLIO", "FOLIO_NO"],
-    "investor_name": ["inv_name", "INV_NAME", "investor_name"],
-    "joint_name_1": ["jnt_name1", "jtname1", "JOINT_NAME_1"],
-    "joint_name_2": ["jnt_name2", "jtname2", "JOINT_NAME_2"],
+    "folio_no": ["foliochk", "folio", "folio_no"],
+    "investor_name": ["inv_name", "investor_name"],
+    "joint_name_1": ["jnt_name1", "jtname1", "joint_name_1"],
+    "joint_name_2": ["jnt_name2", "jtname2", "joint_name_2"],
 
     # ================= ADDRESS =================
-    "address1": ["address1", "add1"],
-    "address2": ["address2", "add2"],
-    "address3": ["address3", "add3"],
-    "city": ["city"],
-    "state": ["state"],
-    "country": ["country"],
-    "pincode": ["pincode", "pin"],
+    "address1": ["address1", "address_1", "add1", "Address #1"],
+    "address2": ["address2", "address_2", "add2", "Address #2"],
+    "address3": ["address3", "address_3", "add3", "Address #3"],
+    "city": ["city", "City"],
+    "state": ["state", "State"],
+    "country": ["country", "Country"],
+    "pincode": ["pincode", "pin", "Pincode"],
 
     # ================= PERSONAL =================
-    "dob": ["dob", "inv_dob"],
-    "mobile_no": ["mobile_no", "mobile"],
+    "dob": ["dob", "inv_dob", "date_of_birth"],
+    "mobile_no": ["mobile_no", "mobile", "mobile_number"],
     "email": ["email"],
-    "phone_res": ["phone_res", "rphone"],
-    "phone_off": ["phone_off", "ophone"],
+    "phone_res": ["phone_res", "rphone", "phone_residence"],
+    "phone_off": ["phone_off", "ophone", "phone_office"],
  
     # ================= TAX / PAN =================
     "tax_status": ["tax_status", "status"],
     "holding_nature": ["holding_nature"],
-    "pan_no": ["pan_no", "pan"],
+    "pan_no": ["pan_no", "pan", "pan_number"],
     "joint1_pan": ["joint1_pan"],
     "joint2_pan": ["joint2_pan"],
-    "guardian_pan": ["guardian_pan", "guard_pan","pangno", "guardpanno"],
+    "guardian_pan": ["guardian_pan", "guard_pan", "pangno", "guardpanno"],
 
     # ================= BANK =================
     "bank_name": ["bank_name", "bname"],
-    "bank_account_no": ["bank_account_no", "bnkacno", "ac_no"],
+    "bank_account_no": ["bank_account_no", "bnkacno", "ac_no", "bankaccno"],
     "account_type": ["account_type", "bnkactype", "ac_type"],
     "branch": ["branch"],
     "ifsc_code": ["ifsc_code"],
 
-    "bank_address1": ["bank_address1", "badd1", "b_address1"],
-    "bank_address2": ["bank_address2", "badd2", "b_address2"],
-    "bank_address3": ["bank_address3", "badd3", "b_address3"],
+    "bank_address1": ["bank_address1", "bank_address_1", "badd1", "b_address1"],
+    "bank_address2": ["bank_address2", "bank_address_2", "badd2", "b_address2"],
+    "bank_address3": ["bank_address3", "bank_address_3", "badd3", "b_address3"],
+
     "bank_city": ["bank_city", "bcity", "b_city"],
     "bank_state": ["bank_state"],
     "bank_country": ["bank_country"],
 
     # ================= NOMINEE 1 =================
-    "nominee1_name": ["nominee1_name", "nom_name"],
-    "nominee1_relation": ["nominee1_relation", "relation"],
-    "nominee1_address1": ["nominee1_address1", "nom_addr1"],
-    "nominee1_address2": ["nominee1_address2", "nom_addr2"],
-    "nominee1_address3": ["nominee1_address3", "nom_addr3"],
-    "nominee1_city": ["nominee1_city", "nom_city"],
-    "nominee1_state": ["nominee1_state", "nom_state"],
-    "nominee1_pincode": ["nominee1_pincode", "nom_pincode"],
-    "nominee1_phone": ["nominee1_phone", "nom_ph_off", "nom_ph_res"],
-    "nominee1_email": ["nominee1_email", "nom_email"],
-    "nominee1_percentage": ["nominee1_percentage", "nom_percentage"],
+    "nominee1_name": ["nominee1_name", "nom_name", "nominee"],
+    "nominee1_relation": ["nominee1_relation", "relation", "nominee_relation"],
+    "nominee1_address1": ["nominee1_address1", "nom_addr1", "nominee_address1"],
+    "nominee1_address2": ["nominee1_address2", "nom_addr2", "nominee_address2"],
+    "nominee1_address3": ["nominee1_address3", "nom_addr3", "nominee_address3"],
+    "nominee1_city": ["nominee1_city", "nom_city", "nominee_city"],
+    "nominee1_state": ["nominee1_state", "nom_state", "nominee_state"],
+    "nominee1_pincode": ["nominee1_pincode", "nom_pincode", "nominee_pin_code"],
+    "nominee1_phone": ["nominee1_phone", "nom_ph_off", "nom_ph_res", "nominee_phone_residence"],
+    "nominee1_email": ["nominee1_email", "nom_email", "nominee_email"],
+    "nominee1_percentage": ["nominee1_percentage", "nom_percentage", "nominee_ratio"],
 
     # ================= NOMINEE 2 =================
-    "nominee2_name": ["nominee2_name", "nom2_name"],
+    "nominee2_name": ["nominee2_name", "nom2_name", "nominee2"],
+
     "nominee2_relation": ["nominee2_relation", "nom2_relation"],
     "nominee2_address1": ["nominee2_address1", "nom2_addr1"],
-    "nominee2_address2": ["nominee2_address2", "nom2_addr2"],   
+    "nominee2_address2": ["nominee2_address2", "nom2_addr2"],
     "nominee2_address3": ["nominee2_address3", "nom2_addr3"],
+
     "nominee2_city": ["nominee2_city", "nom2_city"],
+
     "nominee2_state": ["nominee2_state", "nom2_state"],
-    "nominee2_pincode": ["nominee2_pincode", "nom2_pincode"],
-    "nominee2_phone": ["nominee2_phone", "nom2_ph_off", "nom2_ph_res"],
-    "nominee2_email": ["nominee2_email", "nom2_email"],
-    "nominee2_percentage": ["nominee2_percentage", "nom2_percentage"],
+
+    "nominee2_pincode": [
+        "nominee2_pincode",
+        "nom2_pincode",
+        "nominee2_pin_code"
+    ],
+
+    "nominee2_phone": [
+        "nominee2_phone",
+        "nom2_ph_off",
+        "nom2_ph_res",
+        "nominee2_phone_residence"
+    ],
+
+    "nominee2_email": [
+        "nominee2_email",
+        "nom2_email"
+    ],
+
+    "nominee2_percentage": [
+        "nominee2_percentage",
+        "nom2_percentage",
+        "nominee2_ratio"
+    ],
 
     # ================= NOMINEE 3 =================
-    "nominee3_name": ["nominee3_name", "nom3_name"],
-    "nominee3_relation": ["nominee3_relation", "nom3_relation"],
-    "nominee3_address1": ["nominee3_address1", "nom3_addr1"],
-    "nominee3_address2": ["nominee3_address2", "nom3_addr2"],
-    "nominee3_address3": ["nominee3_address3", "nom3_addr3"],
-    "nominee3_city": ["nominee3_city", "nom3_city"],
-    "nominee3_state": ["nominee3_state", "nom3_state"],
-    "nominee3_pincode": ["nominee3_pincode", "nom3_pincode"],
-    "nominee3_phone": ["nominee3_phone", "nom3_ph_off", "nom3_ph_res"],
-    "nominee3_email": ["nominee3_email", "nom3_email"],
-    "nominee3_percentage": ["nominee3_percentage", "nom3_percentage"],
+    "nominee3_name": ["nominee3_name", "nom3_name", "nominee3"],
+
+    "nominee3_relation": [
+        "nominee3_relation",
+        "nom3_relation"
+    ],
+
+    "nominee3_address1": [
+        "nominee3_address1",
+        "nom3_addr1"
+    ],
+
+    "nominee3_address2": [
+        "nominee3_address2",
+        "nom3_addr2"
+    ],
+
+    "nominee3_address3": [
+        "nominee3_address3",
+        "nom3_addr3"
+    ],
+
+    "nominee3_city": [
+        "nominee3_city",
+        "nom3_city"
+    ],
+
+    "nominee3_state": [
+        "nominee3_state",
+        "nom3_state"
+    ],
+
+    "nominee3_pincode": [
+        "nominee3_pincode",
+        "nom3_pincode"
+    ],
+
+    "nominee3_phone": [
+        "nominee3_phone",
+        "nom3_ph_off",
+        "nom3_ph_res",
+        "nominee3_phone_residence"
+    ],
+
+    "nominee3_email": [
+        "nominee3_email",
+        "nom3_email"
+    ],
+
+    "nominee3_percentage": [
+        "nominee3_percentage",
+        "nom3_percentage",
+        "nominee3_ratio"
+    ],
+
         # ================= KYC / BROKER =================
-    "broker_code": ["broker_code", "brokcode", "td_agent", "td_broker"],
-    "dp_id": ["dp_id"],
-    "demat_flag": ["demat_flag", "demat", "Demat Folio flag"],
-    "ckyc_no": ["ckyc_no", "fh_ckyc_no", "CKYC NO"],
+    "broker_code": [
+        "broker_code",
+        "brokcode",
+        "td_agent",
+        "td_broker"
+    ],
+
+    "dp_id": ["dp_id", "dpid"],
+
+    "demat_flag": [
+        "demat_flag",
+        "demat",
+        "demat_folio_flag"
+    ],
+
+    "ckyc_no": [
+        "ckyc_no",
+        "fh_ckyc_no"
+    ],
+
     "jh1_ckyc": ["jh1_ckyc"],
     "jh2_ckyc": ["jh2_ckyc"],
-    "guardian_ckyc_no": ["guardian_ckyc_no", "g_ckyc_no"],
-    "guardian_name": ["guardian_name", "guardian"],
+
+    "guardian_ckyc_no": [
+        "guardian_ckyc_no",
+        "g_ckyc_no"
+    ],
+
+    "guardian_name": [
+        "guardian_name",
+        "guardian",
+        "guardianname"
+    ],
 
     # ================= SYSTEM =================
-    "report_date": ["report_date", "rep_date", "Report Date"],
+    "report_date": ["report_date", "rep_date"],
     "report_time": ["report_time", "time1"],
     "folio_date": ["folio_date"],
     "occupation": ["occupation", "occpn", "occ_code"],
-    "occupation_description": ["occupation_description"],
+    "occupation_description": [
+        "occupation_description"
+    ],
 
     # ================= PRODUCT / SCHEME =================
-    "product_code": ["product_code", "product", "prod"],
-    "scheme_name": ["scheme_name", "scheme", "sch_name"],
-    "closing_balance": ["closing_balance", "clos_bal"],
-    "rupee_balance": ["rupee_balance", "rupee_bal"],
+    "report_date": ["report_date", "rep_date"],
+    "report_time": ["report_time", "time1"],
+    "folio_date": ["folio_date"],
+    "occupation": ["occupation", "occpn", "occ_code"],
+    "occupation_description": [
+        "occupation_description"
+    ],
 
     # ================= ADDITIONAL SOURCE COLUMNS =================
-    # "foliochk": ["foliochk"],
     "product": ["product", "prod"],
-    # "sch_name": ["sch_name", "scheme"],
+
     "rep_date": ["rep_date"],
-    # "clos_bal": ["clos_bal"],
+
     "rupee_bal": ["rupee_bal"],
+
     "uin_no": ["uin_no"],
+
     "inv_iin": ["inv_iin"],
+
     "subbroker": ["subbroker", "subbrok"],
+
     "brokcode": ["brokcode", "broker_code"],
+
     "reinv_flag": ["reinv_flag", "reinvest_f"],
+
     "b_pincode": ["b_pincode", "bpin"],
+
     "nom_ph_off": ["nom_ph_off"],
     "nom2_ph_off": ["nom2_ph_off"],
     "nom3_ph_off": ["nom3_ph_off"],
+
     "tpa_linked": ["tpa_linked"],
+
     "g_ckyc_no": ["g_ckyc_no"],
+
     "jh1_dob": ["jh1_dob"],
     "jh2_dob": ["jh2_dob"],
     "guardian_dob": ["guardian_dob"],
-    "amc_code": ["amc_code"],
-    "gst_state_code": ["gst_state_code", "gst_state_"],
-    "folio_old": ["folio_old", "old_folio"],
-    "scheme_folio_number": ["scheme_folio_number", "scheme_fol"],
-    "fund": ["fund", "td_fund"],
-    # "folio": ["folio", "folio_no"],
-    "fund_description": ["fund_description"],
+
+    "amc_code": ["amc_code", "Fund"],
+
+    "gst_state_code": [
+        "gst_state_code",
+        "gst_state_"
+    ],
+
+    "folio_old": [
+        "folio_old",
+        "old_folio"
+    ],
+
+    "scheme_folio_number": [
+        "scheme_folio_number",
+        "scheme_fol"
+    ],
+
+    "fund": [
+        "fund",
+        "td_fund"
+    ],
+
+    "fund_description": [
+        "fund_description"
+    ],
         # ================= HOLDER DETAILS =================
     "tpin": ["tpin"],
     "f_name": ["f_name"],
@@ -161,8 +287,8 @@ INVESTOR_MASTER_MAPPING = {
     "client_id": ["client_id"],
     "dividend_option": ["dividend_option", "divopt"],
     "mode_of_holding_description": [
-        "mode_of_holding_description",
-        "holding_nature"
+        "holding_nature",
+        "mode_of_holding_description"
     ],
     "mapin_id": ["mapin_id"],
     "pan2": ["pan2"],

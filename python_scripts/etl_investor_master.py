@@ -590,15 +590,15 @@ def process_investor_master(cams=None, kfin=None):
     # REMOVE EXACT DUPLICATE ROWS
     # =====================================================
 
-    before = len(df)
+    #before = len(df)
 
-    df = (
-        df
-        .drop_duplicates(keep="first")
-        .reset_index(drop=True)
-    )
+    #df = (
+    #    df
+    #    .drop_duplicates(keep="first")
+    #    .reset_index(drop=True)
+    #)
 
-    print(f"Removed {before - len(df)} exact duplicate rows")
+    #print(f"Removed {before - len(df)} exact duplicate rows")
 
     # =====================================================
     # FINAL COLUMN ORDER CHECK
