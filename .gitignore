@@ -34,3 +34,7 @@ airflow/__pycache__/
 __pycache__/
 *.pyc
 docker-compose.yml
+
+silver_to_gold.py
+
+db.py
