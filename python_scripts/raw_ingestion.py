@@ -48,87 +48,184 @@ def read_file(file):
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-        # Detect delimiter
-        first_line = text.split("\n")[0]
+        # =================================================
+        # PARSE CSV SAFELY
+        # =================================================
 
-        if "\t" in first_line:
-            delimiter = "\t"
+        # Detect delimiter from the first non-empty line
+        lines = [line for line in text.split("\n") if line.strip()]
 
-        elif "," in first_line:
+        if not lines:
+            return pd.DataFrame()
+
+        first_line = lines[0]
+
+        # CAMS CSV files are comma separated
+        if "," in first_line:
             delimiter = ","
-
+        elif "\t" in first_line:
+            delimiter = "\t"
         elif ";" in first_line:
             delimiter = ";"
-
         else:
-            delimiter = "\t"
+            delimiter = ","
 
+        print(f"Detected delimiter: {repr(delimiter)}")
 
+        # IMPORTANT:
+        # Let csv.reader handle quoted values.
+        # Do NOT manually remove quotes after parsing.
         reader = csv.reader(
             io.StringIO(text),
             delimiter=delimiter,
-            quotechar="'",
-            skipinitialspace=True
+            quotechar='"',
+            doublequote=True,
+            skipinitialspace=False
         )
 
+        rows = list(reader)
 
-        rows = []
+        if not rows:
+            return pd.DataFrame()
 
-        for row in reader:
-            rows.append(row)
-
+        # =================================================
+        # HEADER
+        # =================================================
 
         header = [
-            h.strip()
-            .strip("'")
-            .strip('"')
+            h.strip().strip("'").strip('"')
             for h in rows[0]
         ]
 
+        expected_columns = len(header)
+
+        print(f"Expected columns: {expected_columns}")
+
+        # =================================================
+        # DATA ROWS
+        # =================================================
 
         clean_rows = []
+        bad_rows = 0
 
+        for row_number, row in enumerate(rows[1:], start=2):
 
-        for row in rows[1:]:
+            # Ignore completely empty rows
+            if not any(str(x).strip() for x in row):
+                continue
 
-            row = [
-                x.strip()
-                .strip("'")
-                .strip('"')
-                for x in row
-            ]
+            # -------------------------------------------------
+            # Correct number of columns
+            # -------------------------------------------------
 
-            if len(row) == len(header):
+            if len(row) == expected_columns:
 
-                clean_rows.append(row)
+                clean_rows.append([
+                    str(x).strip()
+                    for x in row
+                ])
 
+            # -------------------------------------------------
+            # Missing columns
+            # -------------------------------------------------
 
-            elif len(row) < len(header):
+            elif len(row) < expected_columns:
 
-                row.extend(
-                    [""] * (len(header) - len(row))
+                print(
+                    f"WARNING: Row {row_number} has fewer columns | "
+                    f"Expected={expected_columns}, Found={len(row)}"
                 )
 
-                clean_rows.append(row)
+                row = row + [""] * (expected_columns - len(row))
 
+                clean_rows.append([
+                    str(x).strip()
+                    for x in row
+                ])
+
+                bad_rows += 1
+
+            # -------------------------------------------------
+            # Extra columns
+            # -------------------------------------------------
 
             else:
 
                 print(
-                    "Skipping bad row. Expected:",
-                    len(header),
-                    "Found:",
-                    len(row)
+                    f"WARNING: Row {row_number} has EXTRA columns | "
+                    f"Expected={expected_columns}, Found={len(row)}"
                 )
 
-                clean_rows.append(
-                    row[:len(header)]
-                )
+                print("Raw parsed row:")
+                print(row)
 
+                # DO NOT blindly truncate here.
+                bad_rows += 1
+
+                # Keep the row only if we can safely identify
+                # that the extra fields are empty.
+                extra_values = row[expected_columns:]
+
+                if all(str(x).strip() == "" for x in extra_values):
+
+                    clean_rows.append([
+                        str(x).strip()
+                        for x in row[:expected_columns]
+                    ])
+
+                else:
+
+                    print(
+                        f"SKIPPING malformed row {row_number} "
+                        f"because it contains non-empty extra values."
+                    )
+
+        # =================================================
+        # CREATE DATAFRAME
+        # =================================================
 
         df = pd.DataFrame(
             clean_rows,
             columns=header
+        )
+
+        if file.name.lower().endswith("r9.csv"):
+
+            print("\n" + "=" * 100)
+            print("CAMS R9 GST / FOLIO DEBUG")
+            print("=" * 100)
+
+            cols_to_check = [
+                c for c in [
+                    "GST_STATE_CODE",
+                    "FOLIO_OLD"
+                ]
+                if c in df.columns
+            ]
+
+            print(df[cols_to_check].head(50).to_string(index=False))
+
+            print("\nRows where GST_STATE_CODE is B:")
+            print(
+                df[df["GST_STATE_CODE"].astype(str).str.strip() == "B"]
+                [cols_to_check]
+                .head(50)
+                .to_string(index=False)
+            )
+
+            print("\nRows where FOLIO_OLD is 24:")
+            print(
+                df[df["FOLIO_OLD"].astype(str).str.strip() == "24"]
+                [cols_to_check]
+                .head(50)
+                .to_string(index=False)
+            )
+
+            print("=" * 100)
+
+        print(
+            f"CSV rows parsed: {len(df)} | "
+            f"Malformed rows: {bad_rows}"
         )
 
     # =================================================
@@ -205,8 +302,8 @@ def read_file(file):
         df[col] = (
             df[col]
             .astype(str)
-            .str.replace("'", "", regex=False)
-            .str.replace('"', "", regex=False)
+            #.str.replace("'", "", regex=False)
+            #.str.replace('"', "", regex=False)
             .str.strip()
             .replace({
                 "nan": "",
