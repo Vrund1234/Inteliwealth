@@ -174,43 +174,59 @@ INVESTOR_MASTER_MAPPING = {
 
     "ckyc_no": [
         "ckyc_no",
-        "fh_ckyc_no"
+        "fh_ckyc_no",
+        "fh_ckyc",
+        "fh_ckyc_n"
     ],
 
-    "jh1_ckyc": ["jh1_ckyc"],
-    "jh2_ckyc": ["jh2_ckyc"],
+    "jh1_ckyc": ["jh1_ckyc", "jh1_ckyc_no", "jh1_ckyc_n"],
+    "jh2_ckyc": ["jh2_ckyc", "jh2_ckyc_no", "jh2_ckyc_n"],
 
     "guardian_ckyc_no": [
         "guardian_ckyc_no",
-        "g_ckyc_no"
+        "g_ckyc_no",
+        "g_ckyc_n"
     ],
 
     "guardian_name": [
         "guardian_name",
         "guardian",
-        "guardianname"
+        "guardianname",
+        "guard_name",
+        "GUARD_NAME"
     ],
 
     # ================= SYSTEM =================
     "report_date": ["report_date", "rep_date"],
     "report_time": ["report_time", "time1"],
-    "folio_date": ["folio_date"],
-    "occupation": ["occupation", "occpn", "occ_code"],
+    "folio_date": ["folio_date", "folio_dat", "folio_dt", "foliodate"],
+    "occupation": [
+        "occ_code"
+    ],
+
     "occupation_description": [
-        "occupation_description"
+        "occupation_description",
+        "Occupation Description"
     ],
 
     # ================= PRODUCT / SCHEME =================
-    "report_date": ["report_date", "rep_date"],
-    "report_time": ["report_time", "time1"],
-    "folio_date": ["folio_date"],
     "occupation": ["occupation", "occpn", "occ_code"],
-    "occupation_description": [
-        "occupation_description"
-    ],
 
     # ================= ADDITIONAL SOURCE COLUMNS =================
-    "product": ["product", "prod"],
+    #"product": ["product", "prod"],
+    "product_code": [
+        "product",
+        "product_code"
+    ],
+    "scheme_name": [
+    "scheme_name",
+    "SCH_NAME",
+    "SCHEME",
+    "Scheme Name",
+    "fund_description",
+    "Fund Description",
+    "funddesc"
+    ],
 
     "rep_date": ["rep_date"],
 
@@ -232,9 +248,13 @@ INVESTOR_MASTER_MAPPING = {
     "nom2_ph_off": ["nom2_ph_off"],
     "nom3_ph_off": ["nom3_ph_off"],
 
-    "tpa_linked": ["tpa_linked"],
+    "tpa_linked": ["tpa_linked", "tpa_link"],
 
-    "g_ckyc_no": ["g_ckyc_no"],
+    "g_ckyc_no": [
+        "g_ckyc_no",   # CAMS: G_CKYC_NO / G_CKYC_N
+        "g_ckyc_n",
+        "guardian_ckyc_no"  # KFIN: Guardian CKYC NO
+    ],
 
     "jh1_dob": ["jh1_dob"],
     "jh2_dob": ["jh2_dob"],
@@ -263,7 +283,8 @@ INVESTOR_MASTER_MAPPING = {
     ],
 
     "fund_description": [
-        "fund_description"
+        "fund_description",
+        "scheme_name"
     ],
         # ================= HOLDER DETAILS =================
     "tpin": ["tpin"],

@@ -111,7 +111,23 @@ IDENTIFIER_COLUMNS = [
 
     "nom_ph_off",
     "nom2_ph_off",
-    "nom3_ph_off"
+    "nom3_ph_off",
+
+    # KYC & Identifiers
+    "dp_id",
+    "dpid",
+    "ckyc_no",
+    "fh_ckyc_no",
+    "fh_ckyc",
+    "fh_ckyc_n",
+    "jh1_ckyc",
+    "jh2_ckyc",
+    "guardian_ckyc_no",
+    "g_ckyc_no",
+    "g_ckyc_n",
+    "aadhaar",
+    "broker_code",
+    "brokcode"
 ]
 
 
@@ -263,6 +279,43 @@ def apply_investor_mapping(raw_df, mapping, source):
             )
 
         mapped_df[target_col] = value
+
+    # =====================================================
+    # SOURCE-SPECIFIC OCCUPATION MAPPING
+    # =====================================================
+
+    if source.upper() == "CAMS":
+
+        # CAMS OCCUPATION contains the actual
+        # occupation description.
+        #
+        # Example:
+        # OCCUPATION = BUSINESS
+        # OCCUPATION = HOUSEWIFE
+        # OCCUPATION = Private Sector Service
+
+        if "occupation" in raw_df.columns:
+
+            mapped_df["occupation_description"] = raw_df["occupation"]
+
+        # CAMS does not provide an occupation code
+        mapped_df["occupation"] = None
+
+
+    elif source.upper() == "KFIN":
+
+        # KFIN has separate occupation code
+        # and occupation description.
+
+        if "occ_code" in raw_df.columns:
+
+            mapped_df["occupation"] = raw_df["occ_code"]
+
+        if "occupation_description" in raw_df.columns:
+
+            mapped_df["occupation_description"] = (
+                raw_df["occupation_description"]
+            )
 
     return mapped_df
 
