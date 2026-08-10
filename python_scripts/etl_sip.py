@@ -2,6 +2,7 @@ import pandas as pd
 # from sqlalchemy import create_engine
 #import mapping
 from utils.db import engine
+from utils.utils import clean_columns, format_dates, normalize_key
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
 
@@ -65,29 +66,6 @@ PERIODICITY_MAPPING = {
 # CLEAN COLUMN NAMES
 # =====================================================
 
-def clean_columns(df):
-
-    if df is None or df.empty:
-        return df
-
-    df = df.copy()
-
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.strip("'")
-        .str.strip('"')
-        .str.lower()
-        .str.replace(" ", "_", regex=False)
-        .str.replace("-", "_", regex=False)
-        .str.replace("/", "_", regex=False)
-        .str.replace("#", "", regex=False)
-    )
-
-    # Keep first duplicate column if any
-    df = df.loc[:, ~df.columns.duplicated(keep="first")]
-
-    return df
 
 
 # =====================================================
@@ -181,23 +159,6 @@ def clean_identifier_columns(df):
 # CLEAN SINGLE VALUE
 # =====================================================
 
-def clean_value(value):
-
-    if pd.isna(value):
-        return None
-
-    value = str(value).strip()
-
-    if value.lower() in (
-        "",
-        "nan",
-        "none",
-        "<na>",
-        "nat"
-    ):
-        return None
-
-    return value
 
 # =====================================================
 # FORMAT DATE COLUMNS
@@ -205,41 +166,6 @@ def clean_value(value):
 # KFIN  -> DD/MM/YYYY
 # =====================================================
 
-def format_dates(df, source=None):
-
-    if df is None or df.empty:
-        return df
-
-    df = df.copy()
-
-    source = str(source).upper()
-
-    for col in DATE_COLUMNS:
-
-        if col not in df.columns:
-            continue
-
-        if source == "CAMS":
-
-            # CAMS : MM/DD/YYYY HH:MM AM/PM
-            df[col] = pd.to_datetime(
-                df[col],
-                format="%m/%d/%Y %I:%M %p",
-                errors="coerce"
-            ).dt.date
-
-        else:
-
-            # KFIN : DD/MM/YYYY
-            df[col] = pd.to_datetime(
-                df[col],
-                format="%d/%m/%Y",
-                errors="coerce"
-            ).dt.date
-
-        df[col] = df[col].where(pd.notnull(df[col]), None)
-
-    return df
 
 
 # =====================================================
@@ -495,7 +421,7 @@ def process_sip(
             existing = normalize(existing)
 
             existing = clean_identifier_columns(existing)
-            # existing = format_dates(existing)
+            # existing = format_dates(existing, DATE_COLUMNS)
 
         print(f"Existing Bronze Rows : {len(existing)}")
 

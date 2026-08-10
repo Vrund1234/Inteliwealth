@@ -4,32 +4,13 @@ from utils.db import engine
 from pyparsing import col
 # from sqlalchemy import create_engine
 # from utils.db import engine, master_engine
+from utils.utils import clean_columns, format_dates, normalize_key
 from mapping import INVESTOR_MASTER_MAPPING
 
 # =====================================================
 # CLEAN COLUMN NAMES
 # =====================================================
 
-def clean_columns(df):
-
-    if df is None:
-        return df
-
-    df = df.copy()
-
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.strip("'")
-        .str.strip('"')
-        .str.lower()
-        .str.replace(" ", "_", regex=False)
-        .str.replace("-", "_", regex=False)
-        .str.replace("/", "_", regex=False)
-        .str.replace("#", "", regex=False)
-    )
-
-    return df
 
 
 # =====================================================
@@ -188,32 +169,6 @@ def clean_identifier_columns(df):
 # FORMAT DATE COLUMNS
 # =====================================================
 
-def format_dates(df):
-
-    if df is None:
-        return df
-
-    df = df.copy()
-
-    for col in DATE_COLUMNS:
-
-        if col in df.columns:
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    # dayfirst=False
-                )
-                .dt.date
-            )
-
-            df[col] = df[col].where(
-                pd.notnull(df[col]),
-                None
-            )
-
-    return df
 
 # =====================================================
 # APPLY INVESTOR MAPPING
@@ -249,7 +204,7 @@ def apply_investor_mapping(raw_df, mapping, source):
 
         for src in source_cols:
 
-            src = src.lower()
+            src = normalize_key(src)
 
             if src in raw_df.columns:
                 value = raw_df[src]
@@ -292,7 +247,7 @@ def process_investor_master(cams=None, kfin=None):
         # CLEAN ALL IDENTIFIER COLUMNS
         cams_df = clean_identifier_columns(cams_df)
 
-        cams_df = format_dates(cams_df)
+        cams_df = format_dates(cams_df, DATE_COLUMNS, "CAMS")
 
         dfs.append(cams_df)
 
@@ -313,7 +268,7 @@ def process_investor_master(cams=None, kfin=None):
         # CLEAN ALL IDENTIFIER COLUMNS
         kfin_df = clean_identifier_columns(kfin_df)
 
-        kfin_df = format_dates(kfin_df)
+        kfin_df = format_dates(kfin_df, DATE_COLUMNS, "KFIN")
 
         dfs.append(kfin_df)
 
@@ -353,7 +308,7 @@ def process_investor_master(cams=None, kfin=None):
         # CLEAN ALL IDENTIFIER COLUMNS
         existing = clean_identifier_columns(existing)
 
-        existing = format_dates(existing)
+        existing = format_dates(existing, DATE_COLUMNS)
 
     except Exception:
 

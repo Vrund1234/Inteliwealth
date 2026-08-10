@@ -9,20 +9,6 @@ from utils.db import master_engine
 
 
 # =====================================================
-# DATABASE CONNECTION CHECK
-# =====================================================
-
-
-print(
-    pd.read_sql(
-        "SELECT current_database();",
-        master_engine
-    )
-)
-
-
-
-# =====================================================
 # EXTRACT GOLD HOLDINGS DATA
 # =====================================================
 

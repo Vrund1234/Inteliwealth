@@ -1,5 +1,7 @@
 import pandas as pd
 import uuid
+
+from functools import lru_cache
 import re
 from datetime import datetime
 
@@ -23,18 +25,22 @@ SCHEME_NAMESPACE = uuid.UUID(
 # LOAD SCHEME MASTER
 # =====================================================
 
-scheme_master = pd.read_sql(
-    """
-    SELECT
-        id,
-        scheme_code,
-        name,
-        name_norm,
-        name_norm_loose
-    FROM public.scheme_master
-    """,
-    master_engine
-)
+@lru_cache(maxsize=1)
+def load_scheme_master():
+    """Read scheme master from the backend DB. Cached for the process lifetime."""
+
+    return pd.read_sql(
+        """
+        SELECT
+            id,
+            scheme_code,
+            name,
+            name_norm,
+            name_norm_loose
+        FROM public.scheme_master
+        """,
+        master_engine
+    )
 
 
 # =====================================================
@@ -514,7 +520,7 @@ def transform_scheme(
 
     gold_df = gold_df.merge(
 
-        scheme_master,
+        load_scheme_master(),
 
         on="name_norm",
 

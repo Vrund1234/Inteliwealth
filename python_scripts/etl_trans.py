@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 # from sqlalchemy import create_engine
+from utils.utils import clean_columns, format_dates, normalize_key
 from mapping import TRANSACTION_MASTER_MAPPING
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,29 +11,6 @@ from utils.db import engine
 # CLEAN COLUMN NAMES
 # =====================================================
 
-def clean_columns(df):
-
-    if df is None:
-        return df
-
-    df = df.copy()
-
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip("'")
-        .str.strip('"')
-        .str.strip()
-        .str.lower()
-        .str.replace(" ", "_", regex=False)
-        .str.replace("-", "_", regex=False)
-        .str.replace("/", "_", regex=False)
-        .str.replace("#", "", regex=False)
-    )
-
-    # Keep first duplicate column
-    df = df.loc[:, ~df.columns.duplicated(keep="first")]
-
-    return df
 
 # =====================================================
 # DATE COLUMNS
@@ -155,55 +133,12 @@ def clean_identifier_columns(df):
 # CLEAN VALUE
 # =====================================================
 
-def clean_value(value):
-
-    if pd.isna(value):
-        return None
-
-    value = str(value).strip()
-
-    if value.lower() in [
-        "",
-        "nan",
-        "none",
-        "<na>",
-        "nat"
-    ]:
-        return None
-
-    return value
 
 
 # =====================================================
 # FORMAT DATE COLUMNS
 # =====================================================
 
-def format_dates(df):
-
-    if df is None:
-        return df
-
-    df = df.copy()
-
-    for col in DATE_COLUMNS:
-
-        if col in df.columns:
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    dayfirst=False
-                )
-                .dt.date
-            )
-
-            df[col] = df[col].where(
-                pd.notnull(df[col]),
-                None
-            )
-
-    return df
 
 # =====================================================
 # APPLY TRANSACTION MAPPING
@@ -273,7 +208,7 @@ def process_transactions(cams=None, kfin=None):
 
         cams_df = clean_identifier_columns(cams_df)
 
-        cams_df = format_dates(cams_df)
+        cams_df = format_dates(cams_df, DATE_COLUMNS, "CAMS")
 
         dfs.append(cams_df)
         print(cams_df.head())
@@ -294,7 +229,7 @@ def process_transactions(cams=None, kfin=None):
 
         kfin_df = clean_identifier_columns(kfin_df)
 
-        kfin_df = format_dates(kfin_df)
+        kfin_df = format_dates(kfin_df, DATE_COLUMNS, "KFIN")
 
         dfs.append(kfin_df)
         print(kfin_df.head())
@@ -342,7 +277,7 @@ def process_transactions(cams=None, kfin=None):
 
         existing = clean_identifier_columns(existing)
 
-        existing = format_dates(existing)
+        existing = format_dates(existing, DATE_COLUMNS)
 
     except Exception:
 

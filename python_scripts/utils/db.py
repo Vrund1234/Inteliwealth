@@ -1,73 +1,100 @@
-from sqlalchemy import create_engine
+import os
+
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 import pandas as pd
 
-HOST = "localhost"
-PORT = "5432"
-USER = "postgres"
-PASSWORD = "vrund"
+load_dotenv()
 
-PROJECT_DATABASE = "inteliwealth_db"
-MASTER_DATABASE = "master_tables_db"
 
-# Project Database
-engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}",
-    pool_pre_ping=True
-)
+def _env(var):
+    value = os.getenv(var)
+    if not value:
+        raise RuntimeError(
+            f"{var} is not set. Copy .env.example to .env and fill it in."
+        )
+    return value
 
-# Master Database
-master_engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
-)
+
+def _create_engine(prefix):
+    """Build an engine from <PREFIX>_DB_HOST / _PORT / _USER / _PASSWORD / _NAME."""
+
+    user = _env(f"{prefix}_DB_USER")
+    password = _env(f"{prefix}_DB_PASSWORD")
+    host = _env(f"{prefix}_DB_HOST")
+    port = _env(f"{prefix}_DB_PORT")
+    name = _env(f"{prefix}_DB_NAME")
+
+    return create_engine(
+        f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}",
+        pool_pre_ping=True
+    )
+
+
+# Project Database: raw warehouse - bronze / silver / gold schemas
+engine = _create_engine("PROJECT")
+
+# Master Database: backend application DB - read for public.scheme_master
+master_engine = _create_engine("MASTER")
+
+
+# Safely quote SQL identifiers (schema / table / column names)
+quote = engine.dialect.identifier_preparer.quote
 
 
 def read_table(schema, table, limit=100):
+    """Preview the newest rows of a table. Returns an empty frame on any failure."""
 
     try:
 
-        # check available columns
-        column_query = f"""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema='{schema}'
-            AND table_name='{table}'
-        """
-
+        # Resolve columns - also validates that schema.table actually exists
         columns = pd.read_sql(
-            column_query,
-            engine
+            text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema
+                  AND table_name = :table
+            """),
+            engine,
+            params={"schema": schema, "table": table}
         )["column_name"].tolist()
 
 
+        if not columns:
+
+            print(f"No such table: {schema}.{table}")
+
+            return pd.DataFrame()
+
+
         # Dynamic ordering
-        if "created_at" in columns:
+        for candidate in ("created_at", "updated_at", "last_synced_at"):
 
-            order_by = "ORDER BY created_at DESC"
+            if candidate in columns:
 
-        elif "updated_at" in columns:
+                order_by = f"ORDER BY {quote(candidate)} DESC"
 
-            order_by = "ORDER BY updated_at DESC"
-
-        elif "last_synced_at" in columns:
-
-            order_by = "ORDER BY last_synced_at DESC"
+                break
 
         else:
 
             order_by = ""
 
 
-        query = f"""
+        # Identifiers cannot be bound parameters - quote them instead.
+        # Existence was confirmed above, so this cannot reach an arbitrary table.
+        query = text(f"""
             SELECT *
-            FROM {schema}.{table}
+            FROM {quote(schema)}.{quote(table)}
             {order_by}
-            LIMIT {limit}
-        """
+            LIMIT :limit
+        """)
 
 
         df = pd.read_sql(
             query,
-            engine
+            engine,
+            params={"limit": int(limit)}
         )
 
 
