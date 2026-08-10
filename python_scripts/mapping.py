@@ -285,7 +285,7 @@ TRANSACTION_MASTER_MAPPING = {
     "usrtrxno": ["usrtrxno", "ihno", "inwardnum1"],                   # IHNO
 
     # ================= INVESTOR =================
-    "pan": ["pan", "pan1"],
+    "pan": ["pan", "pan1", "Pan Number"],
     "client_id": ["client_id", "clientid"],
     "dp_id": ["dp_id", "dpid"],
     "tax_status": ["tax_status", "status"],
