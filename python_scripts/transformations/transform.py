@@ -499,35 +499,146 @@ def load_silver():
             "transaction_master_new"
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # SIP MASTER
-    # =====================================================
+    # =================================================
+
+    print("=" * 80)
+    print("PROCESSING SIP MASTER")
+    print("=" * 80)
+
+    # -------------------------------------------------
+    # GET LAST SILVER TIMESTAMP FIRST
+    # -------------------------------------------------
+
+    result = pd.read_sql(
+        """
+        SELECT MAX(created_at) AS last_time
+        FROM silver.sip_master_new
+        """,
+        engine
+    )
+
+    last_time = result.iloc[0]["last_time"]
 
 
-    sip_df = safe_read(
+    if pd.isna(last_time):
+
+        last_time = pd.Timestamp(
+            "1900-01-01"
+        )
+
+    else:
+
+        last_time = pd.Timestamp(
+            last_time
+        )
+
+    # -------------------------------------------------
+    # MAKE TIMEZONE CONSISTENT
+    # -------------------------------------------------
+
+    if last_time.tzinfo is not None:
+
+        last_time = last_time.tz_localize(None)
+
+
+    print(
+        "Last Silver SIP time :",
+        last_time
+    )
+
+    # -------------------------------------------------
+    # READ ONLY NEW SIP BRONZE DATA
+    #
+    # IMPORTANT:
+    # Bronze flag stays 0.
+    # We NEVER update Bronze flag.
+    #
+    # Only:
+    #
+    # created_at > Silver MAX(created_at)
+    #
+    # -------------------------------------------------
+
+    sip_df = pd.read_sql(
         """
         SELECT *
         FROM bronze.sip_master_new
         WHERE flag = 0
-        """
+        AND created_at > %(last_time)s
+        ORDER BY created_at
+        """,
+        engine,
+        params={
+            "last_time": last_time
+        }
     )
 
 
-    if not sip_df.empty:
+    print(
+        "New Bronze SIP rows :",
+        len(sip_df)
+    )
 
+
+    # -------------------------------------------------
+    # NO NEW DATA
+    # -------------------------------------------------
+
+    if sip_df.empty:
+
+        print("=" * 80)
+        print(
+            "NO NEW SIP DATA"
+        )
+        print(
+            "Nothing to insert into Silver."
+        )
+        print("=" * 80)
+
+    else:
+
+        print("=" * 80)
+        print(
+            "NEW SIP DATA FOUND"
+        )
+        print(
+            "Rows :",
+            len(sip_df)
+        )
+        print(
+            "MIN created_at :",
+            sip_df["created_at"].min()
+        )
+        print(
+            "MAX created_at :",
+            sip_df["created_at"].max()
+        )
+        print("=" * 80)
+
+
+        # -------------------------------------------------
+        # TRANSFORM
+        # -------------------------------------------------
 
         sip_df = transform_sip_master(
             sip_df
         )
 
 
+        # -------------------------------------------------
+        # ROUND DECIMAL COLUMNS
+        # -------------------------------------------------
+
         sip_df = round_decimal_columns(
             sip_df
         )
 
+
+        # -------------------------------------------------
+        # SIP IDENTIFIER COLUMNS
+        # -------------------------------------------------
 
         id_cols = [
 
@@ -555,6 +666,9 @@ def load_silver():
                 )
 
 
+        # -------------------------------------------------
+        # LOAD SIP TO SILVER
+        # -------------------------------------------------
 
         append_new_rows(
             sip_df,
@@ -562,6 +676,11 @@ def load_silver():
         )
 
 
+    print("=" * 80)
+    print(
+        "SIP MASTER PROCESSING COMPLETE"
+    )
+    print("=" * 80)
 
     print(
         "\nSilver Layer Loaded Successfully"
@@ -1772,7 +1891,358 @@ def transform_sip_master(df):
     return df
 
 
+# =====================================================
+# SIP SAFE APPEND
+# =====================================================
 
+def append_sip_rows(df):
+    table_name = "sip_master_new"
+
+    if df.empty:
+        print("SIP : No data")
+        return
+
+    print("=" * 80)
+    print("PROCESSING SIP BRONZE → SILVER")
+    print("Incoming rows :", len(df))
+    print("=" * 80)
+
+    df = df.copy()
+
+    # -------------------------------------------------
+    # CREATED_AT CHECK
+    # -------------------------------------------------
+
+    if "created_at" not in df.columns:
+        print("SIP : created_at column missing")
+        return
+
+    df["created_at"] = pd.to_datetime(
+        df["created_at"],
+        errors="coerce"
+    )
+
+    # -------------------------------------------------
+    # LAST SILVER TIMESTAMP
+    # -------------------------------------------------
+
+    last_time = get_last_processed_time(table_name)
+
+    last_time = pd.Timestamp(last_time)
+
+    if getattr(df["created_at"].dt, "tz", None) is not None:
+        df["created_at"] = (
+            df["created_at"]
+            .dt.tz_localize(None)
+        )
+
+    if last_time.tzinfo is not None:
+        last_time = last_time.tz_localize(None)
+
+    print("Last Silver time :", last_time)
+    print("Bronze MIN time  :", df["created_at"].min())
+    print("Bronze MAX time  :", df["created_at"].max())
+
+    # -------------------------------------------------
+    # FLAG = 0
+    # AND TIMESTAMP > SILVER MAX
+    # -------------------------------------------------
+
+    if "flag" not in df.columns:
+        print("SIP : flag column missing")
+        return
+
+    df = df[
+        (df["flag"] == 0)
+        &
+        (df["created_at"] >= last_time)
+    ].copy()
+
+    print("Rows after timestamp + flag filter :", len(df))
+
+    if df.empty:
+        print("SIP : No new timestamp records")
+        return
+
+    # -------------------------------------------------
+    # READ EXISTING SILVER
+    # -------------------------------------------------
+
+    try:
+
+        existing = pd.read_sql(
+            """
+            SELECT *
+            FROM silver.sip_master_new
+            """,
+            engine
+        )
+
+    except Exception as e:
+
+        print("Could not read Silver SIP table:")
+        print(e)
+
+        existing = pd.DataFrame()
+
+    # -------------------------------------------------
+    # FULL ROW DUPLICATE CHECK
+    # -------------------------------------------------
+
+    if not existing.empty:
+
+        ignore_cols = {
+            "flag",
+            "created_at",
+            "updated_at"
+        }
+
+        compare_cols = [
+            col
+            for col in df.columns
+            if col in existing.columns
+            and col not in ignore_cols
+        ]
+
+        if compare_cols:
+
+            new_compare = normalize_for_compare(
+                df[compare_cols]
+            )
+
+            old_compare = normalize_for_compare(
+                existing[compare_cols]
+            )
+
+            new_keys = (
+                new_compare
+                .astype(str)
+                .agg("|".join, axis=1)
+            )
+
+            old_keys = set(
+                old_compare
+                .astype(str)
+                .agg("|".join, axis=1)
+            )
+
+            duplicate_mask = new_keys.isin(old_keys)
+
+            print(
+                "Existing Silver duplicates :",
+                int(duplicate_mask.sum())
+            )
+
+            df = df.loc[
+                ~duplicate_mask
+            ].copy()
+
+    # -------------------------------------------------
+    # REMOVE DUPLICATES INSIDE BATCH
+    # -------------------------------------------------
+
+    duplicate_columns = [
+        col
+        for col in df.columns
+        if col not in {
+            "flag",
+            "created_at",
+            "updated_at"
+        }
+    ]
+
+    if duplicate_columns:
+
+        df = (
+            df
+            .drop_duplicates(
+                subset=duplicate_columns
+            )
+            .copy()
+        )
+
+    if df.empty:
+
+        print("SIP : All rows already exist in Silver")
+        return
+
+    # -------------------------------------------------
+    # UPDATED_AT
+    # -------------------------------------------------
+
+    df["updated_at"] = pd.Timestamp.now()
+
+    # -------------------------------------------------
+    # REMOVE FLAG
+    # -------------------------------------------------
+
+    df = df.drop(
+        columns=["flag"],
+        errors="ignore"
+    )
+
+    # -------------------------------------------------
+    # GET SILVER COLUMNS
+    # -------------------------------------------------
+
+    db_cols = get_table_columns(
+        table_name
+    )
+
+    if not db_cols:
+
+        print("SIP : Silver table not found")
+        return
+
+    # -------------------------------------------------
+    # ADD MISSING COLUMNS
+    # -------------------------------------------------
+
+    for col in db_cols:
+
+        if col not in df.columns:
+            df[col] = None
+
+    # -------------------------------------------------
+    # KEEP ONLY DATABASE COLUMNS
+    # -------------------------------------------------
+
+    df = df[db_cols]
+
+    # =================================================
+    # IMPORTANT:
+    # CHECK VARCHAR LENGTHS BEFORE INSERT
+    # =================================================
+
+    varchar_info = pd.read_sql(
+        """
+        SELECT
+            column_name,
+            character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = 'silver'
+          AND table_name = 'sip_master_new'
+          AND data_type IN (
+              'character varying',
+              'character'
+          )
+          AND character_maximum_length IS NOT NULL
+        """,
+        engine
+    )
+
+    print("=" * 80)
+    print("CHECKING SIP VARCHAR LENGTHS")
+    print("=" * 80)
+
+    errors_found = False
+
+    for _, row in varchar_info.iterrows():
+
+        col = row["column_name"]
+        max_len = int(
+            row["character_maximum_length"]
+        )
+
+        if col not in df.columns:
+            continue
+
+        values = (
+            df[col]
+            .dropna()
+            .astype(str)
+        )
+
+        if values.empty:
+            continue
+
+        lengths = values.str.len()
+
+        bad_mask = lengths > max_len
+
+        if bad_mask.any():
+
+            errors_found = True
+
+            print()
+            print(
+                f"❌ COLUMN : {col}"
+            )
+            print(
+                f"   LIMIT  : {max_len}"
+            )
+            print(
+                f"   MAX LEN: {lengths.max()}"
+            )
+
+            bad_values = values[
+                bad_mask
+            ].drop_duplicates()
+
+            for value in bad_values.head(10):
+
+                print(
+                    f"   VALUE   : {value!r}"
+                )
+                print(
+                    f"   LENGTH  : {len(value)}"
+                )
+
+    if errors_found:
+
+        print("=" * 80)
+        print(
+            "SIP INSERT STOPPED BECAUSE "
+            "VARCHAR LIMITS WERE EXCEEDED."
+        )
+        print("=" * 80)
+
+        return
+
+    # -------------------------------------------------
+    # NULL HANDLING
+    # -------------------------------------------------
+
+    df = df.where(
+        pd.notnull(df),
+        None
+    )
+
+    # -------------------------------------------------
+    # INSERT
+    # -------------------------------------------------
+
+    print("=" * 80)
+    print("INSERTING SIP INTO SILVER")
+    print("Rows :", len(df))
+    print("=" * 80)
+
+    try:
+
+        df.to_sql(
+            table_name,
+            engine,
+            schema="silver",
+            if_exists="append",
+            index=False,
+            method="multi",
+            chunksize=1000
+        )
+
+    except Exception as e:
+
+        print("=" * 80)
+        print("SIP SILVER INSERT ERROR")
+        print(e)
+        print("=" * 80)
+
+        return
+
+    print("=" * 80)
+    print(
+        f"SIP : {len(df)} rows inserted into Silver"
+    )
+    print("=" * 80)
 
 
 # =====================================================

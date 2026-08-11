@@ -339,7 +339,7 @@ def apply_sip_mapping(raw_df, mapping, source):
 
     mapped_df = clean_identifier_columns(mapped_df)
     print("\n========== PERIOD_DAY AFTER MAPPING ==========")
-    print(mapped_df["period_day"].head(50).tolist())
+    #print(mapped_df["period_day"].head(50).tolist())
     print("=============================================\n")
 
     if "periodicity" in mapped_df.columns:
@@ -432,7 +432,7 @@ def process_sip(
         print(f"KFIN Rows : {len(kfin_df)}")
         print("After mapping:")
         #print(kfin_df[["scheme_code", "product_code"]].head())
-        print(kfin_df.head(10))
+        #print(kfin_df.head(10))
     # =====================================================
     # NO FILE FOUND
     # =====================================================

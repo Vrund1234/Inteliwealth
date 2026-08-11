@@ -1,10 +1,61 @@
 import csv
 import io
 import pandas as pd
+
 from utils.db import engine
 from etl_investor_master import process_investor_master
 from etl_trans import process_transactions
 from etl_sip import process_sip
+
+
+def smart_split(line, delimiter):
+
+    fields = []
+
+    i = 0
+    n = len(line)
+
+    while i <= n:
+
+        if i < n and line[i] == "'":
+
+            j = i + 1
+
+            close = line.find("'", j)
+
+            while close != -1 and not (
+                close + 1 == n or line[close + 1] == delimiter
+            ):
+
+                close = line.find("'", close + 1)
+
+            if close == -1:
+
+                # Unterminated quote - treat rest of line as the field
+                fields.append(line[i + 1:])
+                i = n + 1
+
+            else:
+
+                fields.append(line[i + 1:close])
+                i = close + 2  # skip closing quote + delimiter
+
+        else:
+
+            next_delim = line.find(delimiter, i)
+
+            if next_delim == -1:
+
+                fields.append(line[i:])
+                i = n + 1
+
+            else:
+
+                fields.append(line[i:next_delim])
+                i = next_delim + 1
+
+    return fields
+
 
 # =====================================================
 # READ FILE
@@ -17,220 +68,307 @@ def read_file(file):
     # =================================================
     # CSV / TXT
     # =================================================
+
     if name.endswith((".csv", ".txt")):
 
         file.seek(0)
 
-        # try:
-        #     text = file.read().decode("utf-8")
-        # except UnicodeDecodeError:
-        #     file.seek(0)
-        #     text = file.read().decode("latin1")
-
-
         raw = file.read()
 
-        for encoding in ("utf-8", "utf-16", "utf-16le", "utf-16be", "latin1"):
-            try:
-                text = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            raise ValueError("Unable to decode uploaded file.")
+        # -------------------------------------------------
+        # DETECT ENCODING
+        # -------------------------------------------------
 
-        # FIX WINDOWS NEWLINE ISSUE
-        # text = text.replace("\r\n", "\n").replace("\r", "\n")
-        # Remove NULL characters
+        encodings = [
+            "utf-8-sig",
+            "utf-8",
+            "utf-16",
+            "utf-16le",
+            "utf-16be",
+            "latin1"
+        ]
+
+        text = None
+        detected_encoding = None
+
+        for encoding in encodings:
+
+            try:
+
+                text = raw.decode(encoding)
+                detected_encoding = encoding
+
+                break
+
+            except UnicodeDecodeError:
+
+                continue
+
+        if text is None:
+
+            raise ValueError(
+                "Unable to decode uploaded file."
+            )
+
+        print()
+        print("Detected encoding:", detected_encoding)
+
+        # -------------------------------------------------
+        # REMOVE NULL CHARACTERS
+        # -------------------------------------------------
+
         text = text.replace("\x00", "")
 
-        # Normalize newlines
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # -------------------------------------------------
+        # NORMALIZE NEWLINES
+        # -------------------------------------------------
 
-
-        # =================================================
-        # PARSE CSV SAFELY
-        # =================================================
-
-        # Detect delimiter from the first non-empty line
-        lines = [line for line in text.split("\n") if line.strip()]
-
-        if not lines:
-            return pd.DataFrame()
-
-        first_line = lines[0]
-
-        # CAMS CSV files are comma separated
-        if "," in first_line:
-            delimiter = ","
-        elif "\t" in first_line:
-            delimiter = "\t"
-        elif ";" in first_line:
-            delimiter = ";"
-        else:
-            delimiter = ","
-
-        print(f"Detected delimiter: {repr(delimiter)}")
-
-        # IMPORTANT:
-        # Let csv.reader handle quoted values.
-        # Do NOT manually remove quotes after parsing.
-        reader = csv.reader(
-            io.StringIO(text),
-            delimiter=delimiter,
-            quotechar='"',
-            doublequote=True,
-            skipinitialspace=False
+        text = (
+            text
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
         )
 
-        rows = list(reader)
+        # -------------------------------------------------
+        # DETECT DELIMITER
+        # -------------------------------------------------
+
+        sample = text[:10000]
+
+        try:
+
+            dialect = csv.Sniffer().sniff(
+                sample,
+                delimiters=",\t;|"
+            )
+
+            delimiter = dialect.delimiter
+
+        except csv.Error:
+
+            first_line = text.split("\n")[0]
+
+            if "\t" in first_line:
+
+                delimiter = "\t"
+
+            elif "," in first_line:
+
+                delimiter = ","
+
+            elif ";" in first_line:
+
+                delimiter = ";"
+
+            elif "|" in first_line:
+
+                delimiter = "|"
+
+            else:
+
+                delimiter = ","
+
+        print("Detected delimiter:", repr(delimiter))
+
+        # -------------------------------------------------
+        # IMPORTANT
+        #
+        # CAMS/KFIN files may contain values surrounded
+        # by single quotes, and those values can contain
+        # the delimiter itself (e.g. 'Patel, Natvarbhai').
+        #
+        # csv.reader with quotechar='"' has no way to know
+        # that a single quote is protecting a delimiter, so
+        # it was splitting these rows into too many columns
+        # and they were being dropped as "bad rows". This is
+        # what was causing the data loss.
+        #
+        # We now split each line with smart_split(), which
+        # understands single-quoted fields the same way the
+        # old code intended quotechar="'" to work, but
+        # without breaking apostrophes inside plain names
+        # like O'Brien.
+        #
+        # Everything downstream (short-row padding, bad-row
+        # detection, outer-quote stripping) is unchanged.
+        # -------------------------------------------------
+
+        lines = text.split("\n")
+
+        rows = [
+            smart_split(line, delimiter)
+            for line in lines
+            if line != ""
+        ]
 
         if not rows:
-            return pd.DataFrame()
 
-        # =================================================
+            raise ValueError(
+                f"No rows found in file: {file.name}"
+            )
+
+        # -------------------------------------------------
         # HEADER
-        # =================================================
+        # -------------------------------------------------
+
+        header = rows[0]
 
         header = [
-            h.strip().strip("'").strip('"')
-            for h in rows[0]
+            str(col)
+            .strip()
+            .strip("'")
+            .strip('"')
+            .strip()
+            for col in header
         ]
 
         expected_columns = len(header)
 
-        print(f"Expected columns: {expected_columns}")
+        print()
+        print("File:", file.name)
+        print("Delimiter:", repr(delimiter))
+        print("Header columns:", expected_columns)
+        print("Header:")
+        print(header)
 
-        # =================================================
-        # DATA ROWS
-        # =================================================
+        # -------------------------------------------------
+        # PARSE DATA ROWS
+        # -------------------------------------------------
 
         clean_rows = []
+
         bad_rows = 0
 
-        for row_number, row in enumerate(rows[1:], start=2):
+        for row_number, row in enumerate(
+            rows[1:],
+            start=2
+        ):
 
             # Ignore completely empty rows
-            if not any(str(x).strip() for x in row):
+
+            if not row or all(
+                str(value).strip() == ""
+                for value in row
+            ):
+
+                continue
+
+            actual_columns = len(row)
+
+            # -------------------------------------------------
+            # PERFECT ROW
+            # -------------------------------------------------
+
+            if actual_columns == expected_columns:
+
+                clean_rows.append(row)
+
                 continue
 
             # -------------------------------------------------
-            # Correct number of columns
+            # SHORT ROW
+            #
+            # Missing trailing values are allowed.
+            # Fill only the missing trailing fields.
             # -------------------------------------------------
 
-            if len(row) == expected_columns:
+            if actual_columns < expected_columns:
 
-                clean_rows.append([
-                    str(x).strip()
-                    for x in row
-                ])
-
-            # -------------------------------------------------
-            # Missing columns
-            # -------------------------------------------------
-
-            elif len(row) < expected_columns:
-
-                print(
-                    f"WARNING: Row {row_number} has fewer columns | "
-                    f"Expected={expected_columns}, Found={len(row)}"
+                row = row + (
+                    [""] *
+                    (expected_columns - actual_columns)
                 )
 
-                row = row + [""] * (expected_columns - len(row))
+                clean_rows.append(row)
 
-                clean_rows.append([
-                    str(x).strip()
-                    for x in row
-                ])
-
-                bad_rows += 1
+                continue
 
             # -------------------------------------------------
-            # Extra columns
+            # BAD ROW
+            #
+            # DO NOT truncate it.
+            #
+            # Truncating with row[:expected_columns] can put
+            # data into the wrong columns.
             # -------------------------------------------------
 
-            else:
+            bad_rows += 1
 
-                print(
-                    f"WARNING: Row {row_number} has EXTRA columns | "
-                    f"Expected={expected_columns}, Found={len(row)}"
-                )
+            print(
+                f"BAD CSV ROW {row_number}: "
+                f"Expected {expected_columns}, "
+                f"Found {actual_columns}"
+            )
 
-                print("Raw parsed row:")
-                print(row)
+            print(
+                "Row preview:",
+                row[:20]
+            )
 
-                # DO NOT blindly truncate here.
-                bad_rows += 1
+            # Skip genuinely malformed rows
 
-                # Keep the row only if we can safely identify
-                # that the extra fields are empty.
-                extra_values = row[expected_columns:]
-
-                if all(str(x).strip() == "" for x in extra_values):
-
-                    clean_rows.append([
-                        str(x).strip()
-                        for x in row[:expected_columns]
-                    ])
-
-                else:
-
-                    print(
-                        f"SKIPPING malformed row {row_number} "
-                        f"because it contains non-empty extra values."
-                    )
-
-        # =================================================
+        # -------------------------------------------------
         # CREATE DATAFRAME
-        # =================================================
+        # -------------------------------------------------
 
         df = pd.DataFrame(
             clean_rows,
             columns=header
         )
 
-        if file.name.lower().endswith("r9.csv"):
-
-            print("\n" + "=" * 100)
-            print("CAMS R9 GST / FOLIO DEBUG")
-            print("=" * 100)
-
-            cols_to_check = [
-                c for c in [
-                    "GST_STATE_CODE",
-                    "FOLIO_OLD"
-                ]
-                if c in df.columns
-            ]
-
-            print(df[cols_to_check].head(50).to_string(index=False))
-
-            print("\nRows where GST_STATE_CODE is B:")
-            print(
-                df[df["GST_STATE_CODE"].astype(str).str.strip() == "B"]
-                [cols_to_check]
-                .head(50)
-                .to_string(index=False)
-            )
-
-            print("\nRows where FOLIO_OLD is 24:")
-            print(
-                df[df["FOLIO_OLD"].astype(str).str.strip() == "24"]
-                [cols_to_check]
-                .head(50)
-                .to_string(index=False)
-            )
-
-            print("=" * 100)
+        print()
+        print(
+            "Rows successfully parsed:",
+            len(df)
+        )
 
         print(
-            f"CSV rows parsed: {len(df)} | "
-            f"Malformed rows: {bad_rows}"
+            "Bad rows skipped:",
+            bad_rows
         )
+
+        # -------------------------------------------------
+        # REMOVE OUTER QUOTES ONLY
+        #
+        # This handles:
+        #
+        # 'Natvarbhai Shankerbhai Patel '
+        #
+        # without breaking commas inside a quoted value.
+        #
+        # smart_split already strips the surrounding single
+        # quotes from quoted fields, so this mainly cleans up
+        # any remaining stray quotes/whitespace and is kept
+        # as-is for safety - no logic removed.
+        # -------------------------------------------------
+
+        object_cols = df.select_dtypes(
+            include="object"
+        ).columns
+
+        for col in object_cols:
+
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()
+                .str.strip("'")
+                .str.strip('"')
+                .str.strip()
+            )
+
+            df[col] = df[col].replace(
+                {
+                    "nan": "",
+                    "None": "",
+                    "<NA>": ""
+                }
+            )
 
     # =================================================
     # EXCEL
     # =================================================
+
     else:
 
         file.seek(0)
@@ -241,151 +379,201 @@ def read_file(file):
             keep_default_na=False
         )
 
-    if "Product Code" in df.columns:
-        print(df["Product Code"].head())
-    print("KFIN Columns:")
-    print(df.columns.tolist())
     # =====================================================
     # CLEAN COLUMN NAMES
     # =====================================================
 
     df.columns = (
-        df.columns.astype(str)
+        df.columns
+        .astype(str)
         .str.strip()
         .str.strip("'")
         .str.strip('"')
+        .str.strip()
     )
 
-     # Remove blank header columns
-    df = df.loc[:, df.columns != ""]
+    # -----------------------------------------------------
+    # REMOVE BLANK HEADER COLUMNS
+    # -----------------------------------------------------
 
-    # Remove duplicate columns
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.loc[
+        :,
+        df.columns != ""
+    ]
 
-    print(f"\nProcessing file: {file.name}")
+    # -----------------------------------------------------
+    # REMOVE DUPLICATE COLUMNS
+    # -----------------------------------------------------
 
-    print("Shape:", df.shape)
-    print("Columns:", len(df.columns))
-    print("Unique columns:", len(df.columns.unique()))
-
-    duplicates = df.columns[df.columns.duplicated()]
-    print("Duplicate columns:", duplicates.tolist())
-
-   
-
-    # =====================================================
-    # CLEAN VALUES
-    # =====================================================
-
-    # object_cols = df.select_dtypes(include="object").columns
-
-    # if len(object_cols):
-
-    #     df[object_cols] = (
-    #         df[object_cols]
-    #         .astype(str)
-    #         .apply(
-    #             lambda s: s.str.replace("'", "", regex=False)
-    #                     .str.replace('"', "", regex=False)
-    #                     .str.strip()
-    #         )
-    #         .replace({
-    #             "nan": "",
-    #             "None": "",
-    #             "<NA>": ""
-    #         })
-    #     )
-    
-    object_cols = df.select_dtypes(include="object").columns.unique()
-
-    for col in object_cols:
-        df[col] = (
-            df[col]
-            .astype(str)
-            #.str.replace("'", "", regex=False)
-            #.str.replace('"', "", regex=False)
-            .str.strip()
-            .replace({
-                "nan": "",
-                "None": "",
-                "<NA>": ""
-            })
-        )
+    df = df.loc[
+        :,
+        ~df.columns.duplicated()
+    ]
 
     # =====================================================
     # DEBUG
     # =====================================================
 
-    print("\n" + "=" * 80)
+    print()
+    print("=" * 80)
     print("FILE :", file.name)
     print("ROWS READ :", len(df))
     print("TOTAL COLUMNS :", len(df.columns))
+    print("UNIQUE COLUMNS :", len(df.columns.unique()))
     print("COLUMN NAMES :")
     print(df.columns.tolist())
-    print("=" * 80 + "\n")
+    print("=" * 80)
+
+    # =====================================================
+    # PERIOD DAY DEBUG
+    # =====================================================
+
     if "PERIOD_DAY" in df.columns:
-        print("\n========== PERIOD_DAY AFTER FILE READ ==========")
-        print(df["PERIOD_DAY"].head(50).tolist())
-        print("===============================================\n")
+
+        print()
+        print(
+            "========== PERIOD_DAY AFTER FILE READ =========="
+        )
+
+        print(
+            df["PERIOD_DAY"]
+            .head(50)
+            .tolist()
+        )
+
+        print(
+            "==============================================="
+        )
+
+    # =====================================================
+    # IMPORTANT FIELD DEBUG
+    # =====================================================
+
+    debug_columns = [
+        "INV_NAME",
+        "ADDRESS1",
+        "ADDRESS2",
+        "ADDRESS3",
+        "Investor Name",
+        "Address #1",
+        "Address #2",
+        "Address #3",
+        "Product Code",
+        "Scheme",
+        "Folio",
+        "PAN",
+        "PAN Number"
+    ]
+
+    available_debug_columns = [
+        col
+        for col in debug_columns
+        if col in df.columns
+    ]
+
+    if available_debug_columns:
+
+        print()
+        print(
+            "========== FIELD MAPPING DEBUG =========="
+        )
+
+        print(
+            df[
+                available_debug_columns
+            ].head(5).to_string(index=False)
+        )
+
+        print(
+            "========================================="
+        )
 
     return df
 
+
+# =====================================================
+# EXTRACT AND PUSH
+# =====================================================
 
 def extract_and_push(uploaded_files):
 
     cams_transaction = []
     kfin_transaction = []
+
     cams_investor = []
     kfin_investor = []
+
     cams_sip = []
     kfin_sip = []
+
+    # =================================================
+    # READ ALL FILES
+    # =================================================
 
     for file in uploaded_files:
 
         name = file.name.lower()
+
         df = read_file(file)
 
-        # ===========================
-        # CAMS Files
-        # ===========================
+        # =================================================
+        # CAMS FILES
+        # =================================================
 
         if name.endswith("r2.csv"):
+
             cams_transaction.append(df)
 
         elif name.endswith("r9.csv"):
+
             cams_investor.append(df)
 
         elif name.endswith("r49.csv"):
+
             cams_sip.append(df)
 
-        # ===========================
-        # KFIN Files
-        # ===========================
+        # =================================================
+        # KFIN FILES
+        # =================================================
 
         elif "mfsd201" in name:
+
             kfin_transaction.append(df)
 
         elif "mfsd211" in name:
+
             kfin_investor.append(df)
 
         elif "mfsd243" in name:
+
             kfin_sip.append(df)
 
         else:
-            print(f"Unknown file type: {file.name}")
+
+            print(
+                f"Unknown file type: {file.name}"
+            )
 
     # =====================================================
-    # Transactions
+    # TRANSACTIONS
     # =====================================================
 
     cams_df = (
-        pd.concat(cams_transaction, ignore_index=True)
-        if cams_transaction else None
+        pd.concat(
+            cams_transaction,
+            ignore_index=True
+        )
+        if cams_transaction
+        else None
     )
 
     kfin_df = (
-        pd.concat(kfin_transaction, ignore_index=True)
-        if kfin_transaction else None
+        pd.concat(
+            kfin_transaction,
+            ignore_index=True
+        )
+        if kfin_transaction
+        else None
     )
 
     if cams_df is not None or kfin_df is not None:
@@ -394,47 +582,56 @@ def extract_and_push(uploaded_files):
             cams=cams_df,
             kfin=kfin_df
         )
-        print("=" * 80)
-        print("TRANSACTION DATA BEFORE ETL")
-        
-        if cams_df is not None:
-            print("CAMS")
-            print(cams_df.shape)
-            print(cams_df.columns.tolist())
 
-        if kfin_df is not None:
-            print("KFIN")
-            print(kfin_df.shape)
-            print(kfin_df.columns.tolist())
-        print("=" * 80)
+    # =====================================================
+    # INVESTOR MASTER
+    # =====================================================
 
-    # Investors
     cams_df = (
-        pd.concat(cams_investor, ignore_index=True)
-        if cams_investor else None
+        pd.concat(
+            cams_investor,
+            ignore_index=True
+        )
+        if cams_investor
+        else None
     )
 
     kfin_df = (
-        pd.concat(kfin_investor, ignore_index=True)
-        if kfin_investor else None
+        pd.concat(
+            kfin_investor,
+            ignore_index=True
+        )
+        if kfin_investor
+        else None
     )
 
     if cams_df is not None or kfin_df is not None:
+
         process_investor_master(
             cams=cams_df,
             kfin=kfin_df
         )
 
+    # =====================================================
     # SIP
+    # =====================================================
 
     cams_df = (
-        pd.concat(cams_sip, ignore_index=True)
-        if cams_sip else None
+        pd.concat(
+            cams_sip,
+            ignore_index=True
+        )
+        if cams_sip
+        else None
     )
 
     kfin_df = (
-        pd.concat(kfin_sip, ignore_index=True)
-        if kfin_sip else None
+        pd.concat(
+            kfin_sip,
+            ignore_index=True
+        )
+        if kfin_sip
+        else None
     )
 
     sip_preview = None
@@ -449,13 +646,22 @@ def extract_and_push(uploaded_files):
         )
 
         sip_preview = pd.read_sql(
-            "SELECT * FROM bronze.sip_master_new",
+            """
+            SELECT *
+            FROM bronze.sip_master_new
+            """,
             con=engine
         )
 
     return (
-        len(cams_transaction) + len(kfin_transaction),
-        len(cams_investor) + len(kfin_investor),
-        len(cams_sip) + len(kfin_sip),
+        len(cams_transaction) +
+        len(kfin_transaction),
+
+        len(cams_investor) +
+        len(kfin_investor),
+
+        len(cams_sip) +
+        len(kfin_sip),
+
         sip_preview
     )

@@ -410,7 +410,7 @@ TRANSACTION_MASTER_MAPPING = {
     "trflag": ["trflag"],
 
     # ================= DATES =================
-    "traddate": ["traddate", "navdate"],                # Nav Date
+    "traddate": ["traddate", "navdate", "td_trdt"],                # Nav Date
     "postdate": ["postdate", "td_prdt"],                # Process Date
     "rep_date": ["rep_date", "crdate"],                 # Report Date
     "sys_regn_date": ["sys_regn_date", "sipregdt"],
