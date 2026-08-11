@@ -3,104 +3,12 @@ import traceback
 
 from utils.db import engine
 from utils.db import master_engine
+from common.etl_helpers import safe_read, get_last_processed_time, normalize_for_compare
 
 
 # =====================================================
-# SAFE READ
-# =====================================================
-
-def safe_read(query):
-
-    try:
-
-        return pd.read_sql(
-            query,
-            engine
-        )
-
-    except Exception as e:
-
-        print("SQL ERROR :", e)
-
-        return pd.DataFrame()
-
-
-
-# =====================================================
-# GET LAST PROCESSED TIME
-# =====================================================
-
-def get_last_processed_time():
-
-    try:
-
-        result = pd.read_sql(
-            """
-            SELECT
-                MAX(created_at) AS last_time
-            FROM gold.transactions
-            """,
-            engine
-        )
-
-        last_time = result.iloc[0]["last_time"]
-
-        if pd.isna(last_time):
-
-            return pd.Timestamp("1900-01-01")
-
-        return pd.to_datetime(last_time)
-
-
-    except Exception:
-
-        return pd.Timestamp("1900-01-01")
-
-
-
-# =====================================================
-# NORMALIZE DATA FOR DUPLICATE CHECK
-# =====================================================
-
-def normalize_for_compare(df):
-
-    df = df.copy()
-
-    df = df.drop(
-        columns=[
-            "created_at"
-        ],
-        errors="ignore"
-    )
-
-
-    for col in df.columns:
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce"
-                )
-                .dt.strftime("%Y-%m-%d")
-            )
-
-        else:
-
-            df[col] = (
-                df[col]
-                .astype("string")
-                .str.strip()
-            )
-
-
-    return df
-
-
-
-# =====================================================
-# CREATE NATURAL KEY
+# CREATE NATURAL KEY  (local — keys on rta + rta_txn_no)
+# normalize_for_compare imported from common.etl_helpers
 # =====================================================
 
 def create_row_key(df):
@@ -108,7 +16,6 @@ def create_row_key(df):
     df = normalize_for_compare(df)
 
     return (
-
         df[
             [
                 "rta",
@@ -118,7 +25,6 @@ def create_row_key(df):
         .fillna("")
         .astype(str)
         .agg("|".join, axis=1)
-
     )
 
 
@@ -134,7 +40,7 @@ def extract_transactions():
     print("=" * 80)
 
 
-    last_time = get_last_processed_time()
+    last_time = get_last_processed_time("gold.transactions")
 
 
     df = safe_read(

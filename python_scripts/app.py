@@ -3,9 +3,9 @@ import pandas as pd
 import traceback
 from utils.triggers import create_triggers
 from raw_ingestion import extract_and_push
-from transformations.transform import load_silver
+from silver.silver_loader import load_silver
 from utils.db import read_table
-from gold_loader import load_gold
+from gold.loader import load_gold
 
 st.set_page_config(
     page_title="Mutual Fund",
@@ -265,11 +265,51 @@ if transform_btn:
             load_silver()
             create_triggers()
 
-            load_gold()
-            create_triggers()
-
             # Silver → Gold
             st.info("Loading Gold Layer...")
+
+            gold_results = load_gold()
+            create_triggers()
+
+            # =====================================================
+            # SURFACE PER-DOMAIN GOLD RESULTS (Phase B)
+            # =====================================================
+            # load_gold() isolates failures per domain and never raises, so
+            # without this block a failed domain was visible only in the
+            # console while the UI still said "Transformation Completed".
+
+            gold_failed = [
+                r for r in gold_results
+                if r["status"] == "failed"
+            ]
+
+            gold_skipped = [
+                r for r in gold_results
+                if r["status"] == "skipped"
+            ]
+
+            for r in gold_failed:
+                st.error(
+                    f"❌ Gold **{r['name']}** failed: {r['error']}"
+                )
+
+            for r in gold_skipped:
+                st.warning(
+                    f"⚠ Gold **{r['name']}** skipped "
+                    f"(module unavailable): {r['error']}"
+                )
+
+            if not gold_failed:
+                loaded = [
+                    r for r in gold_results
+                    if r["status"] == "ok"
+                ]
+                st.success(
+                    f"✔ Gold Layer: {len(loaded)} domain(s) loaded, "
+                    f"0 failed"
+                )
+
+            st.session_state.gold_results = gold_results
 
             uploaded = st.session_state.uploaded_types
 
@@ -345,7 +385,16 @@ if transform_btn:
             st.session_state.transformed = True
             st.session_state.current_layer = "silver_gold"
 
-            st.success("✔ Transformation Completed + Silver Loaded to DB")
+            # Phase B: do not claim unqualified success when a Gold domain
+            # failed — the per-domain st.error calls above have the detail.
+            if gold_failed:
+                st.warning(
+                    f"⚠ Transformation finished with "
+                    f"{len(gold_failed)} failed Gold domain(s). "
+                    f"Silver loaded to DB."
+                )
+            else:
+                st.success("✔ Transformation Completed + Silver Loaded to DB")
 
         except Exception:
 

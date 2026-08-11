@@ -1,8 +1,9 @@
-streamlit
-pandas
-numpy
-openpyxl
-sqlalchemy
-psycopg2-binary
-tzdata
-pyparsing
+streamlit==1.61.1
+pandas==3.0.5
+numpy==2.5.1
+openpyxl==3.1.5
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+tzdata==2026.3
+rapidfuzz==3.14.5
+python-dotenv==1.2.2

@@ -1,25 +1,105 @@
-from sqlalchemy import create_engine
+"""
+utils/db.py
+===========
+Central database engine factory for the IntelliWealth ETL pipeline.
+
+Engines
+-------
+engine        — PROJECT_DB_* vars → raw warehouse (bronze / silver / gold schemas)
+master_engine — MASTER_DB_* vars → backend application DB (public.scheme_master)
+
+All credentials are sourced exclusively from environment variables via
+config/settings.py.  See python_scripts/.env.example for the full list of
+required variable names.
+
+restore_engine()
+----------------
+Factory that creates and returns a *fresh* SQLAlchemy engine for
+PROJECT_DB_NAME.  Use it to recover from a stale/closed connection pool
+without restarting the process:
+
+    from utils.db import engine, restore_engine
+    engine = restore_engine()   # reassign module-level name if needed
+"""
+
+import urllib.parse
+
 import pandas as pd
+from sqlalchemy import create_engine
 
-HOST = "localhost"
-PORT = "5432"
-USER = "postgres"
-PASSWORD = "vrund"
+# All credentials come from env vars — raises RuntimeError on first import
+# if any variable is missing, naming every missing var in the error message.
+from config.settings import (
+    MASTER_DB_HOST,
+    MASTER_DB_NAME,
+    MASTER_DB_PASSWORD,
+    MASTER_DB_PORT,
+    MASTER_DB_USER,
+    PROJECT_DB_HOST,
+    PROJECT_DB_NAME,
+    PROJECT_DB_PASSWORD,
+    PROJECT_DB_PORT,
+    PROJECT_DB_USER,
+)
 
-PROJECT_DATABASE = "inteliwealth_db"
-MASTER_DATABASE = "master_tables_db"
+# URL-encode passwords so special characters (e.g. @, #, %) don't break the
+# connection string.
+_project_pw = urllib.parse.quote_plus(PROJECT_DB_PASSWORD)
+_master_pw = urllib.parse.quote_plus(MASTER_DB_PASSWORD)
 
-# Project Database
+# ---------------------------------------------------------------------------
+# Project Database engine  — raw warehouse (bronze / silver / gold schemas)
+# ---------------------------------------------------------------------------
 engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}",
-    pool_pre_ping=True
+    f"postgresql+psycopg2://{PROJECT_DB_USER}:{_project_pw}"
+    f"@{PROJECT_DB_HOST}:{PROJECT_DB_PORT}/{PROJECT_DB_NAME}",
+    pool_pre_ping=True,
 )
 
-# Master Database
+# ---------------------------------------------------------------------------
+# Master Database engine  — backend app DB, read for public.scheme_master
+# pool_pre_ping=True added to match engine's connection hygiene.
+# ---------------------------------------------------------------------------
 master_engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
+    f"postgresql+psycopg2://{MASTER_DB_USER}:{_master_pw}"
+    f"@{MASTER_DB_HOST}:{MASTER_DB_PORT}/{MASTER_DB_NAME}",
+    pool_pre_ping=True,
 )
 
+
+# ---------------------------------------------------------------------------
+# restore_engine
+# ---------------------------------------------------------------------------
+def restore_engine():
+    """
+    Create and return a brand-new SQLAlchemy engine for PROJECT_DB_NAME.
+
+    Call this when the module-level ``engine`` has become stale or its
+    connection pool needs to be reset (e.g. after a database restart or a
+    long-running process relinquishes idle connections).
+
+    Returns
+    -------
+    sqlalchemy.engine.Engine
+        A fresh engine with ``pool_pre_ping=True``.
+
+    Example
+    -------
+    ::
+
+        from utils.db import restore_engine
+        engine = restore_engine()
+    """
+    return create_engine(
+        f"postgresql+psycopg2://{PROJECT_DB_USER}:{_project_pw}"
+        f"@{PROJECT_DB_HOST}:{PROJECT_DB_PORT}/{PROJECT_DB_NAME}",
+        pool_pre_ping=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Utility helpers (logic unchanged from original)
+# ---------------------------------------------------------------------------
 
 def read_table(schema, table, limit=100):
 

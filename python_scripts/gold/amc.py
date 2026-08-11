@@ -2,62 +2,9 @@ import pandas as pd
 import traceback
 
 from utils.db import engine
+from common.etl_helpers import safe_read, get_last_processed_time
 
 
-# =====================================================
-# SAFE READ
-# =====================================================
-
-def safe_read(query):
-
-    try:
-
-        return pd.read_sql(
-            query,
-            engine
-        )
-
-    except Exception as e:
-
-        print("SQL ERROR :", e)
-
-        return pd.DataFrame()
-
-
-# =====================================================
-# GET LAST PROCESSED TIME
-# =====================================================
-
-def get_last_processed_time():
-
-    try:
-
-        result = pd.read_sql(
-            """
-            SELECT
-                MAX(created_at) AS last_time
-            FROM gold.amc
-            """,
-            engine
-        )
-
-        last_time = result.iloc[0]["last_time"]
-
-        if pd.isna(last_time):
-
-            return pd.Timestamp(
-                "1900-01-01"
-            )
-
-        return pd.to_datetime(
-            last_time
-        )
-
-    except Exception:
-
-        return pd.Timestamp(
-            "1900-01-01"
-        )
 
 
 # =====================================================
@@ -70,7 +17,7 @@ def extract_amc():
     print("Extracting Gold AMC")
     print("=" * 80)
 
-    last_time = get_last_processed_time()
+    last_time = get_last_processed_time("gold.amc")
 
     df = safe_read(
         f"""

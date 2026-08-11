@@ -2,9 +2,9 @@ import csv
 import io
 import pandas as pd
 from utils.db import engine
-from etl_investor_master import process_investor_master
-from etl_trans import process_transactions
-from etl_sip import process_sip
+from bronze.investor_master import process_investor_master
+from bronze.transaction import process_transactions
+from bronze.sip import process_sip
 
 # =====================================================
 # READ FILE

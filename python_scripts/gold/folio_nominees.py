@@ -4,98 +4,55 @@ import uuid
 import traceback
 
 from utils.db import engine
+from common.etl_helpers import safe_read, get_last_processed_time, normalize_for_compare
 
 
 # =====================================================
-# SAFE READ
+# NOMINEE FLATTENING SHAPE
 # =====================================================
+# One Gold row per (silver row, nominee slot).  Kept module-level so the
+# reshape below and the DataFrame it produces cannot drift apart.
 
-def safe_read(query):
+NOMINEE_CONFIGS = [
 
-    try:
+    (1, "nominee1"),
+    (2, "nominee2"),
+    (3, "nominee3")
 
-        return pd.read_sql(
-            query,
-            engine
-        )
+]
 
-    except Exception as e:
+GOLD_NOMINEE_COLUMNS = [
 
-        print("SQL ERROR :", e)
+    "holding_id",
+    "seq",
+    "name",
+    "relationship",
+    "percentage",
+    "dob",
+    "is_minor",
+    "guardian_name",
+    "id_type",
+    "id_no",
+    "address"
 
-        return pd.DataFrame()
+]
 
+# Columns the old loop hard-coded to None on every emitted row.
+EMPTY_NOMINEE_COLUMNS = [
 
-# =====================================================
-# GET LAST PROCESSED TIME
-# =====================================================
+    "dob",
+    "is_minor",
+    "guardian_name",
+    "id_type",
+    "id_no",
+    "address"
 
-def get_last_processed_time():
-
-    try:
-
-        result = pd.read_sql(
-            """
-            SELECT
-                MAX(created_at) AS last_time
-            FROM gold.folio_nominees
-            """,
-            engine
-        )
-
-        last_time = result.iloc[0]["last_time"]
-
-        if pd.isna(last_time):
-
-            return pd.Timestamp("1900-01-01")
-
-        return pd.to_datetime(last_time)
-
-    except Exception:
-
-        return pd.Timestamp("1900-01-01")
+]
 
 
 # =====================================================
-# NORMALIZE FOR COMPARISON
-# =====================================================
-
-def normalize_for_compare(df):
-
-    df = df.copy()
-
-    df = df.drop(
-        columns=[
-            "created_at"
-        ],
-        errors="ignore"
-    )
-
-    for col in df.columns:
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce"
-                )
-                .dt.strftime("%Y-%m-%d")
-            )
-
-        else:
-
-            df[col] = (
-                df[col]
-                .astype("string")
-                .str.strip()
-            )
-
-    return df
-
-
-# =====================================================
-# CREATE NATURAL KEY
+# CREATE NATURAL KEY  (local — keys on holding_id + seq)
+# normalize_for_compare imported from common.etl_helpers
 # =====================================================
 
 def create_row_key(df):
@@ -103,7 +60,6 @@ def create_row_key(df):
     df = normalize_for_compare(df)
 
     return (
-
         df[
             [
                 "holding_id",
@@ -113,7 +69,6 @@ def create_row_key(df):
         .fillna("")
         .astype(str)
         .agg("|".join, axis=1)
-
     )
 
 
@@ -127,7 +82,7 @@ def extract_folio_nominees():
     print("Extracting Gold Folio Nominees")
     print("=" * 80)
 
-    last_time = get_last_processed_time()
+    last_time = get_last_processed_time("gold.folio_nominees")
 
     df = safe_read(
         """
@@ -167,6 +122,155 @@ def extract_folio_nominees():
     print("Rows fetched :", len(df))
 
     return df
+
+# =====================================================
+# FLATTEN NOMINEE COLUMN GROUPS  (vectorised — Phase C)
+# =====================================================
+
+def _optional_column(df, column):
+    """Return ``df[column]``, or an all-null object column when it is absent.
+
+    Mirrors ``row.get(column)`` in the old row-wise loop, which yielded None
+    for a column the Silver frame never carried.
+    """
+    if column in df.columns:
+
+        return df[column]
+
+    return pd.Series(
+        None,
+        index=df.index,
+        dtype=object
+    )
+
+
+def _reinfer_column(values):
+    """Re-run pandas' own dtype inference over an object column.
+
+    The old loop handed pandas one list of dicts, so each column's dtype was
+    inferred from all of its Python values in a single pass.  Building the
+    three nominee slices separately would instead freeze each slice's dtype
+    before the concat, so the text columns are re-inferred afterwards to land
+    on exactly the dtype the loop produced — ``str`` for a column holding any
+    string, plain ``object`` for one that is entirely null.
+    """
+    return pd.Series(
+        values.to_numpy(dtype=object),
+        index=values.index
+    )
+
+
+def _as_object_with_none(values):
+    """Object-dtype copy of *values* whose nulls are literal ``None``.
+
+    The old loop built plain Python dicts, so every null it emitted was
+    ``None`` in an object column.  ``astype("string")`` is what makes the
+    strip vectorised, but it yields ``pd.NA`` in a ``string`` column — this
+    converts back so the reshape is dtype-identical to the loop it replaces.
+    """
+    values = values.astype(object)
+
+    return values.where(
+        values.notna(),
+        None
+    )
+
+
+def _clean_nominee_name(values):
+    """``str(v).strip()``, with blank-after-strip collapsed to null."""
+
+    names = (
+        values
+        .astype("string")
+        .str.strip()
+    )
+
+    names = names.mask(
+        (names == "").fillna(False),
+        pd.NA
+    )
+
+    return _as_object_with_none(names)
+
+
+def _clean_nominee_relationship(values):
+    """``str(v).strip()`` only.
+
+    Deliberately does NOT collapse "" to null — the old loop applied that
+    rule to ``name`` but not to ``relationship``, and that asymmetry is
+    preserved here on purpose.
+    """
+    return _as_object_with_none(
+        values
+        .astype("string")
+        .str.strip()
+    )
+
+
+def flatten_nominee_rows(df):
+    """Explode the nominee1/2/3 column groups into one row per (row, seq).
+
+    Vectorised replacement (Phase C) for the ``df.iterrows()`` double loop
+    that appended one dict per (row, nominee slot).  Each nominee slot is
+    built as a whole-column slice and the three slices are concatenated, so
+    the work is O(rows) pandas operations instead of O(rows x 3) Python
+    dict builds.
+
+    The interleaved row order of the old loop (row0/seq1, row0/seq2,
+    row0/seq3, row1/seq1, ...) is reproduced exactly by giving each slice
+    the index ``position * 3 + (seq - 1)`` and sorting, so the positional
+    index — which ``drop_duplicates(keep="last")`` downstream depends on —
+    is identical to before.
+    """
+    positions = pd.RangeIndex(len(df))
+
+    blocks = []
+
+    for seq, prefix in NOMINEE_CONFIGS:
+
+        block = pd.DataFrame(
+            {
+                "holding_id": df["holding_id"],
+
+                "seq": seq,
+
+                "name": _clean_nominee_name(
+                    _optional_column(df, f"{prefix}_name")
+                ),
+
+                "relationship": _clean_nominee_relationship(
+                    _optional_column(df, f"{prefix}_relation")
+                ),
+
+                "percentage": pd.to_numeric(
+                    _optional_column(df, f"{prefix}_percentage"),
+                    errors="coerce"
+                ),
+            }
+        )
+
+        for column in EMPTY_NOMINEE_COLUMNS:
+
+            block[column] = None
+
+        block.index = (
+            positions * len(NOMINEE_CONFIGS) + (seq - 1)
+        )
+
+        blocks.append(block)
+
+    gold_df = (
+        pd.concat(blocks)
+        .sort_index()
+        .reindex(columns=GOLD_NOMINEE_COLUMNS)
+    )
+
+    for column in ("name", "relationship"):
+
+        gold_df[column] = _reinfer_column(gold_df[column])
+
+    return gold_df
+
 
 # =====================================================
 # TRANSFORM GOLD FOLIO NOMINEES
@@ -274,126 +378,10 @@ def transform_folio_nominees(df):
     print("Missing Holding IDs :", df["holding_id"].isna().sum())
 
     # =====================================================
-    # BUILD NOMINEE ROWS
+    # BUILD NOMINEE ROWS  (vectorised reshape — see flatten_nominee_rows)
     # =====================================================
 
-    gold_rows = []
-
-    nominee_configs = [
-
-        (1, "nominee1"),
-        (2, "nominee2"),
-        (3, "nominee3")
-
-    ]
-
-    for _, row in df.iterrows():
-
-        for seq, prefix in nominee_configs:
-
-            nominee_name = row.get(f"{prefix}_name")
-
-            if pd.isna(nominee_name):
-
-                nominee_name = None
-
-            else:
-
-                nominee_name = str(
-                    nominee_name
-                ).strip()
-
-                if nominee_name == "":
-
-                    nominee_name = None
-
-            relationship = row.get(
-                f"{prefix}_relation"
-            )
-
-            if pd.isna(relationship):
-
-                relationship = None
-
-            else:
-
-                relationship = str(
-                    relationship
-                ).strip()
-
-            percentage = pd.to_numeric(
-
-                row.get(f"{prefix}_percentage"),
-
-                errors="coerce"
-
-            )
-
-                        # ============================================
-            # BUILD GOLD ROW
-            # ============================================
-
-            gold_rows.append({
-
-                "holding_id": row["holding_id"],
-
-                "seq": seq,
-
-                "name": nominee_name,
-
-                "relationship": relationship,
-
-                "percentage": percentage,
-
-                "dob": None,
-
-                "is_minor": None,
-
-                "guardian_name": None,
-
-                "id_type": None,
-
-                "id_no": None,
-
-                "address": None
-
-            })
-
-    # =====================================================
-    # CREATE GOLD DATAFRAME
-    # =====================================================
-
-    gold_df = pd.DataFrame(
-
-        gold_rows,
-
-        columns=[
-
-            "holding_id",
-
-            "seq",
-
-            "name",
-
-            "relationship",
-
-            "percentage",
-
-            "dob",
-
-            "is_minor",
-
-            "guardian_name",
-
-            "id_type",
-
-            "id_no",
-
-            "address"
-
-        ]
-
-    )
+    gold_df = flatten_nominee_rows(df)
 
     # =====================================================
     # REMOVE INVALID ROWS

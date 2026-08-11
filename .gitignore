@@ -38,3 +38,7 @@ docker-compose.yml
 silver_to_gold.py
 
 db.py
+
+data-files
+project-flows
+test-scripts
