@@ -97,16 +97,16 @@ def extract_holdings():
         i.nominee1_percentage AS investor_nominee_percentage,
 
 
-        i.bank_name AS investor_bank_name,
+        t.bank_name AS investor_bank_name,
 
-        i.bank_account_no AS investor_bank_account_no,
+        t.ac_no AS investor_bank_account_no,
 
 
         i.demat_flag AS investor_demat_flag,
 
         i.ckyc_no AS investor_ckyc_no,
 
-        i.broker_code AS investor_broker_code
+       t.brokcode AS investor_broker_code
 
 
 
