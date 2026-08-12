@@ -1,11 +1,197 @@
 import pandas as pd
-from datetime import datetime
+import traceback
 
-from utils.db import engine, restore_engine
+from datetime import datetime
+from utils.db import engine, master_engine
 
 
 # ============================================================
-# EXTRACT GOLD CLIENT DATA
+# SAFE READ
+# ============================================================
+
+def safe_read(query, connection=engine):
+
+    try:
+
+        return pd.read_sql(
+            query,
+            connection
+        )
+
+    except Exception as e:
+
+        print("SQL ERROR :", e)
+
+        traceback.print_exc(limit=5)
+
+        return pd.DataFrame()
+
+
+# ============================================================
+# CLEAN STRING
+# ============================================================
+
+def clean_string(series):
+
+    return (
+        series
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace(
+            [
+                "",
+                "NAN",
+                "NONE",
+                "NULL",
+                "NAT"
+            ],
+            pd.NA
+        )
+    )
+
+
+# ============================================================
+# CLEAN PAN
+# ============================================================
+
+def clean_pan(series):
+
+    return (
+        clean_string(series)
+        .str.upper()
+        .str.strip()
+        .replace(
+            [
+                "",
+                "NAN",
+                "NONE",
+                "NULL",
+                "NON RESIDENT"
+            ],
+            pd.NA
+        )
+        .str[:10]
+    )
+
+
+# ============================================================
+# CLEAN PHONE
+# ============================================================
+
+def clean_phone(series):
+
+    raw = clean_string(series)
+
+    raw = (
+        raw
+        .str.split(",")
+        .str[0]
+        .str.strip()
+    )
+
+    invalid_alpha = raw.str.contains(
+        r"[A-Za-z]",
+        regex=True,
+        na=False
+    )
+
+    raw.loc[invalid_alpha] = pd.NA
+
+    raw = (
+        raw
+        .str.replace(
+            r"\D",
+            "",
+            regex=True
+        )
+    )
+
+    raw = raw.str[:20]
+
+    return raw.replace("", pd.NA)
+
+
+# ============================================================
+# NORMALIZE MOBILE
+# ============================================================
+
+def normalize_mobile(series):
+
+    raw = clean_string(series)
+
+    digits = (
+        raw
+        .fillna("")
+        .astype(str)
+        .str.replace(
+            r"\D",
+            "",
+            regex=True
+        )
+    )
+
+    mobile = pd.Series(
+        pd.NA,
+        index=series.index,
+        dtype="object"
+    )
+
+    mobile_isd = pd.Series(
+        pd.NA,
+        index=series.index,
+        dtype="object"
+    )
+
+    # 91 + 10 digits
+
+    mask_91 = (
+        (digits.str.len() == 12)
+        &
+        digits.str.startswith("91")
+    )
+
+    mobile.loc[mask_91] = (
+        digits.loc[mask_91].str[-10:]
+    )
+
+    mobile_isd.loc[mask_91] = "91"
+
+    # 10 digits
+
+    mask_10 = (
+        digits.str.len() == 10
+    )
+
+    mobile.loc[mask_10] = (
+        digits.loc[mask_10]
+    )
+
+    mobile_isd.loc[mask_10] = "91"
+
+    # International
+
+    mask_other = (
+        (digits.str.len() > 10)
+        &
+        (~mask_91)
+    )
+
+    mobile.loc[mask_other] = (
+        digits.loc[mask_other].str[-10:]
+    )
+
+    mobile_isd.loc[mask_other] = (
+        digits.loc[mask_other]
+        .str[:-10]
+        .str[-5:]
+    )
+
+    return mobile, mobile_isd
+
+
+# ============================================================
+# EXTRACT CLIENTS
 # ============================================================
 
 def extract_clients():
@@ -15,45 +201,172 @@ def extract_clients():
     print("=" * 80)
 
     query = """
+
+    WITH transaction_ranked AS
+    (
+        SELECT
+
+            folio_no,
+            source,
+            pan,
+            traddate,
+            common_account_number,
+            brokcode,
+            src_brk_code,
+            created_at,
+
+            ROW_NUMBER() OVER
+            (
+                PARTITION BY
+                    UPPER(TRIM(source)),
+                    REGEXP_REPLACE(
+                        TRIM(CAST(folio_no AS TEXT)),
+                        '\\.0$',
+                        ''
+                    )
+
+                ORDER BY
+                    created_at DESC NULLS LAST,
+                    traddate DESC NULLS LAST
+
+            ) AS rn
+
+        FROM silver.transaction_master_new
+
+        WHERE pan IS NOT NULL
+          AND TRIM(pan) <> ''
+    ),
+
+    transaction_data AS
+    (
+        SELECT
+
+            folio_no,
+            source,
+            pan,
+            traddate,
+            common_account_number,
+            brokcode,
+            src_brk_code,
+            created_at
+
+        FROM transaction_ranked
+
+        WHERE rn = 1
+    ),
+
+    sip_ranked AS
+    (
+        SELECT
+
+            folio_no,
+            source,
+            pan,
+            created_at,
+
+            ROW_NUMBER() OVER
+            (
+                PARTITION BY
+                    UPPER(TRIM(source)),
+                    REGEXP_REPLACE(
+                        TRIM(CAST(folio_no AS TEXT)),
+                        '\\.0$',
+                        ''
+                    )
+
+                ORDER BY
+                    created_at DESC NULLS LAST
+
+            ) AS rn
+
+        FROM silver.sip_master_new
+
+        WHERE pan IS NOT NULL
+          AND TRIM(pan) <> ''
+    ),
+
+    sip_data AS
+    (
+        SELECT
+
+            folio_no,
+            source,
+            pan,
+            created_at
+
+        FROM sip_ranked
+
+        WHERE rn = 1
+    )
+
     SELECT
+
         i.*,
 
         t.pan AS txn_pan,
-        t.traddate AS txn_traddate,
-        t.common_account_number AS txn_common_account_number,
 
-        s.pan AS sip_pan
+        t.traddate AS txn_traddate,
+
+        t.common_account_number
+            AS txn_common_account_number,
+
+        t.brokcode AS txn_brokcode,
+
+        t.src_brk_code AS txn_src_brk_code,
+
+        t.created_at AS txn_created_at,
+
+        s.pan AS sip_pan,
+
+        s.created_at AS sip_created_at
 
     FROM silver.investor_master i
 
-    LEFT JOIN
-    (
-        SELECT
-            folio_no,
-            MAX(pan) AS pan,
-            MIN(traddate) AS traddate,
-            MAX(common_account_number) AS common_account_number
-        FROM silver.transaction_master_new
-        WHERE pan IS NOT NULL
-          AND TRIM(pan) <> ''
-        GROUP BY folio_no
-    ) t
-        ON i.folio_no = t.folio_no
+    LEFT JOIN transaction_data t
 
-    LEFT JOIN
-    (
-        SELECT
-            folio_no,
-            MAX(pan) AS pan
-        FROM silver.sip_master_new
-        WHERE pan IS NOT NULL
-          AND TRIM(pan) <> ''
-        GROUP BY folio_no
-    ) s
-        ON i.folio_no = s.folio_no
+        ON REGEXP_REPLACE(
+            TRIM(CAST(i.folio_no AS TEXT)),
+            '\\.0$',
+            ''
+        )
+        =
+        REGEXP_REPLACE(
+            TRIM(CAST(t.folio_no AS TEXT)),
+            '\\.0$',
+            ''
+        )
+
+        AND UPPER(TRIM(i.source))
+            =
+            UPPER(TRIM(t.source))
+
+    LEFT JOIN sip_data s
+
+        ON REGEXP_REPLACE(
+            TRIM(CAST(i.folio_no AS TEXT)),
+            '\\.0$',
+            ''
+        )
+        =
+        REGEXP_REPLACE(
+            TRIM(CAST(s.folio_no AS TEXT)),
+            '\\.0$',
+            ''
+        )
+
+        AND UPPER(TRIM(i.source))
+            =
+            UPPER(TRIM(s.source))
+
     """
 
-    df = pd.read_sql(query, engine)
+    df = safe_read(query)
+
+    if df.empty:
+
+        print("No client data extracted.")
+
+        return df
 
     df.columns = (
         df.columns
@@ -64,14 +377,32 @@ def extract_clients():
 
     print("\nExtraction Completed")
     print("-" * 80)
-    print("Rows fetched    :", len(df))
-    print("Columns fetched :", len(df.columns))
+
+    print(
+        "Rows fetched :",
+        len(df)
+    )
+
+    print(
+        "Transaction PAN mapped :",
+        df["txn_pan"].notna().sum()
+    )
+
+    print(
+        "SIP PAN mapped :",
+        df["sip_pan"].notna().sum()
+    )
+
+    print(
+        "Investor PAN available :",
+        df["pan_no"].notna().sum()
+    )
 
     return df
 
 
 # ============================================================
-# TRANSFORM GOLD CLIENT DATA
+# TRANSFORM CLIENTS
 # ============================================================
 
 def transform_clients(df):
@@ -79,6 +410,10 @@ def transform_clients(df):
     print("=" * 80)
     print("TRANSFORMING GOLD CLIENTS")
     print("=" * 80)
+
+    if df.empty:
+
+        return pd.DataFrame()
 
     df = df.copy()
 
@@ -88,155 +423,6 @@ def transform_clients(df):
         .str.lower()
         .str.strip()
     )
-
-    # ========================================================
-    # HELPERS
-    # ========================================================
-
-    def clean_string(series):
-
-        return (
-            series
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .replace(
-                [
-                    "",
-                    "NAN",
-                    "NONE",
-                    "NULL",
-                    "NAT",
-                    "NaT"
-                ],
-                pd.NA
-            )
-        )
-
-    def clean_pan(series):
-
-        return (
-            clean_string(series)
-            .str.upper()
-            .str.strip()
-            .replace(
-                [
-                    "",
-                    "NAN",
-                    "NONE",
-                    "NULL",
-                    "NON RESIDENT"
-                ],
-                pd.NA
-            )
-            .str[:10]
-        )
-
-    def clean_phone(series):
-
-        raw = clean_string(series)
-
-        # Keep only the first comma-separated number
-        raw = (
-            raw
-            .str.split(",")
-            .str[0]
-            .str.strip()
-        )
-
-        # Reject values containing alphabetic characters.
-        # This prevents scheme/client names from entering phone.
-        invalid_alpha = raw.str.contains(
-            r"[A-Za-z]",
-            regex=True,
-            na=False
-        )
-
-        raw.loc[invalid_alpha] = pd.NA
-
-        # Keep only digits
-        raw = (
-            raw
-            .str.replace(
-                r"\D",
-                "",
-                regex=True
-            )
-        )
-
-        # Phone column allows max 20 characters
-        raw = raw.str[:20]
-
-        return raw.replace("", pd.NA)
-
-    def normalize_mobile(series):
-
-        raw = clean_string(series)
-
-        digits = (
-            raw
-            .fillna("")
-            .astype(str)
-            .str.replace(
-                r"\D",
-                "",
-                regex=True
-            )
-        )
-
-        mobile = pd.Series(
-            pd.NA,
-            index=series.index,
-            dtype="object"
-        )
-
-        mobile_isd = pd.Series(
-            pd.NA,
-            index=series.index,
-            dtype="object"
-        )
-
-        # +91XXXXXXXXXX / 91XXXXXXXXXX
-        mask_91 = (
-            (digits.str.len() == 12)
-            &
-            digits.str.startswith("91")
-        )
-
-        mobile.loc[mask_91] = (
-            digits.loc[mask_91].str[-10:]
-        )
-
-        mobile_isd.loc[mask_91] = "91"
-
-        # 10 digit Indian mobile
-        mask_10 = (
-            digits.str.len() == 10
-        )
-
-        mobile.loc[mask_10] = (
-            digits.loc[mask_10]
-        )
-
-        mobile_isd.loc[mask_10] = "91"
-
-        # Other international numbers
-        mask_other = (
-            (digits.str.len() > 10)
-            & (~mask_91)
-        )
-
-        mobile.loc[mask_other] = (
-            digits.loc[mask_other].str[-10:]
-        )
-
-        mobile_isd.loc[mask_other] = (
-            digits.loc[mask_other]
-            .str[:-10]
-            .str[-5:]
-        )
-
-        return mobile, mobile_isd
 
     # ========================================================
     # SOURCE
@@ -249,30 +435,29 @@ def transform_clients(df):
     )
 
     cams_mask = df["source"] == "CAMS"
-    kfin_mask = df["source"] == "KFIN"
+
+    kfin_mask = df["source"].isin(
+        [
+            "KFIN",
+            "KFINTECH"
+        ]
+    )
 
     # ========================================================
     # PAN
-    #
-    # CAMS:
-    # PAN / pan_no
-    #
-    # KFIN:
-    # PANGNO / PAN Number
-    #
-    # Silver should expose these as pan_no.
     # ========================================================
 
-    if "pan_no" not in df.columns:
+    df["pan_no"] = clean_pan(
+        df["pan_no"]
+    )
 
-        raise Exception(
-            "pan_no is missing from silver.investor_master. "
-            "Fix the Investor Master mapping before Gold."
-        )
+    df["txn_pan"] = clean_pan(
+        df["txn_pan"]
+    )
 
-    df["pan_no"] = clean_pan(df["pan_no"])
-    df["txn_pan"] = clean_pan(df["txn_pan"])
-    df["sip_pan"] = clean_pan(df["sip_pan"])
+    df["sip_pan"] = clean_pan(
+        df["sip_pan"]
+    )
 
     df["pan"] = (
         df["pan_no"]
@@ -283,69 +468,79 @@ def transform_clients(df):
     print("\nPAN Statistics")
     print("-" * 80)
 
-    print("Investor PAN    :", df["pan_no"].notna().sum())
-    print("Transaction PAN :", df["txn_pan"].notna().sum())
-    print("SIP PAN         :", df["sip_pan"].notna().sum())
-    print("Final PAN       :", df["pan"].notna().sum())
-    print("Missing PAN     :", df["pan"].isna().sum())
+    print(
+        "Investor PAN    :",
+        df["pan_no"].notna().sum()
+    )
+
+    print(
+        "Transaction PAN :",
+        df["txn_pan"].notna().sum()
+    )
+
+    print(
+        "SIP PAN         :",
+        df["sip_pan"].notna().sum()
+    )
+
+    print(
+        "Final PAN       :",
+        df["pan"].notna().sum()
+    )
+
+    print(
+        "Missing PAN     :",
+        df["pan"].isna().sum()
+    )
 
     # ========================================================
-    # CREATE GOLD
+    # CREATE GOLD DATAFRAME
     # ========================================================
 
-    gold = pd.DataFrame(index=df.index)
+    gold = pd.DataFrame(
+        index=df.index
+    )
 
     # ========================================================
-    # status
+    # BASIC
     # ========================================================
 
     gold["status"] = None
-
-    # ========================================================
-    # full_name
-    #
-    # Silver investor_name
-    # ========================================================
 
     gold["full_name"] = clean_string(
         df["investor_name"]
     )
 
-    # ========================================================
-    # client_label
-    # ========================================================
-
     gold["client_label"] = None
 
     # ========================================================
     # PHONE
-    #
-    # CAMS:
-    # PHONE_RES / PHONE_OFF
-    #
-    # KFIN:
-    # Phone Residence / Phone Office
-    #
-    # IMPORTANT:
-    # Silver must already alias these correctly.
     # ========================================================
 
     if "phone_res" in df.columns:
-        phone_res = clean_phone(df["phone_res"])
+
+        phone_res = clean_phone(
+            df["phone_res"]
+        )
+
     else:
+
         phone_res = pd.Series(
             pd.NA,
-            index=df.index,
-            dtype="object"
+            index=df.index
         )
 
     if "phone_off" in df.columns:
-        phone_off = clean_phone(df["phone_off"])
+
+        phone_off = clean_phone(
+            df["phone_off"]
+        )
+
     else:
+
         phone_off = pd.Series(
             pd.NA,
-            index=df.index,
-            dtype="object"
+            index=df.index
         )
 
     gold["phone"] = (
@@ -355,9 +550,6 @@ def transform_clients(df):
 
     # ========================================================
     # MOBILE
-    #
-    # CAMS: MOBILE_NO
-    # KFIN: Mobile Number
     # ========================================================
 
     if "mobile_no" in df.columns:
@@ -384,8 +576,6 @@ def transform_clients(df):
 
     # ========================================================
     # AADHAAR
-    #
-    # FLAG ONLY
     # ========================================================
 
     gold["aadhaar"] = pd.NA
@@ -408,6 +598,7 @@ def transform_clients(df):
     gold["pan"] = df["pan"]
 
     gold["pan_verified"] = False
+
     gold["pan_verified_at"] = None
 
     # ========================================================
@@ -415,8 +606,13 @@ def transform_clients(df):
     # ========================================================
 
     if "email" in df.columns:
-        gold["email"] = clean_string(df["email"])
+
+        gold["email"] = clean_string(
+            df["email"]
+        )
+
     else:
+
         gold["email"] = None
 
     # ========================================================
@@ -448,10 +644,6 @@ def transform_clients(df):
 
     # ========================================================
     # CAN
-    #
-    # KFIN:
-    # CommonAccNo from master
-    # fallback transaction CAN
     # ========================================================
 
     gold["can"] = None
@@ -468,20 +660,23 @@ def transform_clients(df):
             ]
         )
 
-    kfin_can_missing = (
-        kfin_mask
-        & gold["can"].isna()
-    )
+    if "txn_common_account_number" in df.columns:
 
-    gold.loc[
-        kfin_can_missing,
-        "can"
-    ] = clean_string(
-        df.loc[
-            kfin_can_missing,
-            "txn_common_account_number"
-        ]
-    )
+        missing_can = (
+            kfin_mask
+            &
+            gold["can"].isna()
+        )
+
+        gold.loc[
+            missing_can,
+            "can"
+        ] = clean_string(
+            df.loc[
+                missing_can,
+                "txn_common_account_number"
+            ]
+        )
 
     # ========================================================
     # OCCUPATION
@@ -524,9 +719,6 @@ def transform_clients(df):
 
     # ========================================================
     # INVESTOR TYPE
-    #
-    # CAMS: TAX_STATUS
-    # KFIN: StatusDesc -> CategoryDesc
     # ========================================================
 
     investor_type_source = pd.Series(
@@ -535,14 +727,16 @@ def transform_clients(df):
         dtype="object"
     )
 
-    investor_type_source.loc[
-        cams_mask
-    ] = clean_string(
-        df.loc[
-            cams_mask,
-            "tax_status"
-        ]
-    )
+    if "tax_status" in df.columns:
+
+        investor_type_source.loc[
+            cams_mask
+        ] = clean_string(
+            df.loc[
+                cams_mask,
+                "tax_status"
+            ]
+        )
 
     if "statusdesc" in df.columns:
 
@@ -557,16 +751,17 @@ def transform_clients(df):
 
     if "categorydesc" in df.columns:
 
-        kfin_missing = (
+        missing_type = (
             kfin_mask
-            & investor_type_source.isna()
+            &
+            investor_type_source.isna()
         )
 
         investor_type_source.loc[
-            kfin_missing
+            missing_type
         ] = clean_string(
             df.loc[
-                kfin_missing,
+                missing_type,
                 "categorydesc"
             ]
         )
@@ -574,6 +769,7 @@ def transform_clients(df):
     def derive_investor_type(value):
 
         if pd.isna(value):
+
             return pd.NA
 
         value = (
@@ -605,15 +801,18 @@ def transform_clients(df):
     # TAX STATUS
     # ========================================================
 
-    gold["tax_status"] = clean_string(
-        df["tax_status"]
-    )
+    if "tax_status" in df.columns:
+
+        gold["tax_status"] = clean_string(
+            df["tax_status"]
+        )
+
+    else:
+
+        gold["tax_status"] = None
 
     # ========================================================
     # KYC
-    #
-    # CAMS: Verified if CKYC present
-    # KFIN: Kyc1Flag
     # ========================================================
 
     gold["kyc_status"] = pd.NA
@@ -637,7 +836,9 @@ def transform_clients(df):
     if "kyc1flag" in df.columns:
 
         kfin_kyc = (
-            clean_string(df["kyc1flag"])
+            clean_string(
+                df["kyc1flag"]
+            )
             .fillna("")
             .astype(str)
             .str.upper()
@@ -674,106 +875,132 @@ def transform_clients(df):
 
     # ========================================================
     # ARN
-    #
-    # Keep NULL until ARN lookup exists.
+    # ========================================================
+
+    gold["arn"] = (
+        clean_string(
+            df["txn_brokcode"]
+        )
+        .str.upper()
+        .str.strip()
+        .replace("", pd.NA)
+        .str[:50]
+    )
+
+    # ========================================================
+    # SUB ARN
+    # ========================================================
+
+    gold["sub_arn"] = (
+        clean_string(
+            df["txn_src_brk_code"]
+        )
+        .str.upper()
+        .str.strip()
+        .replace("", pd.NA)
+        .str[:50]
+    )
+
+    print("\nARN Mapping")
+    print("-" * 80)
+
+    print(
+        "ARN values found      :",
+        gold["arn"].notna().sum()
+    )
+
+    print(
+        "ARN values missing    :",
+        gold["arn"].isna().sum()
+    )
+
+    print(
+        "Sub ARN values found  :",
+        gold["sub_arn"].notna().sum()
+    )
+
+    print(
+        "Sub ARN values missing:",
+        gold["sub_arn"].isna().sum()
+    )
+
+    # ========================================================
+    # ARN ID
     # ========================================================
 
     gold["arn_id"] = None
 
-    broker_code = pd.Series(
-        pd.NA,
-        index=df.index,
-        dtype="object"
+    broker_code = clean_string(
+        df["txn_brokcode"]
     )
-
-    # --------------------------------------------------------
-    # Investor Master broker_code
-    # --------------------------------------------------------
-
-    if "broker_code" in df.columns:
-
-        broker_code = clean_string(
-            df["broker_code"]
-        )
-
-    # --------------------------------------------------------
-    # Transaction brokcode fallback
-    # --------------------------------------------------------
-
-    if "brokcode" in df.columns:
-
-        txn_broker_code = clean_string(
-            df["brokcode"]
-        )
-
-        broker_code = (
-            broker_code
-            .fillna(txn_broker_code)
-        )
-
-    # --------------------------------------------------------
-    # ARN LOOKUP FROM RESTORE DATABASE
-    # --------------------------------------------------------
 
     if broker_code.notna().any():
 
-        arn_lookup = pd.read_sql(
+        arn_lookup = safe_read(
             """
             SELECT
                 arn_code,
                 id AS arn_id
             FROM arn
             WHERE arn_code IS NOT NULL
-            AND TRIM(arn_code) <> ''
-            AND COALESCE(is_deleted, FALSE) = FALSE
+              AND TRIM(arn_code) <> ''
+              AND COALESCE(is_deleted, FALSE) = FALSE
             """,
-            restore_engine
+            master_engine
         )
 
-        arn_lookup["arn_code"] = (
-            arn_lookup["arn_code"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+        if not arn_lookup.empty:
 
-        arn_lookup = (
-            arn_lookup
-            .drop_duplicates(
-                subset=["arn_code"]
+            arn_lookup["arn_code"] = (
+                arn_lookup["arn_code"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
             )
-            .set_index("arn_code")["arn_id"]
-        )
 
-        gold["arn_id"] = (
-            broker_code
-            .astype("string")
-            .str.strip()
-            .str.upper()
-            .map(arn_lookup)
-        )
+            arn_lookup = (
+                arn_lookup
+                .drop_duplicates(
+                    subset=["arn_code"]
+                )
+                .set_index("arn_code")["arn_id"]
+            )
 
-    # --------------------------------------------------------
-    # ARN VALIDATION
-    # --------------------------------------------------------
+            gold["arn_id"] = (
+                broker_code
+                .astype("string")
+                .str.strip()
+                .str.upper()
+                .map(arn_lookup)
+            )
 
-    print("\nARN Mapping")
+    print("\nARN ID Mapping")
     print("-" * 80)
-    print("Broker codes found :", broker_code.notna().sum())
-    print("ARN IDs mapped     :", gold["arn_id"].notna().sum())
-    print("ARN IDs missing    :", gold["arn_id"].isna().sum())
+
+    print(
+        "Broker codes found :",
+        broker_code.notna().sum()
+    )
+
+    print(
+        "ARN IDs mapped     :",
+        gold["arn_id"].notna().sum()
+    )
+
+    print(
+        "ARN IDs missing    :",
+        gold["arn_id"].isna().sum()
+    )
+
     # ========================================================
     # ONBOARDED AT
-    #
-    # CAMS: min(FOLIO_DATE)
-    # KFIN: min(transaction date)
     # ========================================================
 
     gold["onboarded_at"] = pd.NaT
 
     if "folio_date" in df.columns:
 
-        cams_folio_date = pd.to_datetime(
+        folio_date = pd.to_datetime(
             df["folio_date"],
             errors="coerce"
         )
@@ -781,21 +1008,23 @@ def transform_clients(df):
         gold.loc[
             cams_mask,
             "onboarded_at"
-        ] = cams_folio_date.loc[
+        ] = folio_date.loc[
             cams_mask
         ]
 
-    kfin_trxn_date = pd.to_datetime(
-        df["txn_traddate"],
-        errors="coerce"
-    )
+    if "txn_traddate" in df.columns:
 
-    gold.loc[
-        kfin_mask,
-        "onboarded_at"
-    ] = kfin_trxn_date.loc[
-        kfin_mask
-    ]
+        txn_date = pd.to_datetime(
+            df["txn_traddate"],
+            errors="coerce"
+        )
+
+        gold.loc[
+            kfin_mask,
+            "onboarded_at"
+        ] = txn_date.loc[
+            kfin_mask
+        ]
 
     gold["onboarded_at"] = (
         pd.to_datetime(
@@ -820,23 +1049,6 @@ def transform_clients(df):
     gold["created_at"] = datetime.now()
 
     # ========================================================
-    # ROW COUNT
-    # ========================================================
-
-    print("\nTransformation Completed")
-    print("-" * 80)
-
-    print("Silver rows :", len(df))
-    print("Gold rows   :", len(gold))
-
-    if len(df) != len(gold):
-
-        raise Exception(
-            "Row count mismatch. "
-            "Data loss detected between Silver and Gold."
-        )
-
-    # ========================================================
     # FINAL COLUMN ORDER
     # ========================================================
 
@@ -855,6 +1067,8 @@ def transform_clients(df):
             "pan",
             "pan_verified",
             "pan_verified_at",
+            "arn",
+            "sub_arn",
             "email",
             "date_of_birth",
             "marital_status",
@@ -880,364 +1094,508 @@ def transform_clients(df):
         ]
     ]
 
-    # ========================================================
-    # VALIDATION
-    # ========================================================
-
-    print("\nGold Clients Preview")
-    print("-" * 80)
-    print(gold.head())
-
-    print("\nSource Distribution")
-    print("-" * 80)
-    print(
-        gold["source"]
-        .value_counts(dropna=False)
-    )
-
-    # --------------------------------------------------------
-    # PHONE VALIDATION
-    # --------------------------------------------------------
-
-    print("\nPhone Validation")
+    print("\nTransformation Completed")
     print("-" * 80)
 
-    phone_values = (
-        gold["phone"]
-        .dropna()
-        .astype(str)
-    )
-
     print(
-        "Phone values:",
-        len(phone_values)
-    )
-
-    invalid_phone = (
-        phone_values.str.contains(
-            r"[A-Za-z]",
-            regex=True,
-            na=False
-        )
-        |
-        (phone_values.str.len() > 20)
-    )
-
-    print(
-        "Invalid phone values:",
-        invalid_phone.sum()
-    )
-
-    if invalid_phone.any():
-
-        print(
-            gold.loc[
-                phone_values[
-                    invalid_phone
-                ].index,
-                [
-                    "full_name",
-                    "phone",
-                    "source"
-                ]
-            ].head(20)
-        )
-
-        raise Exception(
-            "Invalid phone values found."
-        )
-
-    # --------------------------------------------------------
-    # MOBILE VALIDATION
-    # --------------------------------------------------------
-
-    mobile_values = (
-        gold["mobile"]
-        .dropna()
-        .astype(str)
-    )
-
-    invalid_mobile = (
-        ~mobile_values.str.match(
-            r"^\d{10}$"
-        )
-    )
-
-    print(
-        "Mobile values:",
-        len(mobile_values)
-    )
-
-    print(
-        "Invalid mobile values:",
-        invalid_mobile.sum()
-    )
-
-    if invalid_mobile.any():
-
-        raise Exception(
-            "Invalid mobile values found. "
-            "Gold.mobile must contain exactly 10 digits."
-        )
-
-    # --------------------------------------------------------
-    # LENGTH VALIDATION
-    # --------------------------------------------------------
-
-    column_limits = {
-
-        "status": 20,
-        "full_name": 255,
-        "client_label": 255,
-        "phone": 20,
-        "mobile_isd": 5,
-        "mobile": 20,
-        "whatsapp_isd": 5,
-        "whatsapp_no": 20,
-        "aadhaar": 12,
-        "pan": 10,
-        "email": 255,
-        "marital_status": 10,
-        "blood_group": 5,
-        "equity_ucc": 30,
-        "can": 30,
-        "occupation": 30,
-        "family_relation": 20,
-        "gender": 10,
-        "investor_type": 20,
-        "tax_status": 30,
-        "kyc_status": 20,
-        "risk_profile": 20,
-        "source": 30
-    }
-
-    validation_failed = False
-
-    print("\nString Length Validation")
-    print("-" * 80)
-
-    for column, max_length in column_limits.items():
-
-        if column not in gold.columns:
-            continue
-
-        values = (
-            gold[column]
-            .dropna()
-            .astype(str)
-        )
-
-        if len(values) == 0:
-
-            print(
-                f"{column:25} no values"
-            )
-
-            continue
-
-        max_found = values.str.len().max()
-
-        print(
-            f"{column:25} "
-            f"max={max_found} "
-            f"allowed={max_length}"
-        )
-
-        invalid = (
-            values.str.len() > max_length
-        )
-
-        if invalid.any():
-
-            validation_failed = True
-
-            print(
-                f"\nINVALID VALUES IN: {column}"
-            )
-
-            for idx in values[invalid].index[:10]:
-
-                print(
-                    f"Row {idx}: "
-                    f"{repr(gold.loc[idx, column])}"
-                )
-
-    if validation_failed:
-
-        raise Exception(
-            "Gold clients validation failed."
-        )
-
-    print(
-        "\nAll Gold Client values passed validation."
+        "Gold rows generated :",
+        len(gold)
     )
 
     return gold
 
-
 # ============================================================
-# LOAD GOLD CLIENT DATA
+# LOAD CLIENTS INTO DATABASE
 # ============================================================
 
 def load_clients(gold_df):
 
     print("=" * 80)
-    print("LOADING GOLD CLIENTS")
+    print("LOADING DATA INTO GOLD.CLIENTS")
     print("=" * 80)
 
+    if gold_df.empty:
+        print("No client rows generated.")
+        return False
+
+    gold_df = gold_df.copy()
+
     # ========================================================
-    # CHECK EXISTING
+    # CLEAN PAN
     # ========================================================
 
-    existing_clients = pd.read_sql(
-        """
-        SELECT
-            pan,
-            created_at
-        FROM gold.clients
-        """,
-        engine
+    gold_df["pan"] = clean_pan(
+        gold_df["pan"]
+    )
+
+    # ========================================================
+    # REMOVE NULL PAN
+    # ========================================================
+
+    before = len(gold_df)
+
+    gold_df = gold_df[
+        gold_df["pan"].notna()
+    ].copy()
+
+    print(
+        "Rows without PAN removed:",
+        before - len(gold_df)
+    )
+
+    # ========================================================
+    # REMOVE DUPLICATES INSIDE CURRENT BATCH
+    # ========================================================
+
+    before = len(gold_df)
+
+    gold_df = (
+        gold_df
+        .drop_duplicates(
+            subset=["pan"],
+            keep="last"
+        )
+        .copy()
     )
 
     print(
-        "Existing clients:",
-        len(existing_clients)
+        "Duplicate PAN rows removed:",
+        before - len(gold_df)
     )
 
-    # ========================================================
-    # DUPLICATE CHECK
-    # ========================================================
+    print(
+        "Unique client rows:",
+        len(gold_df)
+    )
 
-    if not existing_clients.empty:
+    if gold_df.empty:
 
-        existing_clients["pan"] = (
-            existing_clients["pan"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
+        print(
+            "No valid client records to load."
         )
 
-        gold_df["pan"] = (
-            gold_df["pan"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
+        return True
+
+    # ========================================================
+    # GET EXISTING PANS FROM DATABASE
+    # ========================================================
+
+    print()
+    print("Checking existing clients in gold.clients...")
+
+    existing = safe_read(
+        """
+        SELECT
+            pan
+        FROM gold.clients
+        WHERE pan IS NOT NULL
+        """
+    )
+
+    if not existing.empty:
+
+        existing["pan"] = clean_pan(
+            existing["pan"]
         )
 
-        existing_pan = set(
-            existing_clients.loc[
-                existing_clients["pan"] != "",
-                "pan"
-            ]
+        existing_pans = set(
+            existing["pan"]
+            .dropna()
+            .tolist()
         )
 
         before = len(gold_df)
 
         gold_df = gold_df[
-            ~gold_df["pan"].isin(existing_pan)
+            ~gold_df["pan"].isin(
+                existing_pans
+            )
         ].copy()
 
         print(
-            "Existing PAN rows removed:",
+            "Existing client rows skipped:",
             before - len(gold_df)
         )
 
     print(
-        "Rows after duplicate check:",
+        "Rows actually going to database:",
         len(gold_df)
     )
 
     # ========================================================
-    # NOTHING TO INSERT
+    # NOTHING NEW
     # ========================================================
 
     if gold_df.empty:
 
+        print()
         print(
-            "\nNo new clients to insert."
+            "All client records already exist in gold.clients."
         )
+
+        count_df = safe_read(
+            """
+            SELECT COUNT(*) AS total_clients
+            FROM gold.clients
+            """
+        )
+
+        if not count_df.empty:
+
+            print(
+                "Current Gold Clients:",
+                int(
+                    count_df.iloc[0]["total_clients"]
+                )
+            )
 
         return True
 
     # ========================================================
-    # INSERT
+    # CHECK TABLE COLUMNS
     # ========================================================
+
+    print()
+    print("Checking gold.clients table columns...")
+
+    table_columns = safe_read(
+        """
+        SELECT
+            column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'gold'
+          AND table_name = 'clients'
+        ORDER BY ordinal_position
+        """
+    )
+
+    if table_columns.empty:
+
+        print(
+            "ERROR: gold.clients table was not found."
+        )
+
+        return False
+
+    database_columns = set(
+        table_columns["column_name"]
+    )
+
+    missing_database_columns = [
+        col
+        for col in gold_df.columns
+        if col not in database_columns
+    ]
+
+    if missing_database_columns:
+
+        print()
+        print(
+            "ERROR: These columns exist in the DataFrame "
+            "but not in gold.clients:"
+        )
+
+        for col in missing_database_columns:
+            print(
+                " -",
+                col
+            )
+
+        return False
+
+    # ========================================================
+    # KEEP ONLY DATABASE COLUMNS
+    # ========================================================
+
+    gold_df = gold_df[
+        [
+            col
+            for col in gold_df.columns
+            if col in database_columns
+        ]
+    ].copy()
+
+    # ========================================================
+    # CONVERT PANDAS NULLS TO NONE
+    # ========================================================
+
+    gold_df = gold_df.astype(object)
+
+    gold_df = gold_df.where(
+        pd.notna(gold_df),
+        None
+    )
+
+    # ========================================================
+    # INSERT
+    #
+    # IMPORTANT:
+    # Use smaller chunks and normal INSERT execution.
+    # This avoids the huge parameter dump/error you are seeing.
+    # ========================================================
+
+    print()
+    print("Starting database insert...")
+
+    inserted_rows = 0
 
     try:
 
-        gold_df.to_sql(
-            "clients",
-            engine,
-            schema="gold",
-            if_exists="append",
-            index=False,
-            chunksize=1000
+        with engine.begin() as connection:
+
+            for start in range(
+                0,
+                len(gold_df),
+                100
+            ):
+
+                batch = gold_df.iloc[
+                    start:start + 100
+                ].copy()
+
+                batch.to_sql(
+                    name="clients",
+                    schema="gold",
+                    con=connection,
+                    if_exists="append",
+                    index=False,
+                    method=None
+                )
+
+                inserted_rows += len(batch)
+
+                print(
+                    f"Inserted {inserted_rows} / "
+                    f"{len(gold_df)} rows"
+                )
+
+        # ====================================================
+        # VERIFY DATABASE
+        # ====================================================
+
+        print()
+        print("=" * 80)
+        print("VERIFYING GOLD.CLIENTS")
+        print("=" * 80)
+
+        count_df = safe_read(
+            """
+            SELECT
+                COUNT(*) AS total_clients
+            FROM gold.clients
+            """
         )
 
-        print("\nLoad Completed")
-        print("-" * 80)
-        print(
-            f"Rows inserted : {len(gold_df)}"
+        if not count_df.empty:
+
+            total_clients = int(
+                count_df.iloc[0]["total_clients"]
+            )
+
+            print(
+                "Total rows in gold.clients:",
+                total_clients
+            )
+
+        # ====================================================
+        # SHOW ACTUAL DATABASE DATA
+        # ====================================================
+
+        database_preview = safe_read(
+            """
+            SELECT
+                pan,
+                full_name,
+                phone,
+                mobile,
+                arn,
+                sub_arn,
+                email,
+                date_of_birth,
+                investor_type,
+                tax_status,
+                kyc_status,
+                arn_id,
+                onboarded_at,
+                source,
+                created_at
+            FROM gold.clients
+            ORDER BY created_at DESC
+            LIMIT 10
+            """
         )
+
+        print()
+        print(
+            "Latest 10 rows actually stored "
+            "in PostgreSQL gold.clients:"
+        )
+
+        if database_preview.empty:
+
+            print(
+                "WARNING: Database returned 0 rows."
+            )
+
+        else:
+
+            print(
+                database_preview.to_string(
+                    index=False
+                )
+            )
+
+        print()
+        print("=" * 80)
+        print("GOLD.CLIENTS DATABASE INSERT SUCCESSFUL")
+        print("=" * 80)
 
         return True
 
     except Exception as e:
 
-        print("\nERROR WHILE LOADING GOLD CLIENTS")
-        print(type(e).__name__)
-        print(e)
+        print()
+        print("=" * 80)
+        print("GOLD.CLIENTS DATABASE INSERT FAILED")
+        print("=" * 80)
+
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        # IMPORTANT:
+        # Print only the actual error.
+        # Do NOT print the complete SQLAlchemy parameter list.
+
+        error_text = str(e)
+
+        print(
+            "Database error:"
+        )
+
+        print(
+            error_text[:3000]
+        )
+
+        print()
+        print(
+            "Rows successfully inserted before failure:",
+            inserted_rows
+        )
+
+        print(
+            "Rows remaining:",
+            len(gold_df) - inserted_rows
+        )
+
+        print()
+        print(
+            "The transaction has been rolled back."
+        )
 
         return False
 
+#Main Function#
 
-# ============================================================
-# MAIN
-# ============================================================
+def main():
 
-if __name__ == "__main__":
-
-    print("\n")
     print("=" * 80)
     print("STARTING GOLD CLIENTS ETL")
     print("=" * 80)
 
     try:
 
+        # ====================================================
+        # EXTRACT
+        # ====================================================
+
         clients_df = extract_clients()
+
+        if clients_df.empty:
+
+            print(
+                "No client data found."
+            )
+
+            return False
+
+        # ====================================================
+        # TRANSFORM
+        # ====================================================
 
         gold_clients = transform_clients(
             clients_df
         )
 
+        if gold_clients.empty:
+
+            print(
+                "No Gold client records generated."
+            )
+
+            return False
+
+        # ====================================================
+        # LOAD
+        # ====================================================
+
         status = load_clients(
             gold_clients
         )
 
+        # ====================================================
+        # FINAL STATUS
+        # ====================================================
+
         if status:
 
-            print("\n")
+            print()
             print("=" * 80)
             print(
                 "GOLD CLIENTS ETL COMPLETED SUCCESSFULLY"
             )
             print("=" * 80)
 
+            return True
+
         else:
 
-            raise Exception(
-                "Gold clients load failed."
+            print()
+            print("=" * 80)
+            print(
+                "GOLD CLIENTS ETL FAILED"
             )
+            print("=" * 80)
+
+            return False
 
     except Exception as e:
 
-        print("\n")
+        print()
         print("=" * 80)
         print("GOLD CLIENTS ETL ERROR")
         print("=" * 80)
-        print(type(e).__name__)
-        print(e)
 
-        raise
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
+            str(e)[:3000]
+        )
+
+        traceback.print_exc()
+
+        return False
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()

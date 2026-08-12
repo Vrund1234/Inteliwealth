@@ -4,7 +4,7 @@ import numpy as np
 
 from datetime import datetime, timezone
 
-from utils.db import engine, restore_engine
+from utils.db import engine, master_engine
 
 
 # ============================================================
@@ -31,6 +31,7 @@ def extract_holdings():
             folio_no,
 
             holding_nature,
+
             nominee1_name,
             nominee1_relation,
             nominee1_percentage,
@@ -39,10 +40,7 @@ def extract_holdings():
             bank_account_no,
 
             demat_flag,
-            ckyc_no,
-
-            broker_code,
-            subbroker
+            ckyc_no
 
         FROM silver.investor_master
 
@@ -77,13 +75,7 @@ def extract_holdings():
             AS investor_demat_flag,
 
         i.ckyc_no
-            AS investor_ckyc_no,
-
-        t.brokcode
-            AS investor_broker_code,
-
-        i.subbroker
-            AS investor_subbroker
+            AS investor_ckyc_no
 
     FROM silver.transaction_master_new t
 
@@ -99,8 +91,18 @@ def extract_holdings():
         engine
     )
 
+    print()
+    print("Extraction Completed")
+    print("-" * 80)
+
     print(
-        f"Transactions extracted: {len(df):,}"
+        "Transactions extracted:",
+        f"{len(df):,}"
+    )
+
+    print(
+        "Columns fetched:",
+        len(df.columns)
     )
 
     return df
@@ -117,6 +119,7 @@ def get_column(
 ):
 
     if column in df.columns:
+
         return df[column]
 
     return pd.Series(
@@ -284,15 +287,19 @@ def signed_transaction_amount(df):
 
     signed_amount.loc[
         negative_mask
-    ] = -signed_amount.loc[
-        negative_mask
-    ].abs()
+    ] = (
+        -signed_amount.loc[
+            negative_mask
+        ].abs()
+    )
 
     signed_amount.loc[
         positive_mask
-    ] = signed_amount.loc[
-        positive_mask
-    ].abs()
+    ] = (
+        signed_amount.loc[
+            positive_mask
+        ].abs()
+    )
 
     return signed_amount
 
@@ -304,6 +311,7 @@ def signed_transaction_amount(df):
 def calculate_xirr(cashflows):
 
     if cashflows is None or len(cashflows) < 2:
+
         return None
 
     cashflows = cashflows.dropna(
@@ -314,6 +322,7 @@ def calculate_xirr(cashflows):
     )
 
     if len(cashflows) < 2:
+
         return None
 
     amounts = (
@@ -334,6 +343,7 @@ def calculate_xirr(cashflows):
         and
         (amounts < 0).any()
     ):
+
         return None
 
     first_date = dates[0]
@@ -345,13 +355,14 @@ def calculate_xirr(cashflows):
         / pd.Timedelta(days=365)
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # NPV
-    # --------------------------------------------------------
+    # ========================================================
 
     def npv(rate):
 
         if rate <= -0.999999:
+
             return float("inf")
 
         try:
@@ -366,25 +377,29 @@ def calculate_xirr(cashflows):
             ).sum()
 
         except Exception:
+
             return float("inf")
 
-    # --------------------------------------------------------
-    # Newton-Raphson
-    # --------------------------------------------------------
+    # ========================================================
+    # NEWTON-RAPHSON
+    # ========================================================
 
     rate = 0.10
 
     for _ in range(30):
 
         if rate <= -0.999999:
+
             break
 
         value = npv(rate)
 
         if not pd.notna(value):
+
             break
 
         if abs(value) < 1e-6:
+
             return float(rate)
 
         denominator = np.power(
@@ -405,6 +420,7 @@ def calculate_xirr(cashflows):
             or
             abs(derivative) < 1e-12
         ):
+
             break
 
         new_rate = (
@@ -414,22 +430,26 @@ def calculate_xirr(cashflows):
         )
 
         if not pd.notna(new_rate):
+
             break
 
         if new_rate <= -0.999999:
+
             break
 
         if new_rate > 1000:
+
             break
 
         if abs(new_rate - rate) < 1e-7:
+
             return float(new_rate)
 
         rate = new_rate
 
-    # --------------------------------------------------------
+    # ========================================================
     # BISECTION FALLBACK
-    # --------------------------------------------------------
+    # ========================================================
 
     low = -0.9999
     high = 10.0
@@ -442,23 +462,34 @@ def calculate_xirr(cashflows):
         or
         not pd.notna(high_value)
     ):
+
         return None
 
-    # Expand high if necessary
+    # ========================================================
+    # EXPAND HIGH
+    # ========================================================
+
     for _ in range(10):
 
         if low_value * high_value <= 0:
+
             break
 
         high *= 2
 
         if high > 10000:
+
             return None
 
         high_value = npv(high)
 
     if low_value * high_value > 0:
+
         return None
+
+    # ========================================================
+    # BISECTION
+    # ========================================================
 
     for _ in range(60):
 
@@ -469,9 +500,11 @@ def calculate_xirr(cashflows):
         mid_value = npv(mid)
 
         if not pd.notna(mid_value):
+
             return None
 
         if abs(mid_value) < 1e-6:
+
             return float(mid)
 
         if low_value * mid_value <= 0:
@@ -635,14 +668,17 @@ def transform_holdings(df):
                 "scheme_code"
             ]
         ],
+
         left_on=[
             "source",
             "prodcode_clean"
         ],
+
         right_on=[
             "rta",
             "scheme_code"
         ],
+
         how="left"
     )
 
@@ -687,6 +723,7 @@ def transform_holdings(df):
         ]:
 
             if col in df.columns:
+
                 sample_columns.append(col)
 
         print(
@@ -799,13 +836,21 @@ def transform_holdings(df):
 
     # ========================================================
     # ARN
+    #
+    # SOURCE:
+    # silver.transaction_master_new.brokcode
+    #
+    # Since extract_holdings() is directly selecting
+    # t.* from silver.transaction_master_new,
+    # brokcode is already available in df.
     # ========================================================
 
     gold_df["arn"] = (
         get_column(
             df,
-            "investor_broker_code"
+            "brokcode"
         )
+        .fillna("")
         .astype("string")
         .str.strip()
     )
@@ -813,6 +858,32 @@ def transform_holdings(df):
     gold_df.loc[
         gold_df["arn"] == "",
         "arn"
+    ] = None
+
+    # ========================================================
+    # SUB ARN
+    #
+    # SOURCE:
+    # silver.transaction_master_new.src_brk_code
+    #
+    # Since extract_holdings() is directly selecting
+    # t.* from silver.transaction_master_new,
+    # src_brk_code is already available in df.
+    # ========================================================
+
+    gold_df["subarn"] = (
+        get_column(
+            df,
+            "src_brk_code"
+        )
+        .fillna("")
+        .astype("string")
+        .str.strip()
+    )
+
+    gold_df.loc[
+        gold_df["subarn"] == "",
+        "subarn"
     ] = None
 
     # ========================================================
@@ -894,6 +965,11 @@ def transform_holdings(df):
         .str.strip()
     )
 
+    gold_df.loc[
+        gold_df["bank_name"] == "",
+        "bank_name"
+    ] = None
+
     gold_df["bank_ac_last4"] = (
         get_column(
             df,
@@ -927,6 +1003,11 @@ def transform_holdings(df):
         .astype("string")
         .str.strip()
     )
+
+    gold_df.loc[
+        gold_df["demat_flag"] == "",
+        "demat_flag"
+    ] = None
 
     # ========================================================
     # CLIENT ID
@@ -1002,7 +1083,7 @@ def transform_holdings(df):
         FROM public.amc
         WHERE amc_code IS NOT NULL
         """,
-        restore_engine
+        master_engine
     )
 
     amc_master["amc_code_clean"] = (
@@ -1103,8 +1184,6 @@ def transform_holdings(df):
 
     # ========================================================
     # INVESTED AMOUNT
-    #
-    # Calculate once per group.
     # ========================================================
 
     invested_amounts = (
@@ -1154,7 +1233,9 @@ def transform_holdings(df):
     purchase_dates = (
         df.loc[
             df["is_purchase"],
-            group_cols + [
+            group_cols
+            +
+            [
                 "traddate_clean"
             ]
         ]
@@ -1195,6 +1276,9 @@ def transform_holdings(df):
     # ARN ID
     #
     # RESTORE ENGINE -> public.arn
+    #
+    # ARN ID is mapped using the same ARN value
+    # derived from transaction_master_new.brokcode.
     # ========================================================
 
     print("Loading public.arn...")
@@ -1207,7 +1291,7 @@ def transform_holdings(df):
         FROM public.arn
         WHERE arn_code IS NOT NULL
         """,
-        restore_engine
+        master_engine
     )
 
     arn_master["arn_code_clean"] = (
@@ -1263,9 +1347,7 @@ def transform_holdings(df):
     #
     # ENGINE -> gold.scheme_nav
     #
-    # IMPORTANT:
-    # Only latest NAV per scheme is fetched.
-    # Do NOT load the entire scheme_nav table.
+    # ONLY LATEST NAV PER SCHEME
     # ========================================================
 
     print("Loading latest gold.scheme_nav...")
@@ -1287,6 +1369,7 @@ def transform_holdings(df):
             WHERE nav_date IS NOT NULL
             GROUP BY scheme_id
         ) latest
+
             ON latest.scheme_id = sn.scheme_id
             AND latest.max_nav_date = sn.nav_date
         """,
@@ -1397,8 +1480,7 @@ def transform_holdings(df):
     # ========================================================
     # XIRR
     #
-    # IMPORTANT OPTIMIZATION:
-    # Calculate XIRR only once per unique holding group.
+    # Calculate once per unique holding group.
     # ========================================================
 
     print("Calculating XIRR...")
@@ -1545,39 +1627,6 @@ def transform_holdings(df):
     )
 
     # ========================================================
-    # SUBARN
-    # ========================================================
-
-    src_subarn = (
-        get_column(
-            df,
-            "src_brk_code"
-        )
-        .astype("string")
-        .str.strip()
-    )
-
-    investor_subarn = (
-        get_column(
-            df,
-            "investor_subbroker"
-        )
-        .astype("string")
-        .str.strip()
-    )
-
-    gold_df["subarn"] = (
-        src_subarn
-        .replace(
-            "",
-            pd.NA
-        )
-        .fillna(
-            investor_subarn
-        )
-    )
-
-    # ========================================================
     # CREATED AT
     # ========================================================
 
@@ -1599,7 +1648,10 @@ def transform_holdings(df):
         "market_value",
         "as_on_date",
         "folio_date",
+
         "arn",
+        "subarn",
+
         "holding_nature",
         "nominee_name",
         "nominee_relation",
@@ -1608,11 +1660,14 @@ def transform_holdings(df):
         "bank_name",
         "bank_ac_last4",
         "demat_flag",
+
         "client_id",
         "amc_id",
         "scheme_id",
+
         "purchase_date",
         "arn_id",
+
         "avg_cost_nav",
         "invested_amount",
         "current_nav",
@@ -1621,9 +1676,10 @@ def transform_holdings(df):
         "unrealised_gain",
         "xirr",
         "first_purchase_date",
+
         "source_file_id",
         "last_synced_at",
-        "subarn",
+
         "created_at"
 
     ]
@@ -1712,6 +1768,16 @@ def transform_holdings(df):
     )
 
     print(
+        f"Missing ARN values: "
+        f"{gold_df['arn'].isna().sum():,}"
+    )
+
+    print(
+        f"Missing Sub ARN values: "
+        f"{gold_df['subarn'].isna().sum():,}"
+    )
+
+    print(
         f"Missing Units: "
         f"{gold_df['units'].isna().sum():,}"
     )
@@ -1778,24 +1844,37 @@ def load_holdings(gold_df):
     varchar_limits = {
 
         "rta": 10,
+
         "pan": 10,
+
         "folio_number": 40,
+
         "arn": 20,
+
+        "subarn": 20,
+
         "holding_nature": 40,
+
         "nominee_name": 255,
+
         "nominee_relation": 40,
+
         "nominee_pct": 20,
+
         "kyc_status": 20,
+
         "bank_name": 120,
+
         "bank_ac_last4": 8,
-        "demat_flag": 4,
-        "subarn": 20
+
+        "demat_flag": 4
 
     }
 
     for col, limit in varchar_limits.items():
 
         if col not in gold_df.columns:
+
             continue
 
         max_len = (
@@ -1804,6 +1883,10 @@ def load_holdings(gold_df):
             .astype(str)
             .str.len()
             .max()
+        )
+
+        print(
+            f"{col:<25} Max Length : {max_len}"
         )
 
         if max_len > limit:
@@ -1850,6 +1933,11 @@ def load_holdings(gold_df):
         engine
     )
 
+    print(
+        "Existing holdings:",
+        len(existing_holdings)
+    )
+
     # ========================================================
     # NORMALIZE KEYS
     # ========================================================
@@ -1861,14 +1949,16 @@ def load_holdings(gold_df):
 
         existing_holdings[col] = (
             existing_holdings[col]
-            .astype("string")
+            .fillna("")
+            .astype(str)
             .str.strip()
             .str.upper()
         )
 
         gold_df[col] = (
             gold_df[col]
-            .astype("string")
+            .fillna("")
+            .astype(str)
             .str.strip()
             .str.upper()
         )
@@ -1891,14 +1981,17 @@ def load_holdings(gold_df):
         )
 
         gold_df = gold_df.merge(
+
             existing_keys.assign(
                 _exists=True
             ),
+
             on=[
                 "rta",
                 "folio_number",
                 "scheme_id"
             ],
+
             how="left"
         )
 
@@ -1932,26 +2025,41 @@ def load_holdings(gold_df):
     try:
 
         gold_df.to_sql(
+
             name="holdings",
+
             con=engine,
+
             schema="gold",
+
             if_exists="append",
+
             index=False,
+
             method="multi",
+
             chunksize=5000
+
         )
 
+        print()
         print(
-            f"Inserted rows: {len(gold_df):,}"
+            "Inserted rows:",
+            len(gold_df)
         )
 
         return True
 
     except Exception as e:
 
-        print("=" * 80)
-        print("ERROR WHILE LOADING GOLD.HOLDINGS")
-        print("=" * 80)
+        print()
+        print(
+            "=" * 80
+        )
+
+        print(
+            "ERROR WHILE LOADING GOLD.HOLDINGS"
+        )
 
         print(
             type(e).__name__,
@@ -1963,7 +2071,7 @@ def load_holdings(gold_df):
 
 
 # ============================================================
-# MAIN
+# MAIN EXECUTION
 # ============================================================
 
 if __name__ == "__main__":
@@ -2030,7 +2138,6 @@ if __name__ == "__main__":
         ).total_seconds()
 
         print()
-
         print("=" * 80)
 
         if status:
@@ -2046,7 +2153,8 @@ if __name__ == "__main__":
             )
 
         print(
-            f"Total execution time: {elapsed:.1f} seconds"
+            f"Total execution time: "
+            f"{elapsed:.1f} seconds"
         )
 
         print("=" * 80)

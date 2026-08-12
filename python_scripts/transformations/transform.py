@@ -1,16 +1,6 @@
 import pandas as pd
-from sqlalchemy import create_engine
 
 from utils.db import engine
-
-# =====================================================
-# DATABASE CONNECTION
-# =====================================================
-
-#engine = create_engine(
-#    "postgresql+psycopg2://postgres:postgres123@localhost:5432/tr_project"
-#)
-
 
 
 # =====================================================
@@ -33,7 +23,6 @@ def safe_read(query):
         return pd.DataFrame()
 
 
-
 # =====================================================
 # GET LAST PROCESSED TIME FROM SILVER
 # =====================================================
@@ -44,29 +33,30 @@ def get_last_processed_time(table_name):
 
         result = pd.read_sql(
             f"""
-            SELECT MAX(created_at) AS last_time
+            SELECT
+                MAX(created_at) AS last_time
             FROM silver.{table_name}
             """,
             engine
         )
 
-
         last_time = result.iloc[0]["last_time"]
-
 
         if pd.isna(last_time):
 
-            return pd.Timestamp("1900-01-01", tz="UTC")
+            return pd.Timestamp(
+                "1900-01-01"
+            )
 
         return pd.to_datetime(
             last_time
         )
 
-
     except Exception:
 
-        return pd.Timestamp("1900-01-01", tz="UTC")
-
+        return pd.Timestamp(
+            "1900-01-01"
+        )
 
 
 # =====================================================
@@ -84,18 +74,14 @@ def load_state_dimension():
         """
     )
 
-
     if state_dim.empty:
 
         return state_dim
-
-
 
     state_dim["state_id"] = pd.to_numeric(
         state_dim["state_id"],
         errors="coerce"
     )
-
 
     state_dim["state_name"] = (
         state_dim["state_name"]
@@ -104,35 +90,35 @@ def load_state_dimension():
         .str.title()
     )
 
-
     return state_dim
 
 
-
 # =====================================================
-# NORMALIZE DATA FOR DUPLICATE CHECK
+# NORMALIZE DATA FOR DUPLICATE COMPARISON
 # =====================================================
 
 def normalize_for_compare(df):
 
     df = df.copy()
 
+    # These columns are not part of
+    # business duplicate comparison.
 
     df = df.drop(
         columns=[
             "created_at",
             "updated_at",
-            "flag"
+            "flag",
+            "source"
         ],
         errors="ignore"
     )
 
-
     for col in df.columns:
 
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-
+        if pd.api.types.is_datetime64_any_dtype(
+            df[col]
+        ):
 
             df[col] = (
                 pd.to_datetime(
@@ -142,9 +128,7 @@ def normalize_for_compare(df):
                 .dt.strftime("%Y-%m-%d")
             )
 
-
         else:
-
 
             df[col] = (
                 df[col]
@@ -152,26 +136,25 @@ def normalize_for_compare(df):
                 .str.strip()
             )
 
-
     return df
 
 
-
 # =====================================================
-# CREATE ROW HASH KEY
+# CREATE FULL ROW KEY
 # =====================================================
 
 def create_row_key(df):
 
-    df = normalize_for_compare(df)
-
+    normalized = normalize_for_compare(
+        df
+    )
 
     return (
-        df.fillna("")
+        normalized
+        .fillna("")
         .astype(str)
         .agg("|".join, axis=1)
     )
-
 
 
 # =====================================================
@@ -181,38 +164,57 @@ def create_row_key(df):
 def get_table_columns(table_name):
 
     query = f"""
-
-    SELECT column_name
-
-    FROM information_schema.columns
-
-    WHERE table_schema='silver'
-
-    AND table_name='{table_name}'
-
-    ORDER BY ordinal_position
-
+        SELECT
+            column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'silver'
+          AND table_name = '{table_name}'
+        ORDER BY ordinal_position
     """
 
+    try:
 
-    return pd.read_sql(
-        query,
-        engine
-    )["column_name"].tolist()
+        return pd.read_sql(
+            query,
+            engine
+        )["column_name"].tolist()
 
+    except Exception as e:
 
+        print(
+            f"Could not get columns for "
+            f"silver.{table_name}"
+        )
+
+        print(e)
+
+        return []
 
 
 # =====================================================
-# APPEND ONLY NEW DATA TO SILVER
-# USING TIMESTAMP + FLAG LOGIC
+# APPEND NEW ROWS TO SILVER
+#
+# LOGIC:
+#
+# Bronze flag = 0
+#        ↓
+# Compare against existing Silver
+#        ↓
+# Unique row       → flag = 0
+# Existing row     → flag = 1
+#        ↓
+# Insert both into Silver
+#
+# Gold later reads only:
+#
+# WHERE flag = 0
+#
 # =====================================================
 
 def append_new_rows(
-        df,
-        table_name
+    df,
+    table_name
 ):
-
 
     if df.empty:
 
@@ -222,56 +224,102 @@ def append_new_rows(
 
         return
 
+    print("=" * 80)
+    print(
+        f"PROCESSING {table_name.upper()} "
+        "BRONZE → SILVER"
+    )
+    print("=" * 80)
 
+    df = df.copy()
 
-    # -------------------------------------------------
-    # GET LAST SILVER LOAD TIME
-    # -------------------------------------------------
-
-    last_time = get_last_processed_time(
-        table_name
+    print(
+        "Incoming Bronze rows :",
+        len(df)
     )
 
+    # =================================================
+    # BRONZE FLAG CHECK
+    # =================================================
 
-
-    # -------------------------------------------------
-    # FILTER BRONZE DATA BY TIMESTAMP
-    # -------------------------------------------------
-
-    df["created_at"] = pd.to_datetime(
-        df["created_at"],
-        errors="coerce"
-    )
-
-    last_time = pd.Timestamp(last_time)
-
-    # Make BOTH timezone-naive
-    if getattr(df["created_at"].dt, "tz", None) is not None:
-        df["created_at"] = df["created_at"].dt.tz_localize(None)
-
-    if last_time.tzinfo is not None:
-        last_time = last_time.tz_localize(None)
-
-    df = df[
-        df["created_at"] > last_time
-    ]
-
-
-
-    if df.empty:
+    if "flag" not in df.columns:
 
         print(
-            f"{table_name} : No new timestamp records"
+            f"{table_name} : "
+            "Bronze flag column is missing."
         )
 
         return
 
+    # Only Bronze flag = 0 is processed.
 
+    df = df[
+        df["flag"] == 0
+    ].copy()
 
+    print(
+        "Bronze rows with flag = 0 :",
+        len(df)
+    )
 
-    # -------------------------------------------------
-    # CHECK EXISTING SILVER DATA
-    # -------------------------------------------------
+    if df.empty:
+
+        print(
+            f"{table_name} : "
+            "No Bronze rows with flag = 0."
+        )
+
+        return
+
+    # =================================================
+    # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
+    # =================================================
+
+    batch_compare_cols = [
+
+        col
+
+        for col in df.columns
+
+        if col not in {
+            "flag",
+            "created_at",
+            "updated_at"
+        }
+
+    ]
+
+    if batch_compare_cols:
+
+        before_count = len(df)
+
+        df = (
+            df
+            .drop_duplicates(
+                subset=batch_compare_cols,
+                keep="first"
+            )
+            .copy()
+        )
+
+        print(
+            "Duplicate rows removed "
+            "inside current Bronze batch :",
+            before_count - len(df)
+        )
+
+    if df.empty:
+
+        print(
+            f"{table_name} : "
+            "No rows after batch duplicate removal."
+        )
+
+        return
+
+    # =================================================
+    # READ EXISTING SILVER DATA
+    # =================================================
 
     try:
 
@@ -283,77 +331,209 @@ def append_new_rows(
             engine
         )
 
+    except Exception as e:
 
-    except Exception:
+        print(
+            f"Could not read silver.{table_name}"
+        )
 
+        print(e)
 
         existing = pd.DataFrame()
 
+    print(
+        "Existing Silver rows :",
+        len(existing)
+    )
 
+    # =================================================
+    # SILVER EMPTY
+    # =================================================
 
-    # -------------------------------------------------
-    # REMOVE DUPLICATES
-    # -------------------------------------------------
+    if existing.empty:
 
-    if not existing.empty:
+        # Nothing exists in Silver.
+        # Therefore every incoming row is unique.
 
+        df["flag"] = 0
 
-        old_keys = set(
-            create_row_key(existing)
+        print()
+        print(
+            "Silver table is empty."
         )
-
-
-        new_keys = create_row_key(df)
-
-
-        df = df.loc[
-            ~new_keys.isin(old_keys)
-        ]
-
-
-
-    if df.empty:
-
 
         print(
-            f"{table_name} : Duplicate data skipped"
+            "All incoming rows are unique."
         )
 
-        return
+        print(
+            "All rows assigned flag = 0."
+        )
 
+    # =================================================
+    # SILVER HAS DATA
+    # =================================================
 
+    else:
 
+        # -------------------------------------------------
+        # COLUMNS NOT USED FOR DUPLICATE CHECK
+        # -------------------------------------------------
 
-    # -------------------------------------------------
+        ignore_cols = {
+
+            "flag",
+            "created_at",
+            "updated_at",
+            "source"
+
+        }
+
+        # -------------------------------------------------
+        # COMMON BUSINESS COLUMNS
+        # -------------------------------------------------
+
+        compare_cols = [
+
+            col
+
+            for col in df.columns
+
+            if col in existing.columns
+
+            and col not in ignore_cols
+
+        ]
+
+        if not compare_cols:
+
+            print(
+                f"{table_name} : "
+                "No common business columns "
+                "available for duplicate comparison."
+            )
+
+            return
+
+        print()
+        print(
+            "Columns used for duplicate comparison:"
+        )
+
+        print(
+            compare_cols
+        )
+
+        # -------------------------------------------------
+        # NORMALIZE NEW DATA
+        # -------------------------------------------------
+
+        new_compare = normalize_for_compare(
+            df[compare_cols]
+        )
+
+        # -------------------------------------------------
+        # NORMALIZE EXISTING SILVER
+        # -------------------------------------------------
+
+        old_compare = normalize_for_compare(
+            existing[compare_cols]
+        )
+
+        # -------------------------------------------------
+        # CREATE NEW ROW KEYS
+        # -------------------------------------------------
+
+        new_keys = (
+
+            new_compare
+            .fillna("")
+            .astype(str)
+            .agg("|".join, axis=1)
+
+        )
+
+        # -------------------------------------------------
+        # CREATE EXISTING SILVER KEYS
+        # -------------------------------------------------
+
+        old_keys = set(
+
+            old_compare
+            .fillna("")
+            .astype(str)
+            .agg("|".join, axis=1)
+
+        )
+
+        # -------------------------------------------------
+        # DUPLICATE CHECK
+        #
+        # TRUE  = already exists
+        # FALSE = unique/new
+        # -------------------------------------------------
+
+        duplicate_mask = new_keys.isin(
+            old_keys
+        )
+
+        # -------------------------------------------------
+        # FLAG ASSIGNMENT
+        #
+        # Existing row → 1
+        # Unique row   → 0
+        # -------------------------------------------------
+
+        df["flag"] = (
+            duplicate_mask
+            .astype(int)
+        )
+
+        print()
+        print(
+            "Existing rows → flag = 1 :",
+            int(
+                duplicate_mask.sum()
+            )
+        )
+
+        print(
+            "Unique rows → flag = 0 :",
+            int(
+                (~duplicate_mask).sum()
+            )
+        )
+
+    # =================================================
     # SILVER AUDIT TIMESTAMP
-    # -------------------------------------------------
+    # =================================================
 
     load_time = pd.Timestamp.now()
-
 
     df["created_at"] = load_time
 
     df["updated_at"] = load_time
 
-
-
-    df = df.drop(
-        columns=[
-            "flag"
-        ],
-        errors="ignore"
-    )
-
-
-
-    # -------------------------------------------------
-    # MATCH DATABASE COLUMNS
-    # -------------------------------------------------
+    # =================================================
+    # GET SILVER TABLE COLUMNS
+    # =================================================
 
     db_cols = get_table_columns(
         table_name
     )
 
+    if not db_cols:
+
+        print(
+            f"{table_name} : "
+            "Silver table not found."
+        )
+
+        return
+
+    # =================================================
+    # ADD MISSING COLUMNS
+    # =================================================
 
     for col in db_cols:
 
@@ -361,358 +541,121 @@ def append_new_rows(
 
             df[col] = None
 
+    # =================================================
+    # KEEP ONLY DATABASE COLUMNS
+    # =================================================
 
+    df = df[
+        db_cols
+    ]
 
-    df = df[db_cols]
+    # =================================================
+    # NULL HANDLING
+    # =================================================
 
-
-
-
-    # -------------------------------------------------
-    # INSERT INTO SILVER
-    # -------------------------------------------------
-
-    df.to_sql(
-        table_name,
-        engine,
-        schema="silver",
-        if_exists="append",
-        index=False,
-        method="multi",
-        chunksize=5000
+    df = df.where(
+        pd.notnull(df),
+        None
     )
 
+    # =================================================
+    # FINAL FLAG COUNTS
+    # =================================================
 
+    if "flag" in df.columns:
 
-    print(
-        f"{table_name} : {len(df)} rows inserted into Silver"
-    )
+        print()
+        print("=" * 80)
+        print(
+            f"FINAL FLAG COUNTS - SILVER.{table_name}"
+        )
+        print("=" * 80)
 
-    # =====================================================
-# LOAD SILVER LAYER
-# =====================================================
-
-def load_silver():
-
-
-    # =====================================================
-    # INVESTOR MASTER
-    # =====================================================
-
-    investor_df = safe_read(
-        """
-        SELECT *
-        FROM bronze.investor_master
-        WHERE flag = 0
-        """
-    )
-
-
-    if not investor_df.empty:
-
-
-        investor_df = transform_investor_master(
-            investor_df
+        print(
+            df["flag"]
+            .value_counts()
+            .sort_index()
         )
 
-
-        # Occupation mapping
-
-        occupation_mapping = {
-
-            "SERVICE": 1,
-            "BUSINESS": 2,
-            "PROFESSIONAL": 3,
-            "AGRICULTURE": 4,
-            "STUDENT": 5,
-            "RETIRED": 6,
-            "HOUSEWIFE": 7,
-            "OTHERS": 8,
-            "PRIVATE SECTOR": 9,
-            "PUBLIC SECTOR": 10,
-            "SELF EMPLOYED": 11,
-            "NOT APPLICABLE": 41
-
-        }
-
-
-        if "occupation" in investor_df.columns:
-
-
-            investor_df["occupation"] = (
-                investor_df["occupation"]
-                .astype("string")
-                .str.upper()
-                .str.strip()
-                .replace(occupation_mapping)
+        print(
+            "flag = 0 :",
+            int(
+                (df["flag"] == 0).sum()
             )
-
-
-            investor_df["occupation"] = pd.to_numeric(
-                investor_df["occupation"],
-                errors="coerce"
-            ).astype("Int64")
-
-
-
-        investor_df = round_decimal_columns(
-            investor_df
         )
 
-
-        append_new_rows(
-            investor_df,
-            "investor_master"
-        )
-
-
-
-    # =====================================================
-    # TRANSACTION MASTER
-    # =====================================================
-
-
-    transaction_df = safe_read(
-        """
-        SELECT *
-        FROM bronze.transaction_master_new
-        WHERE flag = 0
-        """
-    )
-
-
-    if not transaction_df.empty:
-
-
-        transaction_df = transform_transaction(
-            transaction_df
-        )
-
-
-        transaction_df = round_decimal_columns(
-            transaction_df
-        )
-
-
-        append_new_rows(
-            transaction_df,
-            "transaction_master_new"
+        print(
+            "flag = 1 :",
+            int(
+                (df["flag"] == 1).sum()
+            )
         )
 
     # =================================================
-    # SIP MASTER
+    # INSERT INTO SILVER
     # =================================================
 
-    print("=" * 80)
-    print("PROCESSING SIP MASTER")
-    print("=" * 80)
-
-    # -------------------------------------------------
-    # GET LAST SILVER TIMESTAMP FIRST
-    # -------------------------------------------------
-
-    result = pd.read_sql(
-        """
-        SELECT MAX(created_at) AS last_time
-        FROM silver.sip_master_new
-        """,
-        engine
-    )
-
-    last_time = result.iloc[0]["last_time"]
-
-
-    if pd.isna(last_time):
-
-        last_time = pd.Timestamp(
-            "1900-01-01"
-        )
-
-    else:
-
-        last_time = pd.Timestamp(
-            last_time
-        )
-
-    # -------------------------------------------------
-    # MAKE TIMEZONE CONSISTENT
-    # -------------------------------------------------
-
-    if last_time.tzinfo is not None:
-
-        last_time = last_time.tz_localize(None)
-
-
-    print(
-        "Last Silver SIP time :",
-        last_time
-    )
-
-    # -------------------------------------------------
-    # READ ONLY NEW SIP BRONZE DATA
-    #
-    # IMPORTANT:
-    # Bronze flag stays 0.
-    # We NEVER update Bronze flag.
-    #
-    # Only:
-    #
-    # created_at > Silver MAX(created_at)
-    #
-    # -------------------------------------------------
-
-    sip_df = pd.read_sql(
-        """
-        SELECT *
-        FROM bronze.sip_master_new
-        WHERE flag = 0
-        AND created_at > %(last_time)s
-        ORDER BY created_at
-        """,
-        engine,
-        params={
-            "last_time": last_time
-        }
-    )
-
-
-    print(
-        "New Bronze SIP rows :",
-        len(sip_df)
-    )
-
-
-    # -------------------------------------------------
-    # NO NEW DATA
-    # -------------------------------------------------
-
-    if sip_df.empty:
-
-        print("=" * 80)
-        print(
-            "NO NEW SIP DATA"
-        )
-        print(
-            "Nothing to insert into Silver."
-        )
-        print("=" * 80)
-
-    else:
-
-        print("=" * 80)
-        print(
-            "NEW SIP DATA FOUND"
-        )
-        print(
-            "Rows :",
-            len(sip_df)
-        )
-        print(
-            "MIN created_at :",
-            sip_df["created_at"].min()
-        )
-        print(
-            "MAX created_at :",
-            sip_df["created_at"].max()
-        )
-        print("=" * 80)
-
-
-        # -------------------------------------------------
-        # TRANSFORM
-        # -------------------------------------------------
-
-        sip_df = transform_sip_master(
-            sip_df
-        )
-
-
-        # -------------------------------------------------
-        # ROUND DECIMAL COLUMNS
-        # -------------------------------------------------
-
-        sip_df = round_decimal_columns(
-            sip_df
-        )
-
-
-        # -------------------------------------------------
-        # SIP IDENTIFIER COLUMNS
-        # -------------------------------------------------
-
-        id_cols = [
-
-            "inv_iin",
-            "inv_dp_id",
-            "inv_client_id",
-            "ecsno",
-            "umrncode",
-            "instrm_no",
-            "cheq_micr_no",
-            "request_ref_no",
-            "ft_sip_regno"
-
-        ]
-
-
-        for col in id_cols:
-
-            if col in sip_df.columns:
-
-                sip_df[col] = (
-                    sip_df[col]
-                    .astype("string")
-                    .str.strip()
-                )
-
-
-        # -------------------------------------------------
-        # LOAD SIP TO SILVER
-        # -------------------------------------------------
-
-        append_new_rows(
-            sip_df,
-            "sip_master_new"
-        )
-
-
+    print()
     print("=" * 80)
     print(
-        "SIP MASTER PROCESSING COMPLETE"
+        f"INSERTING {len(df)} ROWS "
+        f"INTO SILVER.{table_name}"
     )
     print("=" * 80)
 
-    print(
-        "\nSilver Layer Loaded Successfully"
-    )
+    try:
 
-    # =====================================================
+        df.to_sql(
+            table_name,
+            engine,
+            schema="silver",
+            if_exists="append",
+            index=False,
+            method="multi",
+            chunksize=5000
+        )
+
+    except Exception as e:
+
+        print("=" * 80)
+        print(
+            f"{table_name.upper()} "
+            "SILVER INSERT ERROR"
+        )
+        print(e)
+        print("=" * 80)
+
+        return
+
+    print("=" * 80)
+    print(
+        f"{table_name} : "
+        f"{len(df)} rows inserted into Silver"
+    )
+    print("=" * 80)
+
+
+# =====================================================
 # INVESTOR MASTER TRANSFORMATION
 # =====================================================
 
 def transform_investor_master(df):
 
-
     df = df.copy()
 
-
-
-    # =====================================================
+    # =================================================
     # REMOVE EXACT DUPLICATES
-    # =====================================================
+    # =================================================
 
     df = df.drop_duplicates()
 
-
-
-    # =====================================================
+    # =================================================
     # TRIM STRING COLUMNS
-    # =====================================================
+    # =================================================
 
     object_cols = df.select_dtypes(
         include="object"
     ).columns
-
 
     for col in object_cols:
 
@@ -722,37 +665,39 @@ def transform_investor_master(df):
             .str.strip()
         )
 
-
-
-    # =====================================================
+    # =================================================
     # STATE MAPPING
-    # =====================================================
+    # =================================================
 
     state_dim = load_state_dimension()
 
-
     if not state_dim.empty:
-
 
         state_lookup = dict(
             zip(
-                state_dim["state_name"].str.upper(),
-                state_dim["state_id"]
+                state_dim[
+                    "state_name"
+                ].str.upper(),
+
+                state_dim[
+                    "state_id"
+                ]
             )
         )
-
 
         code_lookup = dict(
             zip(
-                state_dim["state_id"],
-                state_dim["state_name"]
+                state_dim[
+                    "state_id"
+                ],
+
+                state_dim[
+                    "state_name"
+                ]
             )
         )
 
-
-
         if "state" in df.columns:
-
 
             df["state"] = (
                 df["state"]
@@ -761,29 +706,22 @@ def transform_investor_master(df):
                 .str.title()
             )
 
-
-
         if "gst_state_code" in df.columns:
-
 
             df["gst_state_code"] = pd.to_numeric(
                 df["gst_state_code"],
                 errors="coerce"
             )
 
-
-
-        # STATE NAME -> CODE
+        # STATE NAME → CODE
 
         if "state" in df.columns:
-
 
             mapped_code = (
                 df["state"]
                 .str.upper()
                 .map(state_lookup)
             )
-
 
             if "gst_state_code" in df.columns:
 
@@ -794,38 +732,37 @@ def transform_investor_master(df):
 
             else:
 
-                df["gst_state_code"] = mapped_code
+                df["gst_state_code"] = (
+                    mapped_code
+                )
 
-
-
-        # CODE -> STATE NAME
+        # CODE → STATE NAME
 
         if "gst_state_code" in df.columns:
-
 
             mapped_state = (
                 df["gst_state_code"]
                 .map(code_lookup)
             )
 
-
             if "state" in df.columns:
 
                 df["state"] = (
                     mapped_state
-                    .combine_first(df["state"])
+                    .combine_first(
+                        df["state"]
+                    )
                 )
 
             else:
 
-                df["state"] = mapped_state
+                df["state"] = (
+                    mapped_state
+                )
 
-
-
-
-    # =====================================================
+    # =================================================
     # ACCOUNT TYPE
-    # =====================================================
+    # =================================================
 
     account_mapping = {
 
@@ -838,25 +775,21 @@ def transform_investor_master(df):
 
     }
 
-
-
     if "account_type" in df.columns:
-
 
         df["account_type"] = (
             df["account_type"]
             .astype("string")
             .str.upper()
             .map(account_mapping)
-            .fillna(df["account_type"])
+            .fillna(
+                df["account_type"]
+            )
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # TAX STATUS
-    # =====================================================
+    # =================================================
 
     tax_mapping = {
 
@@ -867,25 +800,21 @@ def transform_investor_master(df):
 
     }
 
-
-
     if "tax_status" in df.columns:
-
 
         df["tax_status"] = (
             df["tax_status"]
             .astype("string")
             .str.upper()
             .map(tax_mapping)
-            .fillna(df["tax_status"])
+            .fillna(
+                df["tax_status"]
+            )
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # HOLDING NATURE
-    # =====================================================
+    # =================================================
 
     holding_mapping = {
 
@@ -893,26 +822,24 @@ def transform_investor_master(df):
         "SINGLE": "Single",
 
         "AS": "Anyone Or Survivor",
-        "ANYONE OR SURVIVOR": "Anyone Or Survivor",
+        "ANYONE OR SURVIVOR":
+            "Anyone Or Survivor",
 
         "JO": "Joint",
         "JOINT": "Joint",
 
         "EO": "Either Or Survivor",
-        "EITHER OR SURVIVOR": "Either Or Survivor"
+        "EITHER OR SURVIVOR":
+            "Either Or Survivor"
 
     }
-
-
 
     for col in [
         "holding_nature",
         "mode_of_holding_description"
     ]:
 
-
         if col in df.columns:
-
 
             df[col] = (
                 df[col]
@@ -927,12 +854,9 @@ def transform_investor_master(df):
                 )
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # PAN CLEAN
-    # =====================================================
+    # =================================================
 
     pan_cols = [
 
@@ -943,12 +867,9 @@ def transform_investor_master(df):
 
     ]
 
-
     for col in pan_cols:
 
-
         if col in df.columns:
-
 
             df[col] = (
                 df[col]
@@ -956,12 +877,9 @@ def transform_investor_master(df):
                 .str.upper()
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # EMAIL CLEAN
-    # =====================================================
+    # =================================================
 
     email_cols = [
 
@@ -972,12 +890,9 @@ def transform_investor_master(df):
 
     ]
 
-
     for col in email_cols:
 
-
         if col in df.columns:
-
 
             df[col] = (
                 df[col]
@@ -985,12 +900,9 @@ def transform_investor_master(df):
                 .str.lower()
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # PHONE CLEAN
-    # =====================================================
+    # =================================================
 
     phone_cols = [
 
@@ -1019,9 +931,9 @@ def transform_investor_master(df):
                 )
             )
 
-    # =====================================================
+    # =================================================
     # DATE COLUMNS
-    # =====================================================
+    # =================================================
 
     date_cols = [
 
@@ -1040,9 +952,9 @@ def transform_investor_master(df):
                 errors="coerce"
             )
 
-    # =====================================================
-    # EMPTY STRING TO NULL
-    # =====================================================
+    # =================================================
+    # EMPTY STRING → NULL
+    # =================================================
 
     df = df.replace(
         r"^\s*$",
@@ -1052,36 +964,30 @@ def transform_investor_master(df):
 
     return df
 
+
 # =====================================================
 # TRANSACTION MASTER TRANSFORMATION
 # =====================================================
 
 def transform_transaction(df):
 
-
     df = df.copy()
 
-
-
-    # =====================================================
+    # =================================================
     # REMOVE EXACT DUPLICATES
-    # =====================================================
+    # =================================================
 
     df = df.drop_duplicates()
 
-
-
-    # =====================================================
+    # =================================================
     # TRIM STRING COLUMNS
-    # =====================================================
+    # =================================================
 
     object_cols = df.select_dtypes(
         include="object"
     ).columns
 
-
     for col in object_cols:
-
 
         df[col] = (
             df[col]
@@ -1089,39 +995,39 @@ def transform_transaction(df):
             .str.strip()
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # STATE MAPPING
-    # =====================================================
+    # =================================================
 
     state_dim = load_state_dimension()
 
-
-
     if not state_dim.empty:
-
 
         state_lookup = dict(
             zip(
-                state_dim["state_name"].str.upper(),
-                state_dim["state_id"]
+                state_dim[
+                    "state_name"
+                ].str.upper(),
+
+                state_dim[
+                    "state_id"
+                ]
             )
         )
-
 
         code_lookup = dict(
             zip(
-                state_dim["state_id"],
-                state_dim["state_name"]
+                state_dim[
+                    "state_id"
+                ],
+
+                state_dim[
+                    "state_name"
+                ]
             )
         )
 
-
-
         if "state" in df.columns:
-
 
             df["state"] = (
                 df["state"]
@@ -1130,22 +1036,16 @@ def transform_transaction(df):
                 .str.title()
             )
 
-
-
         if "gst_state_code" in df.columns:
-
 
             df["gst_state_code"] = pd.to_numeric(
                 df["gst_state_code"],
                 errors="coerce"
             )
 
-
-
-        # STATE -> GST CODE
+        # STATE → GST CODE
 
         if "state" in df.columns:
-
 
             mapped_code = (
                 df["state"]
@@ -1153,9 +1053,7 @@ def transform_transaction(df):
                 .map(state_lookup)
             )
 
-
             if "gst_state_code" in df.columns:
-
 
                 df["gst_state_code"] = (
                     df["gst_state_code"]
@@ -1164,44 +1062,39 @@ def transform_transaction(df):
 
             else:
 
-                df["gst_state_code"] = mapped_code
+                df["gst_state_code"] = (
+                    mapped_code
+                )
 
-
-
-
-        # GST CODE -> STATE
+        # GST CODE → STATE
 
         if "gst_state_code" in df.columns:
-
 
             mapped_state = (
                 df["gst_state_code"]
                 .map(code_lookup)
             )
 
-
             if "state" in df.columns:
-
 
                 df["state"] = (
                     mapped_state
-                    .combine_first(df["state"])
+                    .combine_first(
+                        df["state"]
+                    )
                 )
 
             else:
 
-                df["state"] = mapped_state
+                df["state"] = (
+                    mapped_state
+                )
 
-
-
-
-
-    # =====================================================
+    # =================================================
     # SOURCE SYSTEM
-    # =====================================================
+    # =================================================
 
     if "source_system" in df.columns:
-
 
         df["source_system"] = (
             df["source_system"]
@@ -1209,15 +1102,11 @@ def transform_transaction(df):
             .str.upper()
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # LOCATION
-    # =====================================================
+    # =================================================
 
     if "location" in df.columns:
-
 
         df["location"] = (
             df["location"]
@@ -1225,15 +1114,11 @@ def transform_transaction(df):
             .str.title()
         )
 
-
-
-
-    # =====================================================
-    # BANK NAME MAPPING
-    # =====================================================
+    # =================================================
+    # BANK NAME
+    # =================================================
 
     bank_mapping = {
-
 
         "HDFCBANK": "HDFC Bank",
         "HDFC BANK": "HDFC Bank",
@@ -1241,32 +1126,36 @@ def transform_transaction(df):
         "HDFC BANK LIMITED": "HDFC Bank",
 
         "SBI": "State Bank Of India",
-        "STATE BANK OF INDIA": "State Bank Of India",
+        "STATE BANK OF INDIA":
+            "State Bank Of India",
 
         "ICICI BANK": "ICICI Bank",
-        "ICICI BANK LIMITED": "ICICI Bank",
+        "ICICI BANK LIMITED":
+            "ICICI Bank",
 
         "AXIS BANK": "Axis Bank",
         "AXIS BANK LTD": "Axis Bank",
 
-        "BANK OF BARODA": "Bank Of Baroda",
-        "BANKOFBARODA": "Bank Of Baroda",
+        "BANK OF BARODA":
+            "Bank Of Baroda",
 
-        "BANK OF INDIA": "Bank Of India",
+        "BANKOFBARODA":
+            "Bank Of Baroda",
 
-        "KOTAK BANK": "Kotak Mahindra Bank",
+        "BANK OF INDIA":
+            "Bank Of India",
+
+        "KOTAK BANK":
+            "Kotak Mahindra Bank",
+
         "KOTAK MAHINDRA BANK LIMITED":
             "Kotak Mahindra Bank"
 
     }
 
-
-
     if "bank_name" in df.columns:
 
-
         df["bank_name"] = (
-
             df["bank_name"]
             .astype("string")
             .str.upper()
@@ -1276,18 +1165,13 @@ def transform_transaction(df):
                 .astype("string")
                 .str.title()
             )
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # TAX STATUS
-    # =====================================================
+    # =================================================
 
     tax_mapping = {
-
 
         "I": "Individual",
         "1": "Individual",
@@ -1298,30 +1182,23 @@ def transform_transaction(df):
 
     }
 
-
-
     if "tax_status" in df.columns:
 
-
         df["tax_status"] = (
-
             df["tax_status"]
             .astype("string")
             .str.upper()
             .map(tax_mapping)
-            .fillna(df["tax_status"])
-
+            .fillna(
+                df["tax_status"]
+            )
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # PAN
-    # =====================================================
+    # =================================================
 
     if "pan" in df.columns:
-
 
         df["pan"] = (
             df["pan"]
@@ -1329,30 +1206,21 @@ def transform_transaction(df):
             .str.upper()
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # EMAIL
-    # =====================================================
+    # =================================================
 
     if "email" in df.columns:
 
-
         df["email"] = (
-
             df["email"]
             .astype("string")
             .str.lower()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # PHONE CLEANING
-    # =====================================================
+    # =================================================
 
     phone_cols = [
 
@@ -1362,15 +1230,11 @@ def transform_transaction(df):
 
     ]
 
-
     for col in phone_cols:
-
 
         if col in df.columns:
 
-
             df[col] = (
-
                 df[col]
                 .astype("string")
                 .str.replace(
@@ -1383,15 +1247,11 @@ def transform_transaction(df):
                     "",
                     regex=False
                 )
-
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # DATE COLUMNS
-    # =====================================================
+    # =================================================
 
     date_cols = [
 
@@ -1404,25 +1264,21 @@ def transform_transaction(df):
 
     ]
 
-
-
     for col in date_cols:
-
 
         if col in df.columns:
 
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    errors="coerce"
+                )
+                .dt.date
+            )
 
-            df[col] = pd.to_datetime(
-                df[col],
-                errors="coerce"
-            ).dt.date
-
-
-
-
-    # =====================================================
+    # =================================================
     # NUMERIC COLUMNS
-    # =====================================================
+    # =================================================
 
     numeric_cols = [
 
@@ -1436,25 +1292,18 @@ def transform_transaction(df):
 
     ]
 
-
-
     for col in numeric_cols:
 
-
         if col in df.columns:
-
 
             df[col] = pd.to_numeric(
                 df[col],
                 errors="coerce"
             )
 
-
-
-
-    # =====================================================
-    # EMPTY TO NULL
-    # =====================================================
+    # =================================================
+    # EMPTY → NULL
+    # =================================================
 
     df = df.replace(
         r"^\s*$",
@@ -1462,9 +1311,8 @@ def transform_transaction(df):
         regex=True
     )
 
-
-
     return df
+
 
 # =====================================================
 # SIP MASTER TRANSFORMATION
@@ -1472,31 +1320,23 @@ def transform_transaction(df):
 
 def transform_sip_master(df):
 
-
     df = df.copy()
 
-
-
-    # =====================================================
+    # =================================================
     # REMOVE EXACT DUPLICATES
-    # =====================================================
+    # =================================================
 
     df = df.drop_duplicates()
 
-
-
-
-    # =====================================================
+    # =================================================
     # TRIM STRING COLUMNS
-    # =====================================================
+    # =================================================
 
     object_cols = df.select_dtypes(
         include="object"
     ).columns
 
-
     for col in object_cols:
-
 
         df[col] = (
             df[col]
@@ -1504,12 +1344,9 @@ def transform_sip_master(df):
             .str.strip()
         )
 
-
-
-
-    # =====================================================
-    # IDENTIFIER COLUMNS AS STRING
-    # =====================================================
+    # =================================================
+    # IDENTIFIER COLUMNS
+    # =================================================
 
     identifier_cols = [
 
@@ -1525,38 +1362,26 @@ def transform_sip_master(df):
 
     ]
 
-
-
     for col in identifier_cols:
-
 
         if col in df.columns:
 
-
             df[col] = (
-
                 df[col]
                 .apply(
                     lambda x:
-
                     str(int(x))
                     if isinstance(x, float)
                     and not pd.isna(x)
-
                     else x
-
                 )
                 .astype("string")
                 .str.strip()
-
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # TITLE CASE COLUMNS
-    # =====================================================
+    # =================================================
 
     title_cols = [
 
@@ -1572,46 +1397,31 @@ def transform_sip_master(df):
 
     ]
 
-
-
     for col in title_cols:
-
 
         if col in df.columns:
 
-
             df[col] = (
-
                 df[col]
                 .astype("string")
                 .str.title()
-
             )
 
-
-
-
-    # =====================================================
-    # PAN CLEAN
-    # =====================================================
+    # =================================================
+    # PAN
+    # =================================================
 
     if "pan" in df.columns:
 
-
         df["pan"] = (
-
             df["pan"]
             .astype("string")
             .str.upper()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # UPPER CASE COLUMNS
-    # =====================================================
+    # =================================================
 
     upper_cols = [
 
@@ -1631,29 +1441,20 @@ def transform_sip_master(df):
 
     ]
 
-
-
     for col in upper_cols:
-
 
         if col in df.columns:
 
-
             df[col] = (
-
                 df[col]
                 .astype("string")
                 .str.upper()
                 .str.strip()
-
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # PLAN MAPPING
-    # =====================================================
+    # =================================================
 
     plan_mapping = {
 
@@ -1662,21 +1463,14 @@ def transform_sip_master(df):
 
     }
 
-
-
     for col in [
-
         "plan",
         "to_plan"
-
     ]:
-
 
         if col in df.columns:
 
-
             df[col] = (
-
                 df[col]
                 .astype("string")
                 .str.upper()
@@ -1686,33 +1480,23 @@ def transform_sip_master(df):
                     .astype("string")
                     .str.title()
                 )
-
             )
 
-
-
-
-    # =====================================================
+    # =================================================
     # SIP TYPE
-    # =====================================================
+    # =================================================
 
     if "sip_type" in df.columns:
 
-
         df["sip_type"] = (
-
             df["sip_type"]
             .astype("string")
             .str.title()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # SIP MODE
-    # =====================================================
+    # =================================================
 
     sip_mode_mapping = {
 
@@ -1723,13 +1507,9 @@ def transform_sip_master(df):
 
     }
 
-
-
     if "sip_mode" in df.columns:
 
-
         df["sip_mode"] = (
-
             df["sip_mode"]
             .astype("string")
             .str.upper()
@@ -1739,69 +1519,47 @@ def transform_sip_master(df):
                 .astype("string")
                 .str.title()
             )
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # FREQUENCY
-    # =====================================================
+    # =================================================
 
     if "frequency" in df.columns:
 
-
         df["frequency"] = (
-
             df["frequency"]
             .astype("string")
             .str.title()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # TRANSACTION TYPE
-    # =====================================================
+    # =================================================
 
     if "trtype" in df.columns:
 
-
         df["trtype"] = (
-
             df["trtype"]
             .astype("string")
             .str.title()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # STATUS
-    # =====================================================
+    # =================================================
 
     if "status" in df.columns:
 
-
         df["status"] = (
-
             df["status"]
             .astype("string")
             .str.title()
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # MODIFY FLAG
-    # =====================================================
+    # =================================================
 
     modify_mapping = {
 
@@ -1810,33 +1568,25 @@ def transform_sip_master(df):
 
     }
 
-
-
     if "modify_flag" in df.columns:
 
-
         df["modify_flag"] = (
-
             df["modify_flag"]
             .astype("string")
             .str.upper()
             .map(modify_mapping)
-            .fillna(df["modify_flag"])
-
+            .fillna(
+                df["modify_flag"]
+            )
         )
 
-
-
-
-    # =====================================================
-    # ACCOUNT NUMBER CLEAN
-    # =====================================================
+    # =================================================
+    # ACCOUNT NUMBER
+    # =================================================
 
     if "ecs_acno" in df.columns:
 
-
         df["ecs_acno"] = (
-
             df["ecs_acno"]
             .astype("string")
             .str.replace(
@@ -1844,15 +1594,11 @@ def transform_sip_master(df):
                 "",
                 regex=False
             )
-
         )
 
-
-
-
-    # =====================================================
+    # =================================================
     # NUMERIC COLUMNS
-    # =====================================================
+    # =================================================
 
     numeric_cols = [
 
@@ -1861,25 +1607,18 @@ def transform_sip_master(df):
 
     ]
 
-
-
     for col in numeric_cols:
 
-
         if col in df.columns:
-
 
             df[col] = pd.to_numeric(
                 df[col],
                 errors="coerce"
             )
 
-
-
-
-    # =====================================================
-    # EMPTY TO NULL
-    # =====================================================
+    # =================================================
+    # EMPTY → NULL
+    # =================================================
 
     df = df.replace(
         r"^\s*$",
@@ -1887,361 +1626,199 @@ def transform_sip_master(df):
         regex=True
     )
 
-
     return df
 
 
 # =====================================================
-# SIP SAFE APPEND
+# LOAD SILVER LAYER
 # =====================================================
 
-def append_sip_rows(df):
-    table_name = "sip_master_new"
-
-    if df.empty:
-        print("SIP : No data")
-        return
+def load_silver():
 
     print("=" * 80)
-    print("PROCESSING SIP BRONZE → SILVER")
-    print("Incoming rows :", len(df))
+    print("STARTING BRONZE → SILVER ETL")
     print("=" * 80)
 
-    df = df.copy()
-
-    # -------------------------------------------------
-    # CREATED_AT CHECK
-    # -------------------------------------------------
-
-    if "created_at" not in df.columns:
-        print("SIP : created_at column missing")
-        return
-
-    df["created_at"] = pd.to_datetime(
-        df["created_at"],
-        errors="coerce"
-    )
-
-    # -------------------------------------------------
-    # LAST SILVER TIMESTAMP
-    # -------------------------------------------------
-
-    last_time = get_last_processed_time(table_name)
-
-    last_time = pd.Timestamp(last_time)
-
-    if getattr(df["created_at"].dt, "tz", None) is not None:
-        df["created_at"] = (
-            df["created_at"]
-            .dt.tz_localize(None)
-        )
-
-    if last_time.tzinfo is not None:
-        last_time = last_time.tz_localize(None)
-
-    print("Last Silver time :", last_time)
-    print("Bronze MIN time  :", df["created_at"].min())
-    print("Bronze MAX time  :", df["created_at"].max())
-
-    # -------------------------------------------------
-    # FLAG = 0
-    # AND TIMESTAMP > SILVER MAX
-    # -------------------------------------------------
-
-    if "flag" not in df.columns:
-        print("SIP : flag column missing")
-        return
-
-    df = df[
-        (df["flag"] == 0)
-        &
-        (df["created_at"] >= last_time)
-    ].copy()
-
-    print("Rows after timestamp + flag filter :", len(df))
-
-    if df.empty:
-        print("SIP : No new timestamp records")
-        return
-
-    # -------------------------------------------------
-    # READ EXISTING SILVER
-    # -------------------------------------------------
-
-    try:
-
-        existing = pd.read_sql(
-            """
-            SELECT *
-            FROM silver.sip_master_new
-            """,
-            engine
-        )
-
-    except Exception as e:
-
-        print("Could not read Silver SIP table:")
-        print(e)
-
-        existing = pd.DataFrame()
-
-    # -------------------------------------------------
-    # FULL ROW DUPLICATE CHECK
-    # -------------------------------------------------
-
-    if not existing.empty:
-
-        ignore_cols = {
-            "flag",
-            "created_at",
-            "updated_at"
-        }
-
-        compare_cols = [
-            col
-            for col in df.columns
-            if col in existing.columns
-            and col not in ignore_cols
-        ]
-
-        if compare_cols:
-
-            new_compare = normalize_for_compare(
-                df[compare_cols]
-            )
-
-            old_compare = normalize_for_compare(
-                existing[compare_cols]
-            )
-
-            new_keys = (
-                new_compare
-                .astype(str)
-                .agg("|".join, axis=1)
-            )
-
-            old_keys = set(
-                old_compare
-                .astype(str)
-                .agg("|".join, axis=1)
-            )
-
-            duplicate_mask = new_keys.isin(old_keys)
-
-            print(
-                "Existing Silver duplicates :",
-                int(duplicate_mask.sum())
-            )
-
-            df = df.loc[
-                ~duplicate_mask
-            ].copy()
-
-    # -------------------------------------------------
-    # REMOVE DUPLICATES INSIDE BATCH
-    # -------------------------------------------------
-
-    duplicate_columns = [
-        col
-        for col in df.columns
-        if col not in {
-            "flag",
-            "created_at",
-            "updated_at"
-        }
-    ]
-
-    if duplicate_columns:
-
-        df = (
-            df
-            .drop_duplicates(
-                subset=duplicate_columns
-            )
-            .copy()
-        )
-
-    if df.empty:
-
-        print("SIP : All rows already exist in Silver")
-        return
-
-    # -------------------------------------------------
-    # UPDATED_AT
-    # -------------------------------------------------
-
-    df["updated_at"] = pd.Timestamp.now()
-
-    # -------------------------------------------------
-    # REMOVE FLAG
-    # -------------------------------------------------
-
-    df = df.drop(
-        columns=["flag"],
-        errors="ignore"
-    )
-
-    # -------------------------------------------------
-    # GET SILVER COLUMNS
-    # -------------------------------------------------
-
-    db_cols = get_table_columns(
-        table_name
-    )
-
-    if not db_cols:
-
-        print("SIP : Silver table not found")
-        return
-
-    # -------------------------------------------------
-    # ADD MISSING COLUMNS
-    # -------------------------------------------------
-
-    for col in db_cols:
-
-        if col not in df.columns:
-            df[col] = None
-
-    # -------------------------------------------------
-    # KEEP ONLY DATABASE COLUMNS
-    # -------------------------------------------------
-
-    df = df[db_cols]
-
     # =================================================
-    # IMPORTANT:
-    # CHECK VARCHAR LENGTHS BEFORE INSERT
+    # INVESTOR MASTER
     # =================================================
 
-    varchar_info = pd.read_sql(
+    print()
+    print("=" * 80)
+    print("PROCESSING INVESTOR MASTER")
+    print("=" * 80)
+
+    investor_df = safe_read(
         """
-        SELECT
-            column_name,
-            character_maximum_length
-        FROM information_schema.columns
-        WHERE table_schema = 'silver'
-          AND table_name = 'sip_master_new'
-          AND data_type IN (
-              'character varying',
-              'character'
-          )
-          AND character_maximum_length IS NOT NULL
-        """,
-        engine
+        SELECT *
+        FROM bronze.investor_master
+        WHERE flag = 0
+        """
     )
 
-    print("=" * 80)
-    print("CHECKING SIP VARCHAR LENGTHS")
-    print("=" * 80)
-
-    errors_found = False
-
-    for _, row in varchar_info.iterrows():
-
-        col = row["column_name"]
-        max_len = int(
-            row["character_maximum_length"]
-        )
-
-        if col not in df.columns:
-            continue
-
-        values = (
-            df[col]
-            .dropna()
-            .astype(str)
-        )
-
-        if values.empty:
-            continue
-
-        lengths = values.str.len()
-
-        bad_mask = lengths > max_len
-
-        if bad_mask.any():
-
-            errors_found = True
-
-            print()
-            print(
-                f"❌ COLUMN : {col}"
-            )
-            print(
-                f"   LIMIT  : {max_len}"
-            )
-            print(
-                f"   MAX LEN: {lengths.max()}"
-            )
-
-            bad_values = values[
-                bad_mask
-            ].drop_duplicates()
-
-            for value in bad_values.head(10):
-
-                print(
-                    f"   VALUE   : {value!r}"
-                )
-                print(
-                    f"   LENGTH  : {len(value)}"
-                )
-
-    if errors_found:
-
-        print("=" * 80)
-        print(
-            "SIP INSERT STOPPED BECAUSE "
-            "VARCHAR LIMITS WERE EXCEEDED."
-        )
-        print("=" * 80)
-
-        return
-
-    # -------------------------------------------------
-    # NULL HANDLING
-    # -------------------------------------------------
-
-    df = df.where(
-        pd.notnull(df),
-        None
-    )
-
-    # -------------------------------------------------
-    # INSERT
-    # -------------------------------------------------
-
-    print("=" * 80)
-    print("INSERTING SIP INTO SILVER")
-    print("Rows :", len(df))
-    print("=" * 80)
-
-    try:
-
-        df.to_sql(
-            table_name,
-            engine,
-            schema="silver",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=1000
-        )
-
-    except Exception as e:
-
-        print("=" * 80)
-        print("SIP SILVER INSERT ERROR")
-        print(e)
-        print("=" * 80)
-
-        return
-
-    print("=" * 80)
     print(
-        f"SIP : {len(df)} rows inserted into Silver"
+        "Bronze Investor rows :",
+        len(investor_df)
     )
+
+    if not investor_df.empty:
+
+        investor_df = transform_investor_master(
+            investor_df
+        )
+
+        # -------------------------------------------------
+        # OCCUPATION MAPPING
+        # -------------------------------------------------
+
+        occupation_mapping = {
+
+            "SERVICE": 1,
+            "BUSINESS": 2,
+            "PROFESSIONAL": 3,
+            "AGRICULTURE": 4,
+            "STUDENT": 5,
+            "RETIRED": 6,
+            "HOUSEWIFE": 7,
+            "OTHERS": 8,
+            "PRIVATE SECTOR": 9,
+            "PUBLIC SECTOR": 10,
+            "SELF EMPLOYED": 11,
+            "NOT APPLICABLE": 41
+
+        }
+
+        if "occupation" in investor_df.columns:
+
+            investor_df["occupation"] = (
+                investor_df["occupation"]
+                .astype("string")
+                .str.upper()
+                .str.strip()
+                .replace(
+                    occupation_mapping
+                )
+            )
+
+            investor_df["occupation"] = (
+                pd.to_numeric(
+                    investor_df["occupation"],
+                    errors="coerce"
+                )
+                .astype("Int64")
+            )
+
+        investor_df = round_decimal_columns(
+            investor_df
+        )
+
+        append_new_rows(
+            investor_df,
+            "investor_master"
+        )
+
+    else:
+
+        print(
+            "No Investor Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # TRANSACTION MASTER
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("PROCESSING TRANSACTION MASTER")
+    print("=" * 80)
+
+    transaction_df = safe_read(
+        """
+        SELECT *
+        FROM bronze.transaction_master_new
+        WHERE flag = 0
+        """
+    )
+
+    print(
+        "Bronze Transaction rows :",
+        len(transaction_df)
+    )
+
+    if not transaction_df.empty:
+
+        transaction_df = transform_transaction(
+            transaction_df
+        )
+
+        transaction_df = round_decimal_columns(
+            transaction_df
+        )
+
+        append_new_rows(
+            transaction_df,
+            "transaction_master_new"
+        )
+
+    else:
+
+        print(
+            "No Transaction Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # SIP MASTER
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("PROCESSING SIP MASTER")
+    print("=" * 80)
+
+    sip_df = safe_read(
+        """
+        SELECT *
+        FROM bronze.sip_master_new
+        WHERE flag = 0
+        """
+    )
+
+    print(
+        "Bronze SIP rows :",
+        len(sip_df)
+    )
+
+    if not sip_df.empty:
+
+        sip_df = transform_sip_master(
+            sip_df
+        )
+
+        sip_df = round_decimal_columns(
+            sip_df
+        )
+
+        append_new_rows(
+            sip_df,
+            "sip_master_new"
+        )
+
+    else:
+
+        print(
+            "No SIP Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # COMPLETE
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("SILVER LAYER LOADED SUCCESSFULLY")
     print("=" * 80)
 
 
@@ -2251,10 +1828,7 @@ def append_sip_rows(df):
 
 def round_decimal_columns(df):
 
-
     df = df.copy()
-
-
 
     float_cols = df.select_dtypes(
         include=[
@@ -2264,16 +1838,12 @@ def round_decimal_columns(df):
         ]
     ).columns
 
-
-
     for col in float_cols:
-
 
         df[col] = df[col].round(4)
 
-
-
     return df
+
 
 # =====================================================
 # MAIN EXECUTION

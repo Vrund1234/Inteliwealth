@@ -382,14 +382,14 @@ def process_transactions(cams=None, kfin=None):
         old_df = existing[compare_cols].copy()
 
         # =====================================================
-        # CLEAN IDENTIFIER COLUMNS
+        # CLEAN IDENTIFIER COLUMNS BEFORE COMPARISON
         # =====================================================
 
         new_df = clean_identifier_columns(new_df)
 
         old_df = clean_identifier_columns(old_df)
 
-                # =====================================================
+        # =====================================================
         # NORMALIZE VALUES
         # =====================================================
 
@@ -435,20 +435,21 @@ def process_transactions(cams=None, kfin=None):
         # COMPARE COMPLETE ROW
         # =====================================================
 
-        new_keys = pd.util.hash_pandas_object(
-            new_df,
-            index=False
+        new_keys = (
+            new_df
+            .astype(str)
+            .agg("|".join, axis=1)
         )
 
         old_keys = set(
-            pd.util.hash_pandas_object(
-                old_df,
-                index=False
-            )
+            old_df
+            .astype(str)
+            .agg("|".join, axis=1)
         )
 
         df["flag"] = (
-            new_keys.isin(old_keys)
+            new_keys
+            .isin(old_keys)
             .astype(int)
         )
 

@@ -2,7 +2,7 @@ import pandas as pd
 
 from datetime import datetime, timezone
 
-from utils.db import engine, restore_engine
+from utils.db import engine, master_engine
 
 
 # ============================================================
@@ -63,18 +63,38 @@ def clean_folio(series):
 
 
 # ============================================================
+# FIRST VALID VALUE
+# ============================================================
+
+def first_valid_value(series):
+
+    series = series.dropna()
+
+    series = (
+        series
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    series = series[
+        series.ne("")
+        &
+        series.ne("<NA>")
+        &
+        series.ne("NAN")
+        &
+        series.ne("NONE")
+    ]
+
+    if series.empty:
+        return pd.NA
+
+    return series.iloc[0]
+
+
+# ============================================================
 # EXTRACT SIP DATA
-#
-# IMPORTANT:
-# Only the latest Silver batch is extracted.
-#
-# There is NO:
-# - DISTINCT
-# - GROUP BY
-# - DROP_DUPLICATES
-# - business-key comparison
-#
-# Every row belonging to the latest Silver batch is retained.
 # ============================================================
 
 def extract_sip():
@@ -218,7 +238,10 @@ def transform_sip(df):
     print("TRANSFORMING GOLD SIP")
     print("=" * 80)
 
-    if not isinstance(df, pd.DataFrame):
+    if not isinstance(
+        df,
+        pd.DataFrame
+    ):
 
         raise TypeError(
             f"transform_sip expected DataFrame, "
@@ -337,8 +360,6 @@ def transform_sip(df):
 
     # ========================================================
     # ISIN
-    #
-    # Not available in silver.sip_master_new
     # ========================================================
 
     gold_df["isin"] = pd.Series(
@@ -405,8 +426,6 @@ def transform_sip(df):
 
     # ========================================================
     # NEXT DUE DATE
-    #
-    # Not available in source.
     # ========================================================
 
     gold_df["next_due_date"] = pd.Series(
@@ -485,9 +504,6 @@ def transform_sip(df):
 
     # ========================================================
     # SCHEME ID
-    #
-    # Mapping failure produces NULL.
-    # The SIP row is NEVER removed.
     # ========================================================
 
     print(
@@ -578,7 +594,7 @@ def transform_sip(df):
         FROM public.amc
         WHERE amc_code IS NOT NULL
         """,
-        restore_engine
+        master_engine
     )
 
     amc_master["amc_code_clean"] = (
@@ -689,18 +705,19 @@ def transform_sip(df):
 
     gold_df["sip_type"] = (
         aut_trntyp_clean
-        .map({
-            "SIP": "SIP",
-            "S": "SIP",
-            "STP": "STP",
-            "SO": "STP",
-            "SI": "STP",
-            "SWP": "SWP",
-            "WO": "SWP"
-        })
+        .map(
+            {
+                "SIP": "SIP",
+                "S": "SIP",
+                "STP": "STP",
+                "SO": "STP",
+                "SI": "STP",
+                "SWP": "SWP",
+                "WO": "SWP"
+            }
+        )
     )
 
-    # Preserve NULL as NULL and unknown values as OTHER
     gold_df["sip_type"] = (
         gold_df["sip_type"]
         .astype("string")
@@ -712,7 +729,8 @@ def transform_sip(df):
 
     gold_df.loc[
         aut_trntyp_clean.notna()
-        & gold_df["sip_type"].isna(),
+        &
+        gold_df["sip_type"].isna(),
         "sip_type"
     ] = "OTHER"
 
@@ -728,105 +746,6 @@ def transform_sip(df):
             ),
             errors="coerce"
         )
-    )
-
-    # ========================================================
-    # ARN CODE
-    #
-    # sub_arn_code
-    # -> subbroker
-    # -> user_code
-    # ========================================================
-
-    sub_arn_code = (
-        get_column(
-            df,
-            "sub_arn_code"
-        )
-        .astype("string")
-        .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
-    )
-
-    subbroker = (
-        get_column(
-            df,
-            "subbroker"
-        )
-        .astype("string")
-        .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
-    )
-
-    df["arn_code_clean"] = (
-        sub_arn_code
-        .fillna(subbroker)
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
-
-    # ========================================================
-    # ARN ID
-    # ========================================================
-
-    print(
-        "Loading ARN mapping..."
-    )
-
-    arn_master = pd.read_sql(
-        """
-        SELECT
-            id,
-            arn_code
-        FROM public.arn
-        WHERE arn_code IS NOT NULL
-        """,
-        restore_engine
-    )
-
-    arn_master["arn_code_clean"] = (
-        arn_master["arn_code"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
-
-    arn_master = (
-        arn_master[
-            [
-                "id",
-                "arn_code_clean"
-            ]
-        ]
-        .dropna(
-            subset=[
-                "arn_code_clean"
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "arn_code_clean"
-            ]
-        )
-    )
-
-    arn_lookup = dict(
-        zip(
-            arn_master["arn_code_clean"],
-            arn_master["id"]
-        )
-    )
-
-    gold_df["arn_id"] = (
-        df["arn_code_clean"]
-        .map(arn_lookup)
     )
 
     # ========================================================
@@ -850,19 +769,32 @@ def transform_sip(df):
             trxn_nature,
             siptrxnno,
             sipregslno,
-            remarks
+            remarks,
+            brokcode,
+            src_brk_code
         FROM silver.transaction_master_new
         """,
         engine
     )
 
-    # ========================================================
-    # DEFAULT COUNTS
-    # ========================================================
-
     gold_df["completed_installments"] = 0
-
     gold_df["bounced_installments"] = 0
+
+    gold_df["arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    gold_df["sub_arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    # ========================================================
+    # PROCESS TRANSACTIONS
+    # ========================================================
 
     if not transactions.empty:
 
@@ -882,6 +814,129 @@ def transform_sip(df):
             .astype("string")
             .str.strip()
             .str.upper()
+        )
+
+        transactions["brokcode_clean"] = (
+            transactions["brokcode"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+            .replace(
+                "",
+                pd.NA
+            )
+        )
+
+        transactions["src_brk_code_clean"] = (
+            transactions["src_brk_code"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+            .replace(
+                "",
+                pd.NA
+            )
+        )
+
+        # ====================================================
+        # ARN / SUB ARN
+        # ====================================================
+
+        arn_mapping = (
+            transactions
+            .groupby(
+                [
+                    "rta_clean",
+                    "folio_clean"
+                ],
+                dropna=False
+            )
+            .agg(
+                {
+                    "brokcode_clean":
+                        first_valid_value,
+
+                    "src_brk_code_clean":
+                        first_valid_value
+                }
+            )
+            .reset_index()
+        )
+
+        arn_mapping = arn_mapping.rename(
+            columns={
+                "brokcode_clean":
+                    "arn",
+
+                "src_brk_code_clean":
+                    "sub_arn"
+            }
+        )
+
+        arn_lookup = (
+            arn_mapping
+            .set_index(
+                [
+                    "rta_clean",
+                    "folio_clean"
+                ]
+            )
+        )
+
+        gold_df["arn"] = [
+            arn_lookup.loc[
+                (
+                    df.loc[idx, "rta_clean"],
+                    df.loc[idx, "folio_clean"]
+                ),
+                "arn"
+            ]
+            if (
+                df.loc[idx, "rta_clean"],
+                df.loc[idx, "folio_clean"]
+            ) in arn_lookup.index
+            else pd.NA
+            for idx in df.index
+        ]
+
+        gold_df["sub_arn"] = [
+            arn_lookup.loc[
+                (
+                    df.loc[idx, "rta_clean"],
+                    df.loc[idx, "folio_clean"]
+                ),
+                "sub_arn"
+            ]
+            if (
+                df.loc[idx, "rta_clean"],
+                df.loc[idx, "folio_clean"]
+            ) in arn_lookup.index
+            else pd.NA
+            for idx in df.index
+        ]
+
+        gold_df["arn"] = (
+            gold_df["arn"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+        gold_df["sub_arn"] = (
+            gold_df["sub_arn"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+        print(
+            "Mapped ARN rows:",
+            gold_df["arn"].notna().sum()
+        )
+
+        print(
+            "Mapped Sub ARN rows:",
+            gold_df["sub_arn"].notna().sum()
         )
 
         # ====================================================
@@ -1060,7 +1115,7 @@ def transform_sip(df):
         )
 
         # ====================================================
-        # APPLY COUNTS
+        # APPLY COMPLETED COUNTS
         # ====================================================
 
         gold_df["completed_installments"] = [
@@ -1074,6 +1129,10 @@ def transform_sip(df):
             )
             for idx in df.index
         ]
+
+        # ====================================================
+        # APPLY BOUNCED COUNTS
+        # ====================================================
 
         gold_df["bounced_installments"] = [
             bounced_lookup.get(
@@ -1110,16 +1169,98 @@ def transform_sip(df):
     )
 
     # ========================================================
+    # ARN ID
+    # ========================================================
+
+    sub_arn_code = (
+        get_column(
+            df,
+            "sub_arn_code"
+        )
+        .astype("string")
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
+    )
+
+    subbroker = (
+        get_column(
+            df,
+            "subbroker"
+        )
+        .astype("string")
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
+    )
+
+    df["arn_code_clean"] = (
+        sub_arn_code
+        .fillna(subbroker)
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    print(
+        "Loading ARN mapping..."
+    )
+
+    arn_master = pd.read_sql(
+        """
+        SELECT
+            id,
+            arn_code
+        FROM public.arn
+        WHERE arn_code IS NOT NULL
+        """,
+        master_engine
+    )
+
+    arn_master["arn_code_clean"] = (
+        arn_master["arn_code"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    arn_master = (
+        arn_master[
+            [
+                "id",
+                "arn_code_clean"
+            ]
+        ]
+        .dropna(
+            subset=[
+                "arn_code_clean"
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "arn_code_clean"
+            ]
+        )
+    )
+
+    arn_lookup = dict(
+        zip(
+            arn_master["arn_code_clean"],
+            arn_master["id"]
+        )
+    )
+
+    gold_df["arn_id"] = (
+        df["arn_code_clean"]
+        .map(arn_lookup)
+    )
+
+    # ========================================================
     # CEASED REASON
-    #
-    # Logic:
-    #
-    # IF ceased_date IS NOT NULL
-    # OR status IN ('CEASED', 'CANCELLED', 'EXPIRED')
-    #
-    # THEN COALESCE(remarks, status)
-    #
-    # Empty remarks are treated as NULL.
     # ========================================================
 
     remarks_clean = (
@@ -1190,7 +1331,7 @@ def transform_sip(df):
     # ========================================================
     # GOLD CREATED AT
     #
-    # This is the time when Gold transformation is performed.
+    # This is the Gold load/transformation timestamp.
     # It is NOT used to identify the Silver input batch.
     # ========================================================
 
@@ -1204,6 +1345,9 @@ def transform_sip(df):
 
     # ========================================================
     # FINAL COLUMN ORDER
+    #
+    # IMPORTANT:
+    # NO FLAG COLUMN
     # ========================================================
 
     columns = [
@@ -1234,6 +1378,8 @@ def transform_sip(df):
         "bounced_installments",
         "ceased_reason",
         "arn_id",
+        "arn",
+        "sub_arn",
         "created_at"
 
     ]
@@ -1277,6 +1423,16 @@ def transform_sip(df):
     )
 
     print(
+        "Missing ARN values:",
+        gold_df["arn"].isna().sum()
+    )
+
+    print(
+        "Missing Sub ARN values:",
+        gold_df["sub_arn"].isna().sum()
+    )
+
+    print(
         "Completed Installments:",
         gold_df["completed_installments"].sum()
     )
@@ -1316,12 +1472,6 @@ def get_gold_sip_column_limits():
 
 # ============================================================
 # VALIDATE STRING LENGTHS
-#
-# IMPORTANT:
-# We DO NOT truncate anything.
-#
-# If a value exceeds the PostgreSQL VARCHAR limit,
-# the complete batch is rejected before insertion.
 # ============================================================
 
 def validate_string_lengths(gold_df):
@@ -1430,19 +1580,6 @@ def validate_string_lengths(gold_df):
     return True
 
 
-# ============================================================
-# LOAD GOLD SIP
-#
-# IMPORTANT:
-#
-# NO DUPLICATE COMPARISON
-# NO DROP_DUPLICATES
-# NO EXISTING GOLD CHECK
-#
-# Every row received from the selected Silver batch
-# is inserted into Gold.
-# ============================================================
-
 def load_sip(gold_df):
 
     print()
@@ -1454,7 +1591,6 @@ def load_sip(gold_df):
         gold_df,
         pd.DataFrame
     ):
-
         raise TypeError(
             f"load_sip expected DataFrame, "
             f"received {type(gold_df).__name__}"
@@ -1474,7 +1610,7 @@ def load_sip(gold_df):
         return True
 
     # ========================================================
-    # GOLD.SIP COLUMNS ONLY
+    # GOLD.SIP COLUMNS
     # ========================================================
 
     gold_columns = [
@@ -1505,12 +1641,14 @@ def load_sip(gold_df):
         "bounced_installments",
         "ceased_reason",
         "arn_id",
+        "arn",
+        "sub_arn",
         "created_at"
 
     ]
 
     # ========================================================
-    # CHECK GOLD COLUMNS
+    # CHECK COLUMNS
     # ========================================================
 
     missing_columns = [
@@ -1523,9 +1661,7 @@ def load_sip(gold_df):
 
         raise ValueError(
             "Missing Gold SIP columns: "
-            + ", ".join(
-                missing_columns
-            )
+            + ", ".join(missing_columns)
         )
 
     gold_df = gold_df[
@@ -1533,25 +1669,224 @@ def load_sip(gold_df):
     ].copy()
 
     # ========================================================
-    # NO DUPLICATE FILTERING
+    # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
+    #
+    # created_at is ignored because all rows in this batch
+    # receive the same Gold load timestamp.
     # ========================================================
 
-    print(
-        "Duplicate filtering: DISABLED"
+    compare_columns = [
+        col
+        for col in gold_columns
+        if col != "created_at"
+    ]
+
+    before_batch_dedup = len(gold_df)
+
+    removed_batch_duplicates = (
+        before_batch_dedup
+        - len(gold_df)
     )
 
     print(
-        "Rows retained for Gold:",
+        "Duplicates inside current batch removed:",
+        removed_batch_duplicates
+    )
+
+    print(
+        "Rows after batch deduplication:",
         len(gold_df)
     )
 
+    if gold_df.empty:
+
+        print(
+            "No unique SIP rows remaining."
+        )
+
+        return True
+
     # ========================================================
-    # LENGTH VALIDATION
+    # LOAD EXISTING GOLD SIP DATA
+    #
+    # created_at is intentionally excluded.
     # ========================================================
 
-    validate_string_lengths(
-        gold_df
+    print(
+        "Checking existing Gold SIP records..."
     )
+
+    existing_query = """
+
+        SELECT
+
+            rta,
+            sip_reg_no,
+            folio_number,
+            scheme_code,
+            scheme_name,
+            amc_code,
+            isin,
+            amount,
+            frequency,
+            start_date,
+            end_date,
+            next_due_date,
+            sip_day,
+            mandate_id,
+            status,
+            registered_date,
+            ceased_date,
+            scheme_id,
+            amc_id,
+            client_id,
+            sip_type,
+            registered_installments,
+            completed_installments,
+            bounced_installments,
+            ceased_reason,
+            arn_id,
+            arn,
+            sub_arn
+
+        FROM gold.sip
+
+    """
+
+    existing = pd.read_sql(
+        existing_query,
+        engine
+    )
+
+    print(
+        "Existing Gold SIP rows:",
+        len(existing)
+    )
+
+    # ========================================================
+    # NORMALIZE VALUES BEFORE COMPARISON
+    #
+    # This prevents differences such as:
+    #
+    # None vs NaN
+    # "ABC " vs "ABC"
+    # ========================================================
+
+    def normalize_for_compare(df):
+
+        result = df.copy()
+
+        for column in result.columns:
+
+            if (
+                pd.api.types.is_object_dtype(
+                    result[column]
+                )
+                or
+                pd.api.types.is_string_dtype(
+                    result[column]
+                )
+            ):
+
+                result[column] = (
+                    result[column]
+                    .astype("string")
+                    .str.strip()
+                    .str.upper()
+                )
+
+        return result
+
+    new_compare = normalize_for_compare(
+        gold_df[compare_columns]
+    )
+
+    if not existing.empty:
+
+        existing_compare = normalize_for_compare(
+            existing[compare_columns]
+        )
+
+        # ====================================================
+        # CREATE ROW SIGNATURE
+        #
+        # A complete row excluding created_at.
+        # ====================================================
+
+        new_signature = (
+            new_compare
+            .fillna("<NULL>")
+            .astype("string")
+            .agg(
+                "||".join,
+                axis=1
+            )
+        )
+
+        existing_signature = (
+            existing_compare
+            .fillna("<NULL>")
+            .astype("string")
+            .agg(
+                "||".join,
+                axis=1
+            )
+        )
+
+        existing_signatures = set(
+            existing_signature
+        )
+
+        already_exists_mask = (
+            new_signature.isin(
+                existing_signatures
+            )
+        )
+
+        already_exists_count = int(
+            already_exists_mask.sum()
+        )
+
+        print(
+            "Rows already present in Gold:",
+            already_exists_count
+        )
+
+        # ====================================================
+        # KEEP ONLY NEW ROWS
+        # ====================================================
+
+        gold_df = gold_df.loc[
+            ~already_exists_mask
+        ].copy()
+
+    else:
+
+        print(
+            "Gold SIP is currently empty."
+        )
+
+    # ========================================================
+    # FINAL CHECK
+    # ========================================================
+
+    print(
+        "Rows to insert:",
+        len(gold_df)
+    )
+
+    if gold_df.empty:
+
+        print()
+        print(
+            "No new SIP records to insert."
+        )
+
+        print(
+            "Gold SIP is already up to date."
+        )
+
+        return True
 
     # ========================================================
     # CONVERT PANDAS NULLS TO DATABASE NULL
@@ -1567,7 +1902,7 @@ def load_sip(gold_df):
     )
 
     # ========================================================
-    # INSERT COMPLETE BATCH
+    # INSERT
     # ========================================================
 
     try:
@@ -1633,10 +1968,6 @@ def load_sip(gold_df):
         print(
             "Error:",
             str(e).splitlines()[0]
-        )
-
-        print(
-            "No rows were confirmed as inserted."
         )
 
         return False
