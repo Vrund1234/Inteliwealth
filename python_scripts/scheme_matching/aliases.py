@@ -15,14 +15,14 @@ import re
 import pandas as pd
 
 
-def load_aliases(master_engine):
+def load_aliases(engine):
     df = pd.read_sql(
         """
         SELECT raw_term, normalized_term, alias_type, amc_code
-        FROM public.scheme_name_alias
+        FROM bronze.scheme_name_alias
         WHERE is_active IS TRUE
         """,
-        master_engine,
+        engine,
     )
     return df.to_dict(orient="records")
 
