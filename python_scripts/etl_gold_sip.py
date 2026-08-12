@@ -111,6 +111,8 @@ def transform_sip(df):
 
         df["ft_sip_regno"]
 
+        .combine_first(df["request_ref_no"])
+
         .astype("string")
 
         .str.strip()

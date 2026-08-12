@@ -1,6 +1,5 @@
 import pandas as pd
 # from sqlalchemy import create_engine
-#import mapping
 from utils.db import engine
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
@@ -46,19 +45,6 @@ NUMERIC_COLUMNS = [
     "top_up_perc",
     "flag"
 ]
-
-# =====================================================
-# PERIODICITY NORMALIZATION
-# =====================================================
-
-PERIODICITY_MAPPING = {
-    "OM": "MONTHLY",
-    "OW": "WEEKLY",
-    "SM": "SEMI_MONTHLY",
-    "TM": "BI_MONTHLY",
-    "Q": "QUARTERLY",
-    "O": "ONE_TIME",
-}
 
 
 # =====================================================
@@ -246,7 +232,7 @@ def format_dates(df, source=None):
 # APPLY SIP MAPPING
 # =====================================================
 
-def apply_sip_mapping(raw_df, mapping, source):
+def apply_sip_mapping(raw_df, mapping):
 
     if raw_df is None or raw_df.empty:
         return pd.DataFrame()
@@ -255,20 +241,8 @@ def apply_sip_mapping(raw_df, mapping, source):
     # CLEAN SOURCE COLUMNS
     # =====================================================
 
-    raw_df = raw_df.copy()
+    raw_df = clean_columns(raw_df)
 
-    raw_df.columns = (
-        raw_df.columns.astype(str)
-        .str.strip()
-        .str.strip("'")
-        .str.strip('"')
-    )
-    print(raw_df.columns.tolist())
-
-    if "PERIOD_DAY" in raw_df.columns:
-        print("\n========== PERIOD_DAY BEFORE MAPPING ==========")
-        print(raw_df["PERIOD_DAY"].head(50).tolist())
-        print("==============================================\n")
     print("=" * 80)
     print("Applying SIP Mapping")
     print(f"Rows    : {len(raw_df)}")
@@ -294,31 +268,15 @@ def apply_sip_mapping(raw_df, mapping, source):
         ):
             continue
 
-        # =====================================================
-        # SOURCE-SPECIFIC MAPPING
-        # =====================================================
-
-        if target_col == "scheme_code":
-            source_cols = ["Scheme"] if source == "KFIN" else ["SCHEME_CODE"]
-
-        elif target_col == "scheme_name":
-            source_cols = ["Scheme Name"] if source == "KFIN" else ["SCHEME"]
-
         mapped_series = None
 
         for src_col in source_cols:
 
-            possible_names = [
-                src_col.strip(),
-                src_col.strip().replace(" ", "_"),
-            ]
+            src_col = src_col.lower().strip()
 
-            for col in possible_names:
-                if col in raw_df.columns:
-                    mapped_series = raw_df[col]
-                    break
+            if src_col in raw_df.columns:
 
-            if mapped_series is not None:
+                mapped_series = raw_df[src_col]
                 break
 
         if mapped_series is None:
@@ -338,24 +296,7 @@ def apply_sip_mapping(raw_df, mapping, source):
     mapped_df = normalize(mapped_df)
 
     mapped_df = clean_identifier_columns(mapped_df)
-    print("\n========== PERIOD_DAY AFTER MAPPING ==========")
-    print(mapped_df["period_day"].head(50).tolist())
-    print("=============================================\n")
 
-    if "periodicity" in mapped_df.columns:
-
-        mapped_df["periodicity"] = (
-            mapped_df["periodicity"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-
-        mapped_df["periodicity"] = (
-            mapped_df["periodicity"]
-            .replace(PERIODICITY_MAPPING)
-        )
     mapped_df = mapped_df.where(
         pd.notnull(mapped_df),
         None
@@ -370,12 +311,7 @@ def apply_sip_mapping(raw_df, mapping, source):
 # PROCESS SIP
 # =====================================================
 
-def process_sip(
-    cams=None,
-    kfin=None,
-    cams_source="CAMS",
-    kfin_source="KFIN"
-):
+def process_sip(cams=None, kfin=None):
 
     dfs = []
 
@@ -389,13 +325,12 @@ def process_sip(
 
         cams_df = apply_sip_mapping(
             cams,
-            SIP_MASTER_MAPPING,
-            cams_source
+            SIP_MASTER_MAPPING
         )
 
         cams_df = format_dates(
             cams_df,
-            cams_source
+            "CAMS"
         )
 
         cams_df["source"] = "CAMS"
@@ -411,18 +346,15 @@ def process_sip(
     if kfin is not None and not kfin.empty:
 
         print("\nProcessing KFIN SIP File...")
-        print("Before mapping:")
-        print(kfin.columns.tolist())
 
         kfin_df = apply_sip_mapping(
             kfin,
-            SIP_MASTER_MAPPING,
-            kfin_source
+            SIP_MASTER_MAPPING
         )
 
         kfin_df = format_dates(
             kfin_df,
-            kfin_source
+            "KFIN"
         )
 
         kfin_df["source"] = "KFIN"
@@ -430,9 +362,7 @@ def process_sip(
         dfs.append(kfin_df)
 
         print(f"KFIN Rows : {len(kfin_df)}")
-        print("After mapping:")
-        #print(kfin_df[["scheme_code", "product_code"]].head())
-        print(kfin_df.head(10))
+
     # =====================================================
     # NO FILE FOUND
     # =====================================================

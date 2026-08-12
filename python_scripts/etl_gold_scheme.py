@@ -382,18 +382,18 @@ def transform_scheme(
 
                 ),
 
+
             "plan":
-                (
-                    scheme_name.str.extract(
-                        r"(?i)\b(Direct|Regular)\b",
-                        expand=False
-                    ).fillna("")
-                    + " "
-                    + scheme_name.str.extract(
-                        r"(?i)\b(Growth|IDCW)\b",
-                        expand=False
-                    ).fillna("")
-                ).str.strip(),
+
+                scheme_name
+
+                .str.extract(
+
+                    r"(Direct|Regular)",
+
+                    expand=False
+
+                ),
 
 
             "isin":
