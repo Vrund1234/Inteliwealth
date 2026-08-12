@@ -1,6 +1,4 @@
 import pandas as pd
-import hashlib
-import uuid
 import traceback
 
 from utils.db import engine
@@ -13,7 +11,6 @@ from utils.db import engine
 def safe_read(query):
 
     try:
-
         return pd.read_sql(
             query,
             engine
@@ -103,7 +100,6 @@ def create_row_key(df):
     df = normalize_for_compare(df)
 
     return (
-
         df[
             [
                 "holding_id",
@@ -113,7 +109,6 @@ def create_row_key(df):
         .fillna("")
         .astype(str)
         .agg("|".join, axis=1)
-
     )
 
 
@@ -167,6 +162,7 @@ def extract_folio_nominees():
     print("Rows fetched :", len(df))
 
     return df
+
 
 # =====================================================
 # TRANSFORM GOLD FOLIO NOMINEES
@@ -270,8 +266,15 @@ def transform_folio_nominees(df):
 
     )
 
-    print("Matched Holding IDs :", df["holding_id"].notna().sum())
-    print("Missing Holding IDs :", df["holding_id"].isna().sum())
+    print(
+        "Matched Holding IDs :",
+        df["holding_id"].notna().sum()
+    )
+
+    print(
+        "Missing Holding IDs :",
+        df["holding_id"].isna().sum()
+    )
 
     # =====================================================
     # BUILD NOMINEE ROWS
@@ -291,7 +294,13 @@ def transform_folio_nominees(df):
 
         for seq, prefix in nominee_configs:
 
-            nominee_name = row.get(f"{prefix}_name")
+            # =================================================
+            # NOMINEE NAME
+            # =================================================
+
+            nominee_name = row.get(
+                f"{prefix}_name"
+            )
 
             if pd.isna(nominee_name):
 
@@ -307,6 +316,10 @@ def transform_folio_nominees(df):
 
                     nominee_name = None
 
+            # =================================================
+            # RELATIONSHIP
+            # =================================================
+
             relationship = row.get(
                 f"{prefix}_relation"
             )
@@ -321,17 +334,124 @@ def transform_folio_nominees(df):
                     relationship
                 ).strip()
 
+            # =================================================
+            # PERCENTAGE
+            # =================================================
+
             percentage = pd.to_numeric(
 
-                row.get(f"{prefix}_percentage"),
+                row.get(
+                    f"{prefix}_percentage"
+                ),
 
                 errors="coerce"
 
             )
 
-                        # ============================================
+            # =================================================
+            # DOB
+            #
+            # Source:
+            # silver.investor_master.nominee_dob
+            # =================================================
+
+            nominee_dob = row.get(
+                "nominee_dob"
+            )
+
+            if pd.isna(nominee_dob):
+
+                nominee_dob = None
+
+            else:
+
+                nominee_dob = pd.to_datetime(
+                    nominee_dob,
+                    errors="coerce"
+                )
+
+                if pd.isna(nominee_dob):
+
+                    nominee_dob = None
+
+            # =================================================
+            # GUARDIAN NAME
+            #
+            # CAMS:
+            #     nominee_guardian_name
+            #
+            # KFINTECH:
+            #     guardian_name
+            # =================================================
+
+            source = str(
+                row.get("source", "")
+            ).strip().upper()
+
+            if source == "CAMS":
+
+                guardian_name = row.get(
+                    "nominee_guardian_name"
+                )
+
+            else:
+
+                guardian_name = row.get(
+                    "guardian_name"
+                )
+
+            if pd.isna(guardian_name):
+
+                guardian_name = None
+
+            else:
+
+                guardian_name = str(
+                    guardian_name
+                ).strip()
+
+                if guardian_name == "":
+
+                    guardian_name = None
+
+            # =================================================
+            # IS MINOR
+            #
+            # Y if:
+            #   1. guardian_name is present
+            #   OR
+            #   2. age < 18
+            #
+            # Otherwise N
+            # =================================================
+
+            is_minor = "N"
+
+            if guardian_name is not None:
+
+                is_minor = "Y"
+
+            elif nominee_dob is not None:
+
+                today = pd.Timestamp.today()
+
+                age = (
+                    today.year
+                    - nominee_dob.year
+                    - (
+                        (today.month, today.day)
+                        <
+                        (nominee_dob.month, nominee_dob.day)
+                    )
+                )
+
+                if age < 18:
+
+                    is_minor = "Y"
+
+            # =================================================
             # BUILD GOLD ROW
-            # ============================================
+            # =================================================
 
             gold_rows.append({
 
@@ -345,16 +465,17 @@ def transform_folio_nominees(df):
 
                 "percentage": percentage,
 
-                "dob": None,
+                "dob": nominee_dob,
 
-                "is_minor": None,
+                "is_minor": is_minor,
 
-                "guardian_name": None,
+                "guardian_name": guardian_name,
 
                 "id_type": None,
 
                 "id_no": None,
 
+                # Keep address NULL for now
                 "address": None
 
             })
@@ -400,9 +521,7 @@ def transform_folio_nominees(df):
     # =====================================================
 
     gold_df = gold_df[
-
         gold_df["holding_id"].notna()
-
     ]
 
     # =====================================================
@@ -414,7 +533,6 @@ def transform_folio_nominees(df):
         subset=[
 
             "holding_id",
-
             "seq"
 
         ],
@@ -497,6 +615,7 @@ def transform_folio_nominees(df):
 
     return gold_df
 
+
 # =====================================================
 # LOAD GOLD FOLIO NOMINEES
 # =====================================================
@@ -558,7 +677,9 @@ def load_folio_nominees(gold_df):
             create_row_key(existing)
         )
 
-        new_keys = create_row_key(gold_df)
+        new_keys = create_row_key(
+            gold_df
+        )
 
         gold_df = gold_df.loc[
             ~new_keys.isin(old_keys)
@@ -594,17 +715,24 @@ def load_folio_nominees(gold_df):
 
         )
 
-        print(f"{len(gold_df)} rows inserted into Gold Folio Nominees.")
+        print(
+            f"{len(gold_df)} rows inserted into Gold Folio Nominees."
+        )
 
         return True
 
     except Exception:
 
-        print("FAILED LOADING GOLD FOLIO NOMINEES")
+        print(
+            "FAILED LOADING GOLD FOLIO NOMINEES"
+        )
 
-        traceback.print_exc(limit=5)
+        traceback.print_exc(
+            limit=5
+        )
 
         return False
+
 
 # =====================================================
 # MAIN
@@ -616,20 +744,17 @@ def main():
     print("STARTING GOLD FOLIO NOMINEES ETL")
     print("=" * 80)
 
-
     # =====================================================
     # EXTRACT
     # =====================================================
 
     silver_df = extract_folio_nominees()
 
-
     if silver_df.empty:
 
         print("No nominee data found.")
 
         return
-
 
     # =====================================================
     # TRANSFORM
@@ -639,13 +764,11 @@ def main():
         silver_df
     )
 
-
     if gold_df.empty:
 
         print("No valid nominee records generated.")
 
         return
-
 
     # =====================================================
     # VALIDATION BEFORE LOAD
@@ -655,48 +778,50 @@ def main():
     print("FINAL GOLD FOLIO NOMINEES VALIDATION")
     print("=" * 80)
 
-
     print("\nColumns:")
-    print(gold_df.columns.tolist())
-
+    print(
+        gold_df.columns.tolist()
+    )
 
     print("\nData Types:")
-    print(gold_df.dtypes)
-
+    print(
+        gold_df.dtypes
+    )
 
     print("\nNull Count:")
     print(
         gold_df.isnull().sum()
     )
 
-
     print("\nDuplicate Check:")
-    
+
     duplicate_count = (
 
         gold_df
+
         .duplicated(
+
             subset=[
                 "holding_id",
                 "seq"
             ]
+
         )
+
         .sum()
 
     )
-
 
     print(
         "Duplicate holding_id + seq :",
         duplicate_count
     )
 
-
     print("\nSample Data:")
+
     print(
         gold_df.head()
     )
-
 
     # =====================================================
     # LOAD
@@ -706,27 +831,28 @@ def main():
         gold_df
     )
 
-
     if status:
 
         print("\n")
         print("=" * 80)
-        print("GOLD FOLIO NOMINEES ETL COMPLETED SUCCESSFULLY")
+        print(
+            "GOLD FOLIO NOMINEES ETL COMPLETED SUCCESSFULLY"
+        )
         print("=" * 80)
-
 
         # =================================================
         # FINAL DATABASE CHECK
         # =================================================
 
         final_count = safe_read(
+
             """
             SELECT
                 COUNT(*) AS total_rows
             FROM gold.folio_nominees
             """
-        )
 
+        )
 
         print("\nGold Folio Nominees Row Count")
 
@@ -734,14 +860,14 @@ def main():
             final_count
         )
 
-
     else:
 
         print("\n")
         print("=" * 80)
-        print("GOLD FOLIO NOMINEES ETL FAILED")
+        print(
+            "GOLD FOLIO NOMINEES ETL FAILED"
+        )
         print("=" * 80)
-
 
 
 # =====================================================
