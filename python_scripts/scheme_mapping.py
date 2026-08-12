@@ -608,8 +608,8 @@ def load_scheme_mapping():
     # STRUCTURED MATCHING ENGINE
     # -------------------------------------------------
 
-    alias_fn = build_alias_fn(load_aliases(master_engine))
-    overrides = load_overrides(master_engine)
+    alias_fn = build_alias_fn(load_aliases(engine))
+    overrides = load_overrides(engine)
 
     amc_map = load_amc_map(master_engine)
     df = df.merge(
@@ -708,7 +708,7 @@ def load_scheme_mapping():
                 })
 
     write_audit(engine, audit_rows)
-    write_review(master_engine, review_rows)
+    write_review(engine, review_rows)
     df.drop(columns=["scheme_key"], inplace=True)
 
     # =================================================
