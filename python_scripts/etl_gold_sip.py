@@ -1,16 +1,81 @@
 import pandas as pd
-import traceback
 
 from datetime import datetime, timezone
 
-from utils.db import engine
+from utils.db import engine, restore_engine
 
 
+# ============================================================
+# SAFE COLUMN HELPER
+# ============================================================
 
-# =====================================================
-# EXTRACT GOLD SIP DATA
-# =====================================================
+def get_column(df, column, default=None):
 
+    if column in df.columns:
+        return df[column]
+
+    return pd.Series(
+        [default] * len(df),
+        index=df.index
+    )
+
+
+# ============================================================
+# CLEAN PAN
+# ============================================================
+
+def clean_pan(series):
+
+    result = (
+        series
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .str.replace(
+            ".0",
+            "",
+            regex=False
+        )
+    )
+
+    return result.where(
+        result.str.len() == 10
+    )
+
+
+# ============================================================
+# CLEAN FOLIO
+# ============================================================
+
+def clean_folio(series):
+
+    return (
+        series
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .str.replace(
+            ".0",
+            "",
+            regex=False
+        )
+    )
+
+
+# ============================================================
+# EXTRACT SIP DATA
+#
+# IMPORTANT:
+# Only the latest Silver batch is extracted.
+#
+# There is NO:
+# - DISTINCT
+# - GROUP BY
+# - DROP_DUPLICATES
+# - business-key comparison
+#
+# Every row belonging to the latest Silver batch is retained.
+# ============================================================
 
 def extract_sip():
 
@@ -18,1106 +83,1684 @@ def extract_sip():
     print("EXTRACTING DATA FOR GOLD SIP")
     print("=" * 80)
 
+    # --------------------------------------------------------
+    # FIND LATEST SILVER BATCH
+    # --------------------------------------------------------
 
-
-    query = """
-
-    SELECT
-
-        *
-
-    FROM silver.sip_master_new
-
+    batch_query = """
+        SELECT
+            MAX(created_at) AS latest_batch
+        FROM silver.sip_master_new
     """
 
-
-
-    df = pd.read_sql(
-        query,
+    batch_df = pd.read_sql(
+        batch_query,
         engine
     )
 
+    if batch_df.empty:
 
+        print(
+            "No Silver SIP data found."
+        )
 
-    print("\nExtraction Completed")
-    print("-" * 80)
+        return pd.DataFrame()
 
-
-    print(
-        f"Rows fetched : {len(df)}"
+    latest_batch = (
+        batch_df.iloc[0]["latest_batch"]
     )
 
+    if pd.isna(latest_batch):
+
+        print(
+            "No valid Silver SIP batch timestamp found."
+        )
+
+        return pd.DataFrame()
 
     print(
-        f"Columns fetched : {len(df.columns)}"
+        "Latest Silver SIP batch:",
+        latest_batch
     )
 
+    # --------------------------------------------------------
+    # EXTRACT COMPLETE LATEST BATCH
+    # --------------------------------------------------------
 
+    query = """
+        SELECT
+            source,
+            zone,
+            branch,
+            ter_location,
+            inv_name,
+            pan,
+            folio_no,
+            folio_old,
+            inv_iin,
+            inv_dp_id,
+            inv_client_id,
+            dp_inv_name,
+            scheme_code,
+            product_code,
+            scheme_name,
+            plan,
+            sub_arn_code,
+            agent_name,
+            subbroker,
+            euin,
+            aut_trntyp,
+            payment_mode,
+            periodicity,
+            auto_amount,
+            no_of_installments,
+            period_day,
+            reg_date,
+            from_date,
+            to_date,
+            cease_date,
+            pause_from_date,
+            pause_to_date,
+            target_scheme,
+            target_scheme_code,
+            target_scheme_name,
+            target_plan,
+            bank,
+            ac_holder_name,
+            ecs_account_no,
+            ecsno,
+            instrm_no,
+            cheq_micr_no,
+            umrn_code,
+            ac_type,
+            amc_code,
+            user_code,
+            package_name,
+            special_product,
+            subtrxndesc,
+            remarks,
+            top_up_frq,
+            top_up_amt,
+            top_up_perc,
+            status,
+            modify_flag,
+            scheme_folio_number,
+            request_ref_no,
+            ft_sip_regno,
+            created_at,
+            updated_at
+        FROM silver.sip_master_new
+        WHERE created_at = %s
+        ORDER BY created_at
+    """
 
-    print("\nSample Data")
-    print("-" * 80)
-
+    df = pd.read_sql(
+        query,
+        engine,
+        params=(latest_batch,)
+    )
 
     print(
-        df.head()
+        "Rows fetched:",
+        len(df)
     )
-
 
     return df
 
-# =====================================================
-# TRANSFORM GOLD SIP DATA
-# =====================================================
 
+# ============================================================
+# TRANSFORM GOLD SIP
+# ============================================================
 
 def transform_sip(df):
 
     print("=" * 80)
-    print("TRANSFORMING DATA FOR GOLD SIP")
+    print("TRANSFORMING GOLD SIP")
     print("=" * 80)
 
+    if not isinstance(df, pd.DataFrame):
 
-
-    gold_df = pd.DataFrame()
-
-
-
-    # =====================================================
-    # RTA
-    # =====================================================
-
-
-    gold_df["rta"] = (
-
-        df["source"]
-
-        .astype("string")
-
-        .str.strip()
-
-        .str.upper()
-
-    )
-
-
-
-    # =====================================================
-    # SIP REGISTRATION NUMBER
-    # Natural Key
-    # =====================================================
-
-
-    gold_df["sip_reg_no"] = (
-
-        df["ft_sip_regno"]
-
-        .astype("string")
-
-        .str.strip()
-
-        .str.replace(".0", "", regex=False)
-
-    )
-
-
-    gold_df["sip_reg_no"] = (
-
-        gold_df["sip_reg_no"]
-
-        .replace(
-
-            {
-
-                "": pd.NA,
-
-                "nan": pd.NA,
-
-                "<NA>": pd.NA
-
-            }
-
+        raise TypeError(
+            f"transform_sip expected DataFrame, "
+            f"received {type(df).__name__}"
         )
 
+    df = df.copy()
+
+    # ========================================================
+    # NORMALIZE SOURCE / RTA
+    # ========================================================
+
+    df["rta_clean"] = (
+        get_column(
+            df,
+            "source"
+        )
+        .astype("string")
+        .str.strip()
+        .str.upper()
     )
 
+    # ========================================================
+    # CLEAN PAN
+    # ========================================================
 
+    df["pan_clean"] = clean_pan(
+        get_column(
+            df,
+            "pan"
+        )
+    )
 
-    # =====================================================
-    # FOLIO NUMBER
-    # =====================================================
+    # ========================================================
+    # CLEAN FOLIO
+    # ========================================================
 
+    df["folio_clean"] = clean_folio(
+        get_column(
+            df,
+            "folio_no"
+        )
+    )
+
+    # ========================================================
+    # CLEAN SCHEME CODE
+    # ========================================================
+
+    df["scheme_code_clean"] = (
+        get_column(
+            df,
+            "scheme_code"
+        )
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    # ========================================================
+    # CLEAN AMC CODE
+    # ========================================================
+
+    df["amc_code_clean"] = (
+        get_column(
+            df,
+            "amc_code"
+        )
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    # ========================================================
+    # CREATE GOLD DATAFRAME
+    # ========================================================
+
+    gold_df = pd.DataFrame(
+        index=df.index
+    )
+
+    # ========================================================
+    # BASIC FIELDS
+    # ========================================================
+
+    gold_df["rta"] = df["rta_clean"]
+
+    gold_df["sip_reg_no"] = (
+        get_column(
+            df,
+            "ft_sip_regno"
+        )
+        .astype("string")
+        .str.strip()
+    )
 
     gold_df["folio_number"] = (
-
-        df["folio_no"]
-
-        .astype("string")
-
-        .str.strip()
-
-        .str.replace(".0", "", regex=False)
-
+        df["folio_clean"]
     )
-
-
-    gold_df.loc[
-
-        gold_df["folio_number"] == "",
-
-        "folio_number"
-
-    ] = None
-
-
-
-    # =====================================================
-    # SCHEME CODE
-    # =====================================================
-
 
     gold_df["scheme_code"] = (
-
-        df["scheme_code"]
-
-        .astype("string")
-
-        .str.strip()
-
+        df["scheme_code_clean"]
     )
-
-
-
-    # =====================================================
-    # SCHEME NAME
-    # =====================================================
-
 
     gold_df["scheme_name"] = (
-
-        df["scheme_name"]
-
+        get_column(
+            df,
+            "scheme_name"
+        )
         .astype("string")
-
         .str.strip()
-
     )
-
-
-
-    # =====================================================
-    # AMC CODE
-    # =====================================================
-
 
     gold_df["amc_code"] = (
-
-        df["amc_code"]
-
-        .astype("string")
-
-        .str.strip()
-
+        df["amc_code_clean"]
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # ISIN
-    # =====================================================
+    #
+    # Not available in silver.sip_master_new
+    # ========================================================
 
+    gold_df["isin"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
 
-    gold_df["isin"] = None
-
-
-
-    # =====================================================
-    # SIP AMOUNT
-    # =====================================================
-
+    # ========================================================
+    # AMOUNT
+    # ========================================================
 
     gold_df["amount"] = pd.to_numeric(
-
-        df["auto_amount"],
-
+        get_column(
+            df,
+            "auto_amount"
+        ),
         errors="coerce"
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # FREQUENCY
-    # =====================================================
-
+    # ========================================================
 
     gold_df["frequency"] = (
-
-        df["periodicity"]
-
+        get_column(
+            df,
+            "periodicity"
+        )
         .astype("string")
-
         .str.strip()
-
         .str.upper()
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # START DATE
-    # =====================================================
-
+    # ========================================================
 
     gold_df["start_date"] = (
-
         pd.to_datetime(
-
-            df["from_date"],
-
+            get_column(
+                df,
+                "from_date"
+            ),
             errors="coerce"
-
         )
-
         .dt.date
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # END DATE
-    # =====================================================
-
+    # ========================================================
 
     gold_df["end_date"] = (
-
         pd.to_datetime(
-
-            df["to_date"],
-
+            get_column(
+                df,
+                "to_date"
+            ),
             errors="coerce"
-
         )
-
         .dt.date
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # NEXT DUE DATE
-    # =====================================================
+    #
+    # Not available in source.
+    # ========================================================
 
+    gold_df["next_due_date"] = pd.Series(
+        pd.NaT,
+        index=df.index
+    ).dt.date
 
-    gold_df["next_due_date"] = None
-
-
-
-    # =====================================================
+    # ========================================================
     # SIP DAY
-    # =====================================================
-
+    # ========================================================
 
     gold_df["sip_day"] = pd.to_numeric(
-
-        df["period_day"],
-
+        get_column(
+            df,
+            "period_day"
+        ),
         errors="coerce"
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # MANDATE ID
-    # =====================================================
-
+    # ========================================================
 
     gold_df["mandate_id"] = (
-
-        df["umrn_code"]
-
+        get_column(
+            df,
+            "umrn_code"
+        )
         .astype("string")
-
         .str.strip()
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # STATUS
-    # =====================================================
-
+    # ========================================================
 
     gold_df["status"] = (
-
-        df["status"]
-
+        get_column(
+            df,
+            "status"
+        )
         .astype("string")
-
         .str.strip()
-
         .str.upper()
-
-        .str[:20]
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # REGISTERED DATE
-    # =====================================================
-
+    # ========================================================
 
     gold_df["registered_date"] = (
-
         pd.to_datetime(
-
-            df["reg_date"],
-
+            get_column(
+                df,
+                "reg_date"
+            ),
             errors="coerce"
-
         )
-
         .dt.date
-
     )
 
-
-
-    # =====================================================
+    # ========================================================
     # CEASED DATE
-    # =====================================================
-
+    # ========================================================
 
     gold_df["ceased_date"] = (
-
         pd.to_datetime(
-
-            df["cease_date"],
-
+            get_column(
+                df,
+                "cease_date"
+            ),
             errors="coerce"
-
         )
-
         .dt.date
-
     )
 
-        # =====================================================
-    # APPLICATION MANAGED COLUMNS
-    # =====================================================
+    # ========================================================
+    # SCHEME ID
+    #
+    # Mapping failure produces NULL.
+    # The SIP row is NEVER removed.
+    # ========================================================
 
+    print(
+        "Loading scheme mapping..."
+    )
 
-    gold_df["scheme_id"] = None
+    gold_scheme = pd.read_sql(
+        """
+        SELECT
+            id,
+            rta,
+            scheme_code
+        FROM gold.scheme
+        """,
+        engine
+    )
 
-    gold_df["amc_id"] = None
-
-    gold_df["client_id"] = None
-
-
-
-    gold_df["sip_type"] = None
-
-
-    gold_df["registered_installments"] = None
-
-    gold_df["completed_installments"] = None
-
-    gold_df["bounced_installments"] = None
-
-
-    gold_df["ceased_reason"] = None
-
-
-    gold_df["arn_id"] = None
-
-
-
-    # =====================================================
-    # CREATED AT
-    # =====================================================
-
-
-    gold_df["created_at"] = datetime.now()
-
-
-
-    # =====================================================
-    # COLUMN LENGTH CLEANING
-    # =====================================================
-
-
-    gold_df["rta"] = (
-
-        gold_df["rta"]
-
+    gold_scheme["rta_clean"] = (
+        gold_scheme["rta"]
         .astype("string")
-
-        .str[:10]
-
+        .str.strip()
+        .str.upper()
     )
 
+    gold_scheme["scheme_code_clean"] = (
+        gold_scheme["scheme_code"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
 
-    gold_df["sip_reg_no"] = (
-
-        gold_df["sip_reg_no"]
-
-        .where(
-
-            gold_df["sip_reg_no"].isna(),
-
-            gold_df["sip_reg_no"]
-
-            .astype(str)
-
-            .str[:50]
-
+    gold_scheme = (
+        gold_scheme[
+            [
+                "id",
+                "rta_clean",
+                "scheme_code_clean"
+            ]
+        ]
+        .dropna(
+            subset=[
+                "rta_clean",
+                "scheme_code_clean"
+            ]
         )
-
-    )
-
-
-    gold_df["folio_number"] = (
-
-        gold_df["folio_number"]
-
-        .where(
-
-            gold_df["folio_number"].isna(),
-
-            gold_df["folio_number"]
-
-            .astype(str)
-
-            .str[:40]
-
+        .drop_duplicates(
+            subset=[
+                "rta_clean",
+                "scheme_code_clean"
+            ]
         )
-
     )
 
+    scheme_lookup = (
+        gold_scheme
+        .set_index(
+            [
+                "rta_clean",
+                "scheme_code_clean"
+            ]
+        )["id"]
+    )
 
-    gold_df["scheme_code"] = (
+    gold_df["scheme_id"] = [
+        scheme_lookup.get(
+            (
+                df.loc[idx, "rta_clean"],
+                df.loc[idx, "scheme_code_clean"]
+            ),
+            None
+        )
+        for idx in df.index
+    ]
 
-        gold_df["scheme_code"]
+    # ========================================================
+    # AMC ID
+    # ========================================================
 
+    print(
+        "Loading AMC mapping..."
+    )
+
+    amc_master = pd.read_sql(
+        """
+        SELECT
+            id,
+            amc_code
+        FROM public.amc
+        WHERE amc_code IS NOT NULL
+        """,
+        restore_engine
+    )
+
+    amc_master["amc_code_clean"] = (
+        amc_master["amc_code"]
         .astype("string")
-
-        .str[:30]
-
+        .str.strip()
+        .str.upper()
     )
 
+    amc_master = (
+        amc_master[
+            [
+                "id",
+                "amc_code_clean"
+            ]
+        ]
+        .dropna(
+            subset=[
+                "amc_code_clean"
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "amc_code_clean"
+            ]
+        )
+    )
 
-    gold_df["scheme_name"] = (
+    amc_lookup = dict(
+        zip(
+            amc_master["amc_code_clean"],
+            amc_master["id"]
+        )
+    )
 
-        gold_df["scheme_name"]
+    gold_df["amc_id"] = (
+        df["amc_code_clean"]
+        .map(amc_lookup)
+    )
 
+    # ========================================================
+    # CLIENT ID
+    # ========================================================
+
+    print(
+        "Loading client mapping..."
+    )
+
+    clients = pd.read_sql(
+        """
+        SELECT
+            user_id,
+            pan
+        FROM gold.clients
+        WHERE pan IS NOT NULL
+        """,
+        engine
+    )
+
+    clients["pan_clean"] = clean_pan(
+        clients["pan"]
+    )
+
+    clients = (
+        clients[
+            [
+                "user_id",
+                "pan_clean"
+            ]
+        ]
+        .dropna(
+            subset=[
+                "pan_clean"
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "pan_clean"
+            ]
+        )
+    )
+
+    client_lookup = dict(
+        zip(
+            clients["pan_clean"],
+            clients["user_id"]
+        )
+    )
+
+    gold_df["client_id"] = (
+        df["pan_clean"]
+        .map(client_lookup)
+    )
+
+    # ========================================================
+    # SIP TYPE
+    # ========================================================
+
+    aut_trntyp_clean = (
+        get_column(
+            df,
+            "aut_trntyp"
+        )
         .astype("string")
-
-        .str[:255]
-
+        .str.strip()
+        .str.upper()
     )
-
-
-    gold_df["amc_code"] = (
-
-        gold_df["amc_code"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
-
-    gold_df["isin"] = (
-
-        gold_df["isin"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
-
-    gold_df["frequency"] = (
-
-        gold_df["frequency"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
-
-    gold_df["mandate_id"] = (
-
-        gold_df["mandate_id"]
-
-        .astype("string")
-
-        .str[:50]
-
-    )
-
-
-    gold_df["status"] = (
-
-        gold_df["status"]
-
-        .astype("string")
-
-        .str[:20]
-
-    )
-
 
     gold_df["sip_type"] = (
-
-        gold_df["sip_type"]
-
-        .astype("string")
-
-        .str[:20]
-
+        aut_trntyp_clean
+        .map({
+            "SIP": "SIP",
+            "S": "SIP",
+            "STP": "STP",
+            "SO": "STP",
+            "SI": "STP",
+            "SWP": "SWP",
+            "WO": "SWP"
+        })
     )
 
+    # Preserve NULL as NULL and unknown values as OTHER
+    gold_df["sip_type"] = (
+        gold_df["sip_type"]
+        .astype("string")
+        .where(
+            aut_trntyp_clean.isna(),
+            gold_df["sip_type"]
+        )
+    )
+
+    gold_df.loc[
+        aut_trntyp_clean.notna()
+        & gold_df["sip_type"].isna(),
+        "sip_type"
+    ] = "OTHER"
+
+    # ========================================================
+    # REGISTERED INSTALLMENTS
+    # ========================================================
+
+    gold_df["registered_installments"] = (
+        pd.to_numeric(
+            get_column(
+                df,
+                "no_of_installments"
+            ),
+            errors="coerce"
+        )
+    )
+
+    # ========================================================
+    # ARN CODE
+    #
+    # sub_arn_code
+    # -> subbroker
+    # -> user_code
+    # ========================================================
+
+    sub_arn_code = (
+        get_column(
+            df,
+            "sub_arn_code"
+        )
+        .astype("string")
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
+    )
+
+    subbroker = (
+        get_column(
+            df,
+            "subbroker"
+        )
+        .astype("string")
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
+    )
+
+    df["arn_code_clean"] = (
+        sub_arn_code
+        .fillna(subbroker)
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    # ========================================================
+    # ARN ID
+    # ========================================================
+
+    print(
+        "Loading ARN mapping..."
+    )
+
+    arn_master = pd.read_sql(
+        """
+        SELECT
+            id,
+            arn_code
+        FROM public.arn
+        WHERE arn_code IS NOT NULL
+        """,
+        restore_engine
+    )
+
+    arn_master["arn_code_clean"] = (
+        arn_master["arn_code"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    arn_master = (
+        arn_master[
+            [
+                "id",
+                "arn_code_clean"
+            ]
+        ]
+        .dropna(
+            subset=[
+                "arn_code_clean"
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "arn_code_clean"
+            ]
+        )
+    )
+
+    arn_lookup = dict(
+        zip(
+            arn_master["arn_code_clean"],
+            arn_master["id"]
+        )
+    )
+
+    gold_df["arn_id"] = (
+        df["arn_code_clean"]
+        .map(arn_lookup)
+    )
+
+    # ========================================================
+    # TRANSACTIONS
+    # ========================================================
+
+    print(
+        "Loading transaction data..."
+    )
+
+    transactions = pd.read_sql(
+        """
+        SELECT
+            source,
+            folio_no,
+            prodcode,
+            trxntype,
+            trxnstat,
+            trxnmode,
+            trxnsubtyp,
+            trxn_nature,
+            siptrxnno,
+            sipregslno,
+            remarks
+        FROM silver.transaction_master_new
+        """,
+        engine
+    )
+
+    # ========================================================
+    # DEFAULT COUNTS
+    # ========================================================
+
+    gold_df["completed_installments"] = 0
+
+    gold_df["bounced_installments"] = 0
+
+    if not transactions.empty:
+
+        transactions["rta_clean"] = (
+            transactions["source"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+        transactions["folio_clean"] = clean_folio(
+            transactions["folio_no"]
+        )
+
+        transactions["scheme_code_clean"] = (
+            transactions["prodcode"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+        # ====================================================
+        # TRANSACTION TEXT
+        # ====================================================
+
+        transaction_text = (
+            transactions["trxntype"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+            + " "
+            +
+            transactions["trxnstat"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+            + " "
+            +
+            transactions["trxnmode"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+            + " "
+            +
+            transactions["trxnsubtyp"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+            + " "
+            +
+            transactions["trxn_nature"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+            + " "
+            +
+            transactions["remarks"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+        )
+
+        # ====================================================
+        # SIP TRANSACTION IDENTIFICATION
+        # ====================================================
+
+        sip_number_mask = (
+            transactions["siptrxnno"]
+            .notna()
+            &
+            transactions["siptrxnno"]
+            .astype("string")
+            .str.strip()
+            .ne("")
+        )
+
+        sip_sequence_mask = (
+            transactions["sipregslno"]
+            .notna()
+            &
+            transactions["sipregslno"]
+            .astype("string")
+            .str.strip()
+            .ne("")
+        )
+
+        sip_text_mask = (
+            transaction_text
+            .str.contains(
+                "SIP",
+                regex=False,
+                na=False
+            )
+        )
+
+        sip_mask = (
+            sip_number_mask
+            |
+            sip_sequence_mask
+            |
+            sip_text_mask
+        )
+
+        # ====================================================
+        # BOUNCED / FAILED / REJECTED
+        # ====================================================
+
+        bounced_mask = (
+            transaction_text
+            .str.contains(
+                "BOUNCE|BOUNCED|FAILED|FAILURE|REJECT|REJECTED",
+                regex=True,
+                na=False
+            )
+        )
+
+        # ====================================================
+        # COMPLETED
+        # ====================================================
+
+        completed_mask = (
+            sip_mask
+            &
+            ~bounced_mask
+        )
+
+        # ====================================================
+        # COMPLETED LOOKUP
+        # ====================================================
+
+        completed = (
+            transactions.loc[
+                completed_mask
+            ]
+            .groupby(
+                [
+                    "rta_clean",
+                    "folio_clean",
+                    "scheme_code_clean"
+                ],
+                dropna=False
+            )
+            .size()
+            .reset_index(
+                name="completed_installments"
+            )
+        )
+
+        completed_lookup = (
+            completed
+            .set_index(
+                [
+                    "rta_clean",
+                    "folio_clean",
+                    "scheme_code_clean"
+                ]
+            )[
+                "completed_installments"
+            ]
+        )
+
+        # ====================================================
+        # BOUNCED LOOKUP
+        # ====================================================
+
+        bounced = (
+            transactions.loc[
+                sip_mask & bounced_mask
+            ]
+            .groupby(
+                [
+                    "rta_clean",
+                    "folio_clean",
+                    "scheme_code_clean"
+                ],
+                dropna=False
+            )
+            .size()
+            .reset_index(
+                name="bounced_installments"
+            )
+        )
+
+        bounced_lookup = (
+            bounced
+            .set_index(
+                [
+                    "rta_clean",
+                    "folio_clean",
+                    "scheme_code_clean"
+                ]
+            )[
+                "bounced_installments"
+            ]
+        )
+
+        # ====================================================
+        # APPLY COUNTS
+        # ====================================================
+
+        gold_df["completed_installments"] = [
+            completed_lookup.get(
+                (
+                    df.loc[idx, "rta_clean"],
+                    df.loc[idx, "folio_clean"],
+                    df.loc[idx, "scheme_code_clean"]
+                ),
+                0
+            )
+            for idx in df.index
+        ]
+
+        gold_df["bounced_installments"] = [
+            bounced_lookup.get(
+                (
+                    df.loc[idx, "rta_clean"],
+                    df.loc[idx, "folio_clean"],
+                    df.loc[idx, "scheme_code_clean"]
+                ),
+                0
+            )
+            for idx in df.index
+        ]
+
+    # ========================================================
+    # CLEAN COUNTS
+    # ========================================================
+
+    gold_df["completed_installments"] = (
+        pd.to_numeric(
+            gold_df["completed_installments"],
+            errors="coerce"
+        )
+        .fillna(0)
+        .astype(int)
+    )
+
+    gold_df["bounced_installments"] = (
+        pd.to_numeric(
+            gold_df["bounced_installments"],
+            errors="coerce"
+        )
+        .fillna(0)
+        .astype(int)
+    )
+
+    # ========================================================
+    # CEASED REASON
+    #
+    # Logic:
+    #
+    # IF ceased_date IS NOT NULL
+    # OR status IN ('CEASED', 'CANCELLED', 'EXPIRED')
+    #
+    # THEN COALESCE(remarks, status)
+    #
+    # Empty remarks are treated as NULL.
+    # ========================================================
+
+    remarks_clean = (
+        get_column(
+            df,
+            "remarks"
+        )
+        .astype("string")
+        .str.strip()
+    )
+
+    status_clean = (
+        get_column(
+            df,
+            "status"
+        )
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    ceased_reason_value = (
+        remarks_clean
+        .replace(
+            "",
+            pd.NA
+        )
+        .fillna(
+            status_clean
+        )
+    )
+
+    ceased_condition = (
+        gold_df["ceased_date"].notna()
+        |
+        status_clean.isin(
+            [
+                "CEASED",
+                "CANCELLED",
+                "EXPIRED"
+            ]
+        )
+    )
+
+    gold_df["ceased_reason"] = pd.Series(
+        pd.NA,
+        index=gold_df.index,
+        dtype="string"
+    )
+
+    gold_df.loc[
+        ceased_condition,
+        "ceased_reason"
+    ] = ceased_reason_value.loc[
+        ceased_condition
+    ]
 
     gold_df["ceased_reason"] = (
-
         gold_df["ceased_reason"]
-
         .astype("string")
-
-        .str[:100]
-
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
     )
 
+    # ========================================================
+    # GOLD CREATED AT
+    #
+    # This is the time when Gold transformation is performed.
+    # It is NOT used to identify the Silver input batch.
+    # ========================================================
 
+    gold_load_timestamp = datetime.now(
+        timezone.utc
+    )
 
-    # =====================================================
+    gold_df["created_at"] = (
+        gold_load_timestamp
+    )
+
+    # ========================================================
     # FINAL COLUMN ORDER
-    # =====================================================
+    # ========================================================
 
+    columns = [
 
-    gold_df = gold_df[
-
-        [
-
-            "rta",
-
-            "sip_reg_no",
-
-            "folio_number",
-
-            "scheme_code",
-
-            "scheme_name",
-
-            "amc_code",
-
-            "isin",
-
-            "amount",
-
-            "frequency",
-
-            "start_date",
-
-            "end_date",
-
-            "next_due_date",
-
-            "sip_day",
-
-            "mandate_id",
-
-            "status",
-
-            "registered_date",
-
-            "ceased_date",
-
-            "scheme_id",
-
-            "amc_id",
-
-            "client_id",
-
-            "sip_type",
-
-            "registered_installments",
-
-            "completed_installments",
-
-            "bounced_installments",
-
-            "ceased_reason",
-
-            "arn_id",
-
-            "created_at"
-
-        ]
+        "rta",
+        "sip_reg_no",
+        "folio_number",
+        "scheme_code",
+        "scheme_name",
+        "amc_code",
+        "isin",
+        "amount",
+        "frequency",
+        "start_date",
+        "end_date",
+        "next_due_date",
+        "sip_day",
+        "mandate_id",
+        "status",
+        "registered_date",
+        "ceased_date",
+        "scheme_id",
+        "amc_id",
+        "client_id",
+        "sip_type",
+        "registered_installments",
+        "completed_installments",
+        "bounced_installments",
+        "ceased_reason",
+        "arn_id",
+        "created_at"
 
     ]
 
+    gold_df = gold_df[
+        columns
+    ].copy()
 
+    # ========================================================
+    # VALIDATION
+    # ========================================================
 
+    print()
+    print("=" * 80)
+    print("GOLD SIP VALIDATION")
     print("=" * 80)
 
-    print("GOLD SIP PREVIEW")
-
-    print("=" * 80)
-
-
     print(
-
-        gold_df.head()
-
-    )
-
-
-    print(
-
-        "\nTotal Gold SIP Rows:",
-
+        "Total Gold SIP rows:",
         len(gold_df)
-
     )
 
+    print(
+        "Missing Scheme IDs:",
+        gold_df["scheme_id"].isna().sum()
+    )
+
+    print(
+        "Missing AMC IDs:",
+        gold_df["amc_id"].isna().sum()
+    )
+
+    print(
+        "Missing Client IDs:",
+        gold_df["client_id"].isna().sum()
+    )
+
+    print(
+        "Missing ARN IDs:",
+        gold_df["arn_id"].isna().sum()
+    )
+
+    print(
+        "Completed Installments:",
+        gold_df["completed_installments"].sum()
+    )
+
+    print(
+        "Bounced Installments:",
+        gold_df["bounced_installments"].sum()
+    )
 
     return gold_df
 
-# =====================================================
-# LOAD GOLD SIP DATA
-# =====================================================
 
+# ============================================================
+# GET GOLD.SIP COLUMN LIMITS
+# ============================================================
+
+def get_gold_sip_column_limits():
+
+    query = """
+        SELECT
+            column_name,
+            data_type,
+            character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = 'gold'
+          AND table_name = 'sip'
+        ORDER BY ordinal_position
+    """
+
+    schema_df = pd.read_sql(
+        query,
+        engine
+    )
+
+    return schema_df
+
+
+# ============================================================
+# VALIDATE STRING LENGTHS
+#
+# IMPORTANT:
+# We DO NOT truncate anything.
+#
+# If a value exceeds the PostgreSQL VARCHAR limit,
+# the complete batch is rejected before insertion.
+# ============================================================
+
+def validate_string_lengths(gold_df):
+
+    print()
+    print("=" * 80)
+    print("VALIDATING GOLD.SIP STRING LENGTHS")
+    print("=" * 80)
+
+    schema_df = get_gold_sip_column_limits()
+
+    varchar_columns = schema_df[
+        schema_df["character_maximum_length"].notna()
+    ].copy()
+
+    problems = []
+
+    for _, row in varchar_columns.iterrows():
+
+        column = row["column_name"]
+
+        if column not in gold_df.columns:
+            continue
+
+        limit = int(
+            row["character_maximum_length"]
+        )
+
+        series = gold_df[column]
+
+        lengths = (
+            series
+            .astype("string")
+            .str.len()
+        )
+
+        offending_mask = (
+            lengths > limit
+        )
+
+        offending_count = int(
+            offending_mask.sum()
+        )
+
+        if offending_count > 0:
+
+            max_length = int(
+                lengths.max()
+            )
+
+            problems.append(
+                {
+                    "column": column,
+                    "limit": limit,
+                    "max_length_found": max_length,
+                    "offending_rows": offending_count
+                }
+            )
+
+    if problems:
+
+        print()
+        print(
+            "STRING LENGTH ERRORS FOUND"
+        )
+
+        print(
+            "-" * 80
+        )
+
+        for problem in problems:
+
+            print(
+                f"Column: {problem['column']}"
+            )
+
+            print(
+                f"PostgreSQL limit: "
+                f"{problem['limit']}"
+            )
+
+            print(
+                f"Maximum length found: "
+                f"{problem['max_length_found']}"
+            )
+
+            print(
+                f"Offending rows: "
+                f"{problem['offending_rows']}"
+            )
+
+            print(
+                "-" * 80
+            )
+
+        raise ValueError(
+            "Gold SIP contains values exceeding "
+            "the PostgreSQL VARCHAR limits. "
+            "No rows were inserted."
+        )
+
+    print(
+        "String length validation: PASSED"
+    )
+
+    return True
+
+
+# ============================================================
+# LOAD GOLD SIP
+#
+# IMPORTANT:
+#
+# NO DUPLICATE COMPARISON
+# NO DROP_DUPLICATES
+# NO EXISTING GOLD CHECK
+#
+# Every row received from the selected Silver batch
+# is inserted into Gold.
+# ============================================================
 
 def load_sip(gold_df):
 
+    print()
     print("=" * 80)
     print("LOADING DATA INTO GOLD.SIP")
     print("=" * 80)
 
+    if not isinstance(
+        gold_df,
+        pd.DataFrame
+    ):
 
-
-    # =====================================================
-    # VARCHAR VALIDATION
-    # =====================================================
-
-
-    varchar_limits = {
-
-        "rta":10,
-
-        "sip_reg_no":50,
-
-        "folio_number":40,
-
-        "scheme_code":30,
-
-        "scheme_name":255,
-
-        "amc_code":20,
-
-        "isin":20,
-
-        "frequency":20,
-
-        "mandate_id":50,
-
-        "status":20,
-
-        "sip_type":20,
-
-        "ceased_reason":100
-
-    }
-
-
-
-    for col, limit in varchar_limits.items():
-
-
-        if col in gold_df.columns:
-
-
-            max_length = (
-
-                gold_df[col]
-
-                .fillna("")
-
-                .astype(str)
-
-                .str.len()
-
-                .max()
-
-            )
-
-
-            print(
-
-                f"{col:<25} Max Length : {max_length}"
-
-            )
-
-
-            if max_length > limit:
-
-
-                raise Exception(
-
-                    f"{col} length {max_length} exceeds limit {limit}"
-
-                )
-
-
-
-    # =====================================================
-    # TIMESTAMP DUPLICATE CHECK
-    # Natural Key:
-    # rta + sip_reg_no
-    # =====================================================
-
-
-    print()
-
-    print("Checking existing gold SIP records")
-
-
-
-    existing_sip = pd.read_sql(
-
-        """
-
-        SELECT
-
-            rta,
-
-            sip_reg_no,
-
-            created_at
-
-        FROM gold.sip
-
-        """,
-
-        engine
-
-    )
-
-
+        raise TypeError(
+            f"load_sip expected DataFrame, "
+            f"received {type(gold_df).__name__}"
+        )
 
     print(
-
-        "Existing SIP records:",
-
-        len(existing_sip)
-
-    )
-
-
-
-    if len(existing_sip) > 0:
-
-
-
-        existing_sip["rta"] = (
-
-            existing_sip["rta"]
-
-            .fillna("")
-
-            .astype(str)
-
-            .str.strip()
-
-            .str.upper()
-
-        )
-
-
-
-        existing_sip["sip_reg_no"] = (
-
-            existing_sip["sip_reg_no"]
-
-            .fillna("")
-
-            .astype(str)
-
-            .str.strip()
-
-        )
-
-
-
-        gold_df["rta"] = (
-
-            gold_df["rta"]
-
-            .fillna("")
-
-            .astype(str)
-
-            .str.strip()
-
-            .str.upper()
-
-        )
-
-
-
-        gold_df["sip_reg_no"] = (
-
-            gold_df["sip_reg_no"]
-
-            .fillna("")
-
-            .astype(str)
-
-            .str.strip()
-
-        )
-
-
-
-        compare_df = gold_df.merge(
-
-            existing_sip,
-
-            on=[
-
-                "rta",
-
-                "sip_reg_no"
-
-            ],
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
-
-            )
-
-        )
-
-
-
-        compare_df = compare_df[
-
-            compare_df["created_at_old"].isna()
-
-            |
-
-            (
-
-                compare_df["created_at_new"]
-
-                >
-
-                compare_df["created_at_old"]
-
-            )
-
-        ]
-
-
-
-        gold_df = compare_df[
-
-            gold_df.columns
-
-        ]
-
-
-
-    print(
-
-        "Rows after timestamp duplicate check:",
-
+        "Rows received:",
         len(gold_df)
-
     )
 
-
-
-    if len(gold_df) == 0:
-
+    if gold_df.empty:
 
         print(
-
-            "No new SIP records to insert"
-
+            "No SIP rows received."
         )
-
 
         return True
 
+    # ========================================================
+    # GOLD.SIP COLUMNS ONLY
+    # ========================================================
 
+    gold_columns = [
 
-    # =====================================================
-    # INSERT INTO GOLD SIP
-    # =====================================================
+        "rta",
+        "sip_reg_no",
+        "folio_number",
+        "scheme_code",
+        "scheme_name",
+        "amc_code",
+        "isin",
+        "amount",
+        "frequency",
+        "start_date",
+        "end_date",
+        "next_due_date",
+        "sip_day",
+        "mandate_id",
+        "status",
+        "registered_date",
+        "ceased_date",
+        "scheme_id",
+        "amc_id",
+        "client_id",
+        "sip_type",
+        "registered_installments",
+        "completed_installments",
+        "bounced_installments",
+        "ceased_reason",
+        "arn_id",
+        "created_at"
 
+    ]
+
+    # ========================================================
+    # CHECK GOLD COLUMNS
+    # ========================================================
+
+    missing_columns = [
+        col
+        for col in gold_columns
+        if col not in gold_df.columns
+    ]
+
+    if missing_columns:
+
+        raise ValueError(
+            "Missing Gold SIP columns: "
+            + ", ".join(
+                missing_columns
+            )
+        )
+
+    gold_df = gold_df[
+        gold_columns
+    ].copy()
+
+    # ========================================================
+    # NO DUPLICATE FILTERING
+    # ========================================================
+
+    print(
+        "Duplicate filtering: DISABLED"
+    )
+
+    print(
+        "Rows retained for Gold:",
+        len(gold_df)
+    )
+
+    # ========================================================
+    # LENGTH VALIDATION
+    # ========================================================
+
+    validate_string_lengths(
+        gold_df
+    )
+
+    # ========================================================
+    # CONVERT PANDAS NULLS TO DATABASE NULL
+    # ========================================================
+
+    gold_df = gold_df.astype(
+        object
+    )
+
+    gold_df = gold_df.where(
+        pd.notna(gold_df),
+        None
+    )
+
+    # ========================================================
+    # INSERT COMPLETE BATCH
+    # ========================================================
 
     try:
 
+        with engine.begin() as connection:
 
-        gold_df.to_sql(
+            gold_df.to_sql(
+                name="sip",
+                con=connection,
+                schema="gold",
+                if_exists="append",
+                index=False,
+                method="multi",
+                chunksize=1000
+            )
 
-            name="sip",
+        # ====================================================
+        # VERIFY
+        # ====================================================
 
-            con=engine,
-
-            schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+        verification = pd.read_sql(
+            """
+            SELECT COUNT(*) AS total_rows
+            FROM gold.sip
+            """,
+            engine
         )
 
-
+        total_rows = int(
+            verification.iloc[0]["total_rows"]
+        )
 
         print()
-
         print(
-
-            f"Inserted Rows : {len(gold_df)}"
-
+            "Inserted rows:",
+            len(gold_df)
         )
 
+        print(
+            "Gold SIP rows after load:",
+            total_rows
+        )
+
+        print()
+        print(
+            "GOLD SIP LOAD SUCCESSFUL"
+        )
 
         return True
 
-
-
     except Exception as e:
 
+        print()
+        print("=" * 80)
+        print("GOLD SIP LOAD FAILED")
+        print("=" * 80)
 
-        print("\nFAILED LOADING GOLD SIP\n")
+        print(
+            "Error type:",
+            type(e).__name__
+        )
 
+        print(
+            "Error:",
+            str(e).splitlines()[0]
+        )
 
-        traceback.print_exc(limit=5)
-
-
-
-        if hasattr(e, "orig"):
-
-            print("\n========== POSTGRES ERROR ==========")
-
-            print(e.orig)
-
-            print("====================================")
-
-
+        print(
+            "No rows were confirmed as inserted."
+        )
 
         return False
 
-# =====================================================
-# MAIN EXECUTION
-# =====================================================
 
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
-
     print()
-
     print("=" * 80)
-
     print("STARTING GOLD SIP ETL")
-
     print("=" * 80)
 
+    try:
 
+        # ====================================================
+        # EXTRACT
+        # ====================================================
 
-    # =====================================================
-    # EXTRACT
-    # =====================================================
+        df = extract_sip()
 
+        if not isinstance(
+            df,
+            pd.DataFrame
+        ):
 
-    df = extract_sip()
+            raise TypeError(
+                "extract_sip() did not "
+                "return a DataFrame"
+            )
 
+        if df.empty:
 
+            print()
+            print(
+                "No Silver SIP batch available."
+            )
 
-    # =====================================================
-    # TRANSFORM
-    # =====================================================
+            print(
+                "GOLD SIP ETL STOPPED"
+            )
 
+        else:
 
-    gold_df = transform_sip(
+            # =================================================
+            # TRANSFORM
+            # =================================================
 
-        df
+            gold_df = transform_sip(
+                df
+            )
 
-    )
+            if not isinstance(
+                gold_df,
+                pd.DataFrame
+            ):
 
+                raise TypeError(
+                    "transform_sip() did not "
+                    "return a DataFrame"
+                )
 
+            # =================================================
+            # LOAD
+            # =================================================
 
-    # =====================================================
-    # LOAD
-    # =====================================================
+            success = load_sip(
+                gold_df
+            )
 
+            # =================================================
+            # FINAL STATUS
+            # =================================================
 
-    status = load_sip(
+            print()
 
-        gold_df
+            if success:
 
-    )
+                print(
+                    "=" * 80
+                )
 
+                print(
+                    "GOLD SIP ETL COMPLETED SUCCESSFULLY"
+                )
 
+                print(
+                    "=" * 80
+                )
 
-    # =====================================================
-    # FINAL STATUS
-    # =====================================================
+            else:
 
+                print(
+                    "=" * 80
+                )
 
-    if status:
+                print(
+                    "GOLD SIP ETL FAILED"
+                )
 
+                print(
+                    "=" * 80
+                )
+
+    except Exception as e:
 
         print()
-
+        print("=" * 80)
+        print("GOLD SIP ETL FAILED")
         print("=" * 80)
 
         print(
-
-            "GOLD SIP ETL COMPLETED SUCCESSFULLY"
-
+            "Error type:",
+            type(e).__name__
         )
-
-        print("=" * 80)
-
-
-
-    else:
-
-
-        print()
-
-        print("=" * 80)
 
         print(
-
-            "GOLD SIP ETL FAILED"
-
+            "Error:",
+            str(e).splitlines()[0]
         )
 
-        print("=" * 80)
+        print(
+            "No success message will be printed."
+        )
