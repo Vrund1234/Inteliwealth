@@ -144,10 +144,6 @@ def read_file(file):
             keep_default_na=False
         )
 
-    if "Product Code" in df.columns:
-        print(df["Product Code"].head())
-    print("KFIN Columns:")
-    print(df.columns.tolist())
     # =====================================================
     # CLEAN COLUMN NAMES
     # =====================================================
@@ -226,10 +222,6 @@ def read_file(file):
     print("COLUMN NAMES :")
     print(df.columns.tolist())
     print("=" * 80 + "\n")
-    if "PERIOD_DAY" in df.columns:
-        print("\n========== PERIOD_DAY AFTER FILE READ ==========")
-        print(df["PERIOD_DAY"].head(50).tolist())
-        print("===============================================\n")
 
     return df
 
@@ -346,9 +338,7 @@ def extract_and_push(uploaded_files):
 
         process_sip(
             cams=cams_df,
-            kfin=kfin_df,
-            cams_source="CAMS",
-            kfin_source="KFIN"
+            kfin=kfin_df
         )
 
         sip_preview = pd.read_sql(
