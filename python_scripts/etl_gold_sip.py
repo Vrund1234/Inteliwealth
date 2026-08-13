@@ -63,6 +63,28 @@ def clean_folio(series):
 
 
 # ============================================================
+# CLEAN SCHEME CODE
+#
+# IMPORTANT:
+# DO NOT TRUNCATE
+# DO NOT SLICE
+# DO NOT USE .str[:N]
+# DO NOT CONVERT TO NUMERIC
+#
+# Only remove surrounding whitespace and normalize case.
+# ============================================================
+
+def clean_scheme_code(series):
+
+    return (
+        series
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+
+# ============================================================
 # FIRST VALID VALUE
 # ============================================================
 
@@ -120,15 +142,11 @@ def extract_sip():
 
     if batch_df.empty:
 
-        print(
-            "No Silver SIP data found."
-        )
+        print("No Silver SIP data found.")
 
         return pd.DataFrame()
 
-    latest_batch = (
-        batch_df.iloc[0]["latest_batch"]
-    )
+    latest_batch = batch_df.iloc[0]["latest_batch"]
 
     if pd.isna(latest_batch):
 
@@ -161,7 +179,11 @@ def extract_sip():
             inv_dp_id,
             inv_client_id,
             dp_inv_name,
+
+            -- IMPORTANT:
+            -- Keep scheme_code exactly as stored.
             scheme_code,
+
             product_code,
             scheme_name,
             plan,
@@ -238,10 +260,7 @@ def transform_sip(df):
     print("TRANSFORMING GOLD SIP")
     print("=" * 80)
 
-    if not isinstance(
-        df,
-        pd.DataFrame
-    ):
+    if not isinstance(df, pd.DataFrame):
 
         raise TypeError(
             f"transform_sip expected DataFrame, "
@@ -249,6 +268,13 @@ def transform_sip(df):
         )
 
     df = df.copy()
+
+    original_row_count = len(df)
+
+    print(
+        "Rows entering transformation:",
+        original_row_count
+    )
 
     # ========================================================
     # NORMALIZE SOURCE / RTA
@@ -288,16 +314,27 @@ def transform_sip(df):
 
     # ========================================================
     # CLEAN SCHEME CODE
+    #
+    # THIS IS THE ONLY SCHEME CODE USED FOR GOLD.SIP.
+    #
+    # Example:
+    #
+    # MCOD
+    # PRED
+    # HAARGR
+    # HACGPG
+    # HAFRDM
+    # HAFRDQ
+    # HBFD
+    #
+    # None of these values are truncated.
     # ========================================================
 
-    df["scheme_code_clean"] = (
+    df["scheme_code_clean"] = clean_scheme_code(
         get_column(
             df,
             "scheme_code"
         )
-        .astype("string")
-        .str.strip()
-        .str.upper()
     )
 
     # ========================================================
@@ -337,13 +374,19 @@ def transform_sip(df):
         .str.strip()
     )
 
-    gold_df["folio_number"] = (
-        df["folio_clean"]
-    )
+    gold_df["folio_number"] = df["folio_clean"]
+
+    # ========================================================
+    # GOLD SCHEME CODE
+    # ========================================================
 
     gold_df["scheme_code"] = (
         df["scheme_code_clean"]
     )
+
+    # ========================================================
+    # SCHEME NAME
+    # ========================================================
 
     gold_df["scheme_name"] = (
         get_column(
@@ -354,9 +397,7 @@ def transform_sip(df):
         .str.strip()
     )
 
-    gold_df["amc_code"] = (
-        df["amc_code_clean"]
-    )
+    gold_df["amc_code"] = df["amc_code_clean"]
 
     # ========================================================
     # ISIN
@@ -504,84 +545,278 @@ def transform_sip(df):
 
     # ========================================================
     # SCHEME ID
+    #
+    # REQUIRED LOGIC:
+    #
+    # gold.sip.scheme_code
+    #
+    #       =
+    #
+    # silver.sip_master_new.scheme_code
+    #
+    #       ↓
+    #
+    # silver.sip_master_new.scheme_id
+    #
+    # IMPORTANT:
+    # product_code IS NOT USED.
+    # gold.scheme IS NOT USED.
     # ========================================================
 
+    print()
+    print("=" * 80)
+    print("MAPPING SCHEME IDs")
+    print("=" * 80)
+
     print(
-        "Loading scheme mapping..."
+        "Gold SIP rows:",
+        len(gold_df)
     )
 
-    gold_scheme = pd.read_sql(
+    print(
+        "Gold SIP scheme_code non-null:",
+        gold_df["scheme_code"].notna().sum()
+    )
+
+    # --------------------------------------------------------
+    # LOAD scheme_code + scheme_id FROM SILVER
+    # --------------------------------------------------------
+
+    silver_scheme = pd.read_sql(
         """
         SELECT
-            id,
-            rta,
-            scheme_code
-        FROM gold.scheme
+            scheme_code,
+            scheme_id
+        FROM silver.sip_master_new
+        WHERE scheme_code IS NOT NULL
         """,
         engine
     )
 
-    gold_scheme["rta_clean"] = (
-        gold_scheme["rta"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
+    print(
+        "Silver rows with scheme_code:",
+        len(silver_scheme)
     )
 
-    gold_scheme["scheme_code_clean"] = (
-        gold_scheme["scheme_code"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
+    # --------------------------------------------------------
+    # CLEAN SILVER SCHEME CODE
+    #
+    # ONLY strip + uppercase.
+    # NO TRUNCATION.
+    # --------------------------------------------------------
+
+    silver_scheme["scheme_code_clean"] = (
+        clean_scheme_code(
+            silver_scheme["scheme_code"]
+        )
     )
 
-    gold_scheme = (
-        gold_scheme[
-            [
-                "id",
-                "rta_clean",
-                "scheme_code_clean"
-            ]
+    # --------------------------------------------------------
+    # KEEP scheme_id AS STRING
+    # --------------------------------------------------------
+
+    silver_scheme["scheme_id_clean"] = (
+        silver_scheme["scheme_id"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # --------------------------------------------------------
+    # REMOVE ONLY INVALID MAPPING ENTRIES
+    #
+    # THIS DOES NOT REMOVE GOLD SIP ROWS.
+    # --------------------------------------------------------
+
+    silver_scheme = silver_scheme[
+        silver_scheme["scheme_code_clean"].notna()
+        &
+        silver_scheme["scheme_code_clean"].ne("")
+        &
+        silver_scheme["scheme_code_clean"].ne("<NA>")
+    ].copy()
+
+    # --------------------------------------------------------
+    # SHOW THE EXACT CODES USER MENTIONED
+    # --------------------------------------------------------
+
+    debug_codes = [
+        "MCOD",
+        "PRED",
+        "HAARGR",
+        "HACGPG",
+        "HAFRDM",
+        "HAFRDQ",
+        "HBFD"
+    ]
+
+    print()
+    print("Checking important scheme codes in Silver:")
+
+    for code in debug_codes:
+
+        matches = silver_scheme[
+            silver_scheme["scheme_code_clean"] == code
         ]
-        .dropna(
-            subset=[
-                "rta_clean",
-                "scheme_code_clean"
+
+        if matches.empty:
+
+            print(
+                f"  {code} -> NOT FOUND"
+            )
+
+        else:
+
+            print(
+                f"  {code} -> "
+                f"{matches['scheme_id_clean'].tolist()}"
+            )
+
+    # --------------------------------------------------------
+    # HANDLE DUPLICATE SCHEME CODES
+    #
+    # Prefer a non-null scheme_id.
+    # --------------------------------------------------------
+
+    silver_scheme["_has_scheme_id"] = (
+        silver_scheme["scheme_id_clean"].notna()
+        &
+        silver_scheme["scheme_id_clean"].ne("")
+        &
+        silver_scheme["scheme_id_clean"].ne("<NA>")
+    )
+
+    silver_scheme = (
+        silver_scheme
+        .sort_values(
+            by=[
+                "scheme_code_clean",
+                "_has_scheme_id"
+            ],
+            ascending=[
+                True,
+                False
             ]
         )
         .drop_duplicates(
             subset=[
-                "rta_clean",
                 "scheme_code_clean"
-            ]
+            ],
+            keep="first"
+        )
+        .copy()
+    )
+
+    # --------------------------------------------------------
+    # CREATE LOOKUP
+    #
+    # scheme_code -> scheme_id
+    # --------------------------------------------------------
+
+    scheme_id_lookup = dict(
+        zip(
+            silver_scheme["scheme_code_clean"],
+            silver_scheme["scheme_id_clean"]
         )
     )
 
-    scheme_lookup = (
-        gold_scheme
-        .set_index(
-            [
-                "rta_clean",
-                "scheme_code_clean"
-            ]
-        )["id"]
+    # --------------------------------------------------------
+    # MAP SCHEME ID
+    #
+    # IMPORTANT:
+    # .map() NEVER DROPS ROWS.
+    # If there is no match, scheme_id becomes NULL.
+    # --------------------------------------------------------
+
+    gold_df["scheme_id"] = (
+        gold_df["scheme_code"]
+        .map(scheme_id_lookup)
+        .astype("string")
     )
 
-    gold_df["scheme_id"] = [
-        scheme_lookup.get(
-            (
-                df.loc[idx, "rta_clean"],
-                df.loc[idx, "scheme_code_clean"]
-            ),
-            None
+    # ========================================================
+    # SCHEME MAPPING VALIDATION
+    # ========================================================
+
+    mapped_scheme_count = int(
+        gold_df["scheme_id"].notna().sum()
+    )
+
+    missing_scheme_count = int(
+        gold_df["scheme_id"].isna().sum()
+    )
+
+    print()
+    print(
+        "Mapped Scheme IDs:",
+        mapped_scheme_count
+    )
+
+    print(
+        "Missing Scheme IDs:",
+        missing_scheme_count
+    )
+
+    # --------------------------------------------------------
+    # VERIFY IMPORTANT CODES AFTER MAPPING
+    # --------------------------------------------------------
+
+    print()
+    print("Gold scheme_code -> scheme_id mapping:")
+
+    for code in debug_codes:
+
+        matched_rows = gold_df[
+            gold_df["scheme_code"] == code
+        ]
+
+        if matched_rows.empty:
+
+            print(
+                f"  {code} -> no Gold SIP row"
+            )
+
+        else:
+
+            print(
+                f"  {code} -> "
+                f"{matched_rows['scheme_id'].drop_duplicates().tolist()}"
+            )
+
+    # --------------------------------------------------------
+    # SHOW UNMATCHED CODES
+    #
+    # ONLY FOR DEBUGGING.
+    # NO ROWS ARE DROPPED.
+    # --------------------------------------------------------
+
+    if missing_scheme_count > 0:
+
+        unmatched_codes = (
+            gold_df.loc[
+                gold_df["scheme_id"].isna(),
+                "scheme_code"
+            ]
+            .dropna()
+            .astype("string")
+            .drop_duplicates()
+            .tolist()
         )
-        for idx in df.index
-    ]
+
+        print()
+        print(
+            "Unmatched scheme codes:",
+            len(unmatched_codes)
+        )
+
+        print(
+            unmatched_codes[:50]
+        )
 
     # ========================================================
     # AMC ID
     # ========================================================
 
+    print()
     print(
         "Loading AMC mapping..."
     )
@@ -718,15 +953,6 @@ def transform_sip(df):
         )
     )
 
-    gold_df["sip_type"] = (
-        gold_df["sip_type"]
-        .astype("string")
-        .where(
-            aut_trntyp_clean.isna(),
-            gold_df["sip_type"]
-        )
-    )
-
     gold_df.loc[
         aut_trntyp_clean.notna()
         &
@@ -752,6 +978,7 @@ def transform_sip(df):
     # TRANSACTIONS
     # ========================================================
 
+    print()
     print(
         "Loading transaction data..."
     )
@@ -778,6 +1005,7 @@ def transform_sip(df):
     )
 
     gold_df["completed_installments"] = 0
+
     gold_df["bounced_installments"] = 0
 
     gold_df["arn"] = pd.Series(
@@ -838,9 +1066,9 @@ def transform_sip(df):
             )
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # ARN / SUB ARN
-        # ====================================================
+        # ----------------------------------------------------
 
         arn_mapping = (
             transactions
@@ -865,11 +1093,8 @@ def transform_sip(df):
 
         arn_mapping = arn_mapping.rename(
             columns={
-                "brokcode_clean":
-                    "arn",
-
-                "src_brk_code_clean":
-                    "sub_arn"
+                "brokcode_clean": "arn",
+                "src_brk_code_clean": "sub_arn"
             }
         )
 
@@ -939,9 +1164,9 @@ def transform_sip(df):
             gold_df["sub_arn"].notna().sum()
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # TRANSACTION TEXT
-        # ====================================================
+        # ----------------------------------------------------
 
         transaction_text = (
             transactions["trxntype"]
@@ -980,9 +1205,9 @@ def transform_sip(df):
             .str.upper()
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # SIP TRANSACTION IDENTIFICATION
-        # ====================================================
+        # ----------------------------------------------------
 
         sip_number_mask = (
             transactions["siptrxnno"]
@@ -1021,9 +1246,9 @@ def transform_sip(df):
             sip_text_mask
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # BOUNCED / FAILED / REJECTED
-        # ====================================================
+        # ----------------------------------------------------
 
         bounced_mask = (
             transaction_text
@@ -1034,9 +1259,9 @@ def transform_sip(df):
             )
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # COMPLETED
-        # ====================================================
+        # ----------------------------------------------------
 
         completed_mask = (
             sip_mask
@@ -1044,9 +1269,9 @@ def transform_sip(df):
             ~bounced_mask
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # COMPLETED LOOKUP
-        # ====================================================
+        # ----------------------------------------------------
 
         completed = (
             transactions.loc[
@@ -1074,14 +1299,12 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )[
-                "completed_installments"
-            ]
+            )["completed_installments"]
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # BOUNCED LOOKUP
-        # ====================================================
+        # ----------------------------------------------------
 
         bounced = (
             transactions.loc[
@@ -1109,14 +1332,12 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )[
-                "bounced_installments"
-            ]
+            )["bounced_installments"]
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # APPLY COMPLETED COUNTS
-        # ====================================================
+        # ----------------------------------------------------
 
         gold_df["completed_installments"] = [
             completed_lookup.get(
@@ -1130,9 +1351,9 @@ def transform_sip(df):
             for idx in df.index
         ]
 
-        # ====================================================
+        # ----------------------------------------------------
         # APPLY BOUNCED COUNTS
-        # ====================================================
+        # ----------------------------------------------------
 
         gold_df["bounced_installments"] = [
             bounced_lookup.get(
@@ -1330,24 +1551,16 @@ def transform_sip(df):
 
     # ========================================================
     # GOLD CREATED AT
-    #
-    # This is the Gold load/transformation timestamp.
-    # It is NOT used to identify the Silver input batch.
     # ========================================================
 
     gold_load_timestamp = datetime.now(
         timezone.utc
     )
 
-    gold_df["created_at"] = (
-        gold_load_timestamp
-    )
+    gold_df["created_at"] = gold_load_timestamp
 
     # ========================================================
     # FINAL COLUMN ORDER
-    #
-    # IMPORTANT:
-    # NO FLAG COLUMN
     # ========================================================
 
     columns = [
@@ -1387,6 +1600,40 @@ def transform_sip(df):
     gold_df = gold_df[
         columns
     ].copy()
+
+    # ========================================================
+    # CRITICAL ROW COUNT CHECK
+    # ========================================================
+
+    final_row_count = len(gold_df)
+
+    print()
+    print("=" * 80)
+    print("ROW COUNT CHECK")
+    print("=" * 80)
+
+    print(
+        "Rows before transformation:",
+        original_row_count
+    )
+
+    print(
+        "Rows after transformation:",
+        final_row_count
+    )
+
+    if final_row_count != original_row_count:
+
+        raise ValueError(
+            f"ROW LOSS DETECTED! "
+            f"Input rows = {original_row_count}, "
+            f"Output rows = {final_row_count}. "
+            f"No rows are allowed to be dropped."
+        )
+
+    print(
+        "Row count check: PASSED"
+    )
 
     # ========================================================
     # VALIDATION
@@ -1462,12 +1709,10 @@ def get_gold_sip_column_limits():
         ORDER BY ordinal_position
     """
 
-    schema_df = pd.read_sql(
+    return pd.read_sql(
         query,
         engine
     )
-
-    return schema_df
 
 
 # ============================================================
@@ -1500,10 +1745,8 @@ def validate_string_lengths(gold_df):
             row["character_maximum_length"]
         )
 
-        series = gold_df[column]
-
         lengths = (
-            series
+            gold_df[column]
             .astype("string")
             .str.len()
         )
@@ -1569,7 +1812,7 @@ def validate_string_lengths(gold_df):
 
         raise ValueError(
             "Gold SIP contains values exceeding "
-            "the PostgreSQL VARCHAR limits. "
+            "PostgreSQL VARCHAR limits. "
             "No rows were inserted."
         )
 
@@ -1579,6 +1822,10 @@ def validate_string_lengths(gold_df):
 
     return True
 
+
+# ============================================================
+# LOAD GOLD.SIP
+# ============================================================
 
 def load_sip(gold_df):
 
@@ -1591,6 +1838,7 @@ def load_sip(gold_df):
         gold_df,
         pd.DataFrame
     ):
+
         raise TypeError(
             f"load_sip expected DataFrame, "
             f"received {type(gold_df).__name__}"
@@ -1669,10 +1917,25 @@ def load_sip(gold_df):
     ].copy()
 
     # ========================================================
+    # KEEP ROW COUNT
+    # ========================================================
+
+    rows_before_load_processing = len(gold_df)
+
+    # ========================================================
+    # VALIDATE STRING LENGTHS
+    # ========================================================
+
+    validate_string_lengths(
+        gold_df
+    )
+
+    # ========================================================
     # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
     #
-    # created_at is ignored because all rows in this batch
-    # receive the same Gold load timestamp.
+    # NOTE:
+    # This removes only exact duplicate records.
+    # It does NOT remove rows because scheme_id is NULL.
     # ========================================================
 
     compare_columns = [
@@ -1683,13 +1946,22 @@ def load_sip(gold_df):
 
     before_batch_dedup = len(gold_df)
 
+    gold_df = (
+        gold_df
+        .drop_duplicates(
+            subset=compare_columns,
+            keep="first"
+        )
+        .copy()
+    )
+
     removed_batch_duplicates = (
         before_batch_dedup
         - len(gold_df)
     )
 
     print(
-        "Duplicates inside current batch removed:",
+        "Exact duplicate rows inside current batch removed:",
         removed_batch_duplicates
     )
 
@@ -1698,18 +1970,18 @@ def load_sip(gold_df):
         len(gold_df)
     )
 
-    if gold_df.empty:
-
-        print(
-            "No unique SIP rows remaining."
-        )
-
-        return True
+    # ========================================================
+    # IMPORTANT ROW LOSS CHECK
+    # ========================================================
+    #
+    # If your source has duplicate rows, exact duplicate
+    # removal can reduce the count. This is intentional.
+    #
+    # But scheme mapping itself must NEVER reduce the count.
+    # ========================================================
 
     # ========================================================
     # LOAD EXISTING GOLD SIP DATA
-    #
-    # created_at is intentionally excluded.
     # ========================================================
 
     print(
@@ -1764,17 +2036,12 @@ def load_sip(gold_df):
     )
 
     # ========================================================
-    # NORMALIZE VALUES BEFORE COMPARISON
-    #
-    # This prevents differences such as:
-    #
-    # None vs NaN
-    # "ABC " vs "ABC"
+    # NORMALIZE VALUES FOR COMPARISON
     # ========================================================
 
-    def normalize_for_compare(df):
+    def normalize_for_compare(dataframe):
 
-        result = df.copy()
+        result = dataframe.copy()
 
         for column in result.columns:
 
@@ -1807,11 +2074,9 @@ def load_sip(gold_df):
             existing[compare_columns]
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # CREATE ROW SIGNATURE
-        #
-        # A complete row excluding created_at.
-        # ====================================================
+        # ----------------------------------------------------
 
         new_signature = (
             new_compare
@@ -1852,10 +2117,6 @@ def load_sip(gold_df):
             already_exists_count
         )
 
-        # ====================================================
-        # KEEP ONLY NEW ROWS
-        # ====================================================
-
         gold_df = gold_df.loc[
             ~already_exists_mask
         ].copy()
@@ -1867,7 +2128,7 @@ def load_sip(gold_df):
         )
 
     # ========================================================
-    # FINAL CHECK
+    # FINAL ROWS TO INSERT
     # ========================================================
 
     print(
@@ -1892,9 +2153,7 @@ def load_sip(gold_df):
     # CONVERT PANDAS NULLS TO DATABASE NULL
     # ========================================================
 
-    gold_df = gold_df.astype(
-        object
-    )
+    gold_df = gold_df.astype(object)
 
     gold_df = gold_df.where(
         pd.notna(gold_df),
@@ -1925,7 +2184,8 @@ def load_sip(gold_df):
 
         verification = pd.read_sql(
             """
-            SELECT COUNT(*) AS total_rows
+            SELECT
+                COUNT(*) AS total_rows
             FROM gold.sip
             """,
             engine

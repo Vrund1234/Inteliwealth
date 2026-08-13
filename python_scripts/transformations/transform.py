@@ -44,19 +44,13 @@ def get_last_processed_time(table_name):
 
         if pd.isna(last_time):
 
-            return pd.Timestamp(
-                "1900-01-01"
-            )
+            return pd.Timestamp("1900-01-01")
 
-        return pd.to_datetime(
-            last_time
-        )
+        return pd.to_datetime(last_time)
 
     except Exception:
 
-        return pd.Timestamp(
-            "1900-01-01"
-        )
+        return pd.Timestamp("1900-01-01")
 
 
 # =====================================================
@@ -75,7 +69,6 @@ def load_state_dimension():
     )
 
     if state_dim.empty:
-
         return state_dim
 
     state_dim["state_id"] = pd.to_numeric(
@@ -94,6 +87,223 @@ def load_state_dimension():
 
 
 # =====================================================
+# LOAD SCHEME MAPPING
+#
+# IMPORTANT:
+#
+# scheme_mapping table columns:
+#
+# rta_scheme_code
+# scheme_id
+#
+# Mapping:
+#
+# investor_master.product_code
+#          ↓
+# scheme_mapping.rta_scheme_code
+#          ↓
+# scheme_mapping.scheme_id
+#
+# transaction_master_new.prodcode
+#          ↓
+# scheme_mapping.rta_scheme_code
+#          ↓
+# scheme_mapping.scheme_id
+#
+# sip_master_new.product_code
+#          ↓
+# scheme_mapping.rta_scheme_code
+#          ↓
+# scheme_mapping.scheme_id
+#
+# No is_active condition.
+# No other filtering condition.
+# =====================================================
+
+def load_scheme_mapping():
+
+    scheme_mapping = safe_read(
+        """
+        SELECT
+            rta_scheme_code,
+            scheme_id
+        FROM bronze.scheme_mapping
+        """
+    )
+
+    if scheme_mapping.empty:
+
+        print(
+            "scheme_mapping : No data found."
+        )
+
+        return scheme_mapping
+
+    # -------------------------------------------------
+    # NORMALIZE RTA SCHEME CODE
+    # -------------------------------------------------
+
+    scheme_mapping["rta_scheme_code"] = (
+        scheme_mapping["rta_scheme_code"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    # -------------------------------------------------
+    # KEEP SCHEME ID AS PROVIDED
+    # -------------------------------------------------
+
+    scheme_mapping["scheme_id"] = (
+        scheme_mapping["scheme_id"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # -------------------------------------------------
+    # REMOVE EMPTY SCHEME CODES
+    # -------------------------------------------------
+
+    scheme_mapping = scheme_mapping[
+        scheme_mapping["rta_scheme_code"].notna()
+        & (
+            scheme_mapping["rta_scheme_code"] != ""
+        )
+    ].copy()
+
+    # -------------------------------------------------
+    # REMOVE DUPLICATE RTA SCHEME CODES
+    # -------------------------------------------------
+
+    scheme_mapping = (
+        scheme_mapping
+        .drop_duplicates(
+            subset=["rta_scheme_code"],
+            keep="first"
+        )
+        .copy()
+    )
+
+    print(
+        "Scheme mapping rows loaded :",
+        len(scheme_mapping)
+    )
+
+    return scheme_mapping
+
+
+# =====================================================
+# MAP SCHEME ID
+# =====================================================
+
+def map_scheme_id(
+    df,
+    product_column
+):
+
+    df = df.copy()
+
+    # Always create scheme_id.
+    # If no mapping is found, it remains NULL.
+
+    df["scheme_id"] = None
+
+    if product_column not in df.columns:
+
+        print(
+            f"Scheme mapping skipped: "
+            f"'{product_column}' column not found."
+        )
+
+        return df
+
+    scheme_mapping = load_scheme_mapping()
+
+    if scheme_mapping.empty:
+
+        print(
+            "Scheme mapping is empty. "
+            "scheme_id will remain NULL."
+        )
+
+        return df
+
+    # -------------------------------------------------
+    # NORMALIZE PRODUCT CODE
+    # -------------------------------------------------
+
+    product_code = (
+        df[product_column]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    # -------------------------------------------------
+    # CREATE LOOKUP
+    #
+    # rta_scheme_code → scheme_id
+    # -------------------------------------------------
+
+    scheme_lookup = dict(
+        zip(
+            scheme_mapping["rta_scheme_code"],
+            scheme_mapping["scheme_id"]
+        )
+    )
+
+    # -------------------------------------------------
+    # MAP SCHEME ID
+    # -------------------------------------------------
+
+    df["scheme_id"] = (
+        product_code
+        .map(scheme_lookup)
+    )
+
+    # -------------------------------------------------
+    # CONVERT MISSING VALUES TO NULL
+    # -------------------------------------------------
+
+    df["scheme_id"] = (
+        df["scheme_id"]
+        .where(
+            df["scheme_id"].notna(),
+            None
+        )
+    )
+
+    matched_count = (
+        df["scheme_id"]
+        .notna()
+        .sum()
+    )
+
+    unmatched_count = (
+        df["scheme_id"]
+        .isna()
+        .sum()
+    )
+
+    print(
+        f"Scheme ID mapping using "
+        f"{product_column}"
+    )
+
+    print(
+        "Matched scheme_id :",
+        int(matched_count)
+    )
+
+    print(
+        "Unmatched scheme_id :",
+        int(unmatched_count)
+    )
+
+    return df
+
+
+# =====================================================
 # NORMALIZE DATA FOR DUPLICATE COMPARISON
 # =====================================================
 
@@ -101,16 +311,22 @@ def normalize_for_compare(df):
 
     df = df.copy()
 
-    # These columns are not part of
-    # business duplicate comparison.
+    # These columns are NOT business fields.
+    #
+    # scheme_id is specifically ignored so that
+    # adding/fixing scheme_id does not make an
+    # otherwise identical row appear as a new row.
+
+    ignore_cols = {
+        "created_at",
+        "updated_at",
+        "flag",
+        "source",
+        "scheme_id"
+    }
 
     df = df.drop(
-        columns=[
-            "created_at",
-            "updated_at",
-            "flag",
-            "source"
-        ],
+        columns=list(ignore_cols),
         errors="ignore"
     )
 
@@ -145,9 +361,7 @@ def normalize_for_compare(df):
 
 def create_row_key(df):
 
-    normalized = normalize_for_compare(
-        df
-    )
+    normalized = normalize_for_compare(df)
 
     return (
         normalized
@@ -193,22 +407,6 @@ def get_table_columns(table_name):
 
 # =====================================================
 # APPEND NEW ROWS TO SILVER
-#
-# LOGIC:
-#
-# Bronze flag = 0
-#        ↓
-# Compare against existing Silver
-#        ↓
-# Unique row       → flag = 0
-# Existing row     → flag = 1
-#        ↓
-# Insert both into Silver
-#
-# Gold later reads only:
-#
-# WHERE flag = 0
-#
 # =====================================================
 
 def append_new_rows(
@@ -275,18 +473,18 @@ def append_new_rows(
     # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
     # =================================================
 
+    batch_ignore_cols = {
+        "flag",
+        "created_at",
+        "updated_at",
+        "source",
+        "scheme_id"
+    }
+
     batch_compare_cols = [
-
         col
-
         for col in df.columns
-
-        if col not in {
-            "flag",
-            "created_at",
-            "updated_at"
-        }
-
+        if col not in batch_ignore_cols
     ]
 
     if batch_compare_cols:
@@ -352,9 +550,6 @@ def append_new_rows(
 
     if existing.empty:
 
-        # Nothing exists in Silver.
-        # Therefore every incoming row is unique.
-
         df["flag"] = 0
 
         print()
@@ -377,16 +572,15 @@ def append_new_rows(
     else:
 
         # -------------------------------------------------
-        # COLUMNS NOT USED FOR DUPLICATE CHECK
+        # COLUMNS TO IGNORE DURING DUPLICATE COMPARISON
         # -------------------------------------------------
 
         ignore_cols = {
-
             "flag",
             "created_at",
             "updated_at",
-            "source"
-
+            "source",
+            "scheme_id"
         }
 
         # -------------------------------------------------
@@ -394,15 +588,10 @@ def append_new_rows(
         # -------------------------------------------------
 
         compare_cols = [
-
             col
-
             for col in df.columns
-
             if col in existing.columns
-
             and col not in ignore_cols
-
         ]
 
         if not compare_cols:
@@ -420,9 +609,14 @@ def append_new_rows(
             "Columns used for duplicate comparison:"
         )
 
+        print(compare_cols)
+
+        print()
         print(
-            compare_cols
+            "Ignored columns:"
         )
+
+        print(ignore_cols)
 
         # -------------------------------------------------
         # NORMALIZE NEW DATA
@@ -445,12 +639,10 @@ def append_new_rows(
         # -------------------------------------------------
 
         new_keys = (
-
             new_compare
             .fillna("")
             .astype(str)
             .agg("|".join, axis=1)
-
         )
 
         # -------------------------------------------------
@@ -458,19 +650,14 @@ def append_new_rows(
         # -------------------------------------------------
 
         old_keys = set(
-
             old_compare
             .fillna("")
             .astype(str)
             .agg("|".join, axis=1)
-
         )
 
         # -------------------------------------------------
         # DUPLICATE CHECK
-        #
-        # TRUE  = already exists
-        # FALSE = unique/new
         # -------------------------------------------------
 
         duplicate_mask = new_keys.isin(
@@ -479,9 +666,6 @@ def append_new_rows(
 
         # -------------------------------------------------
         # FLAG ASSIGNMENT
-        #
-        # Existing row → 1
-        # Unique row   → 0
         # -------------------------------------------------
 
         df["flag"] = (
@@ -492,16 +676,12 @@ def append_new_rows(
         print()
         print(
             "Existing rows → flag = 1 :",
-            int(
-                duplicate_mask.sum()
-            )
+            int(duplicate_mask.sum())
         )
 
         print(
             "Unique rows → flag = 0 :",
-            int(
-                (~duplicate_mask).sum()
-            )
+            int((~duplicate_mask).sum())
         )
 
     # =================================================
@@ -666,6 +846,19 @@ def transform_investor_master(df):
         )
 
     # =================================================
+    # SCHEME ID MAPPING
+    #
+    # product_code
+    # → scheme_mapping.rta_scheme_code
+    # → scheme_mapping.scheme_id
+    # =================================================
+
+    df = map_scheme_id(
+        df,
+        "product_code"
+    )
+
+    # =================================================
     # STATE MAPPING
     # =================================================
 
@@ -675,25 +868,15 @@ def transform_investor_master(df):
 
         state_lookup = dict(
             zip(
-                state_dim[
-                    "state_name"
-                ].str.upper(),
-
-                state_dim[
-                    "state_id"
-                ]
+                state_dim["state_name"].str.upper(),
+                state_dim["state_id"]
             )
         )
 
         code_lookup = dict(
             zip(
-                state_dim[
-                    "state_id"
-                ],
-
-                state_dim[
-                    "state_name"
-                ]
+                state_dim["state_id"],
+                state_dim["state_name"]
             )
         )
 
@@ -713,8 +896,6 @@ def transform_investor_master(df):
                 errors="coerce"
             )
 
-        # STATE NAME → CODE
-
         if "state" in df.columns:
 
             mapped_code = (
@@ -732,11 +913,7 @@ def transform_investor_master(df):
 
             else:
 
-                df["gst_state_code"] = (
-                    mapped_code
-                )
-
-        # CODE → STATE NAME
+                df["gst_state_code"] = mapped_code
 
         if "gst_state_code" in df.columns:
 
@@ -756,23 +933,19 @@ def transform_investor_master(df):
 
             else:
 
-                df["state"] = (
-                    mapped_state
-                )
+                df["state"] = mapped_state
 
     # =================================================
     # ACCOUNT TYPE
     # =================================================
 
     account_mapping = {
-
         "SAV": "Savings",
         "SAVINGS": "Savings",
         "CURRENT": "Current",
         "CUR": "Current",
         "NRE": "NRE",
         "NRO": "NRO"
-
     }
 
     if "account_type" in df.columns:
@@ -782,9 +955,7 @@ def transform_investor_master(df):
             .astype("string")
             .str.upper()
             .map(account_mapping)
-            .fillna(
-                df["account_type"]
-            )
+            .fillna(df["account_type"])
         )
 
     # =================================================
@@ -792,12 +963,10 @@ def transform_investor_master(df):
     # =================================================
 
     tax_mapping = {
-
         "I": "Individual",
         "1": "Individual",
         "INDIVIDUAL": "Individual",
         "N": "N"
-
     }
 
     if "tax_status" in df.columns:
@@ -807,9 +976,7 @@ def transform_investor_master(df):
             .astype("string")
             .str.upper()
             .map(tax_mapping)
-            .fillna(
-                df["tax_status"]
-            )
+            .fillna(df["tax_status"])
         )
 
     # =================================================
@@ -817,21 +984,14 @@ def transform_investor_master(df):
     # =================================================
 
     holding_mapping = {
-
         "SI": "Single",
         "SINGLE": "Single",
-
         "AS": "Anyone Or Survivor",
-        "ANYONE OR SURVIVOR":
-            "Anyone Or Survivor",
-
+        "ANYONE OR SURVIVOR": "Anyone Or Survivor",
         "JO": "Joint",
         "JOINT": "Joint",
-
         "EO": "Either Or Survivor",
-        "EITHER OR SURVIVOR":
-            "Either Or Survivor"
-
+        "EITHER OR SURVIVOR": "Either Or Survivor"
     }
 
     for col in [
@@ -858,16 +1018,12 @@ def transform_investor_master(df):
     # PAN CLEAN
     # =================================================
 
-    pan_cols = [
-
+    for col in [
         "pan_no",
         "joint1_pan",
         "joint2_pan",
         "guardian_pan"
-
-    ]
-
-    for col in pan_cols:
+    ]:
 
         if col in df.columns:
 
@@ -881,16 +1037,12 @@ def transform_investor_master(df):
     # EMAIL CLEAN
     # =================================================
 
-    email_cols = [
-
+    for col in [
         "email",
         "nominee1_email",
         "nominee2_email",
         "nominee3_email"
-
-    ]
-
-    for col in email_cols:
+    ]:
 
         if col in df.columns:
 
@@ -904,46 +1056,30 @@ def transform_investor_master(df):
     # PHONE CLEAN
     # =================================================
 
-    phone_cols = [
-
+    for col in [
         "mobile_no",
         "phone_res",
         "phone_off"
-
-    ]
-
-    for col in phone_cols:
+    ]:
 
         if col in df.columns:
 
             df[col] = (
                 df[col]
                 .astype("string")
-                .str.replace(
-                    " ",
-                    "",
-                    regex=False
-                )
-                .str.replace(
-                    "-",
-                    "",
-                    regex=False
-                )
+                .str.replace(" ", "", regex=False)
+                .str.replace("-", "", regex=False)
             )
 
     # =================================================
     # DATE COLUMNS
     # =================================================
 
-    date_cols = [
-
+    for col in [
         "dob",
         "report_date",
         "folio_date"
-
-    ]
-
-    for col in date_cols:
+    ]:
 
         if col in df.columns:
 
@@ -996,6 +1132,19 @@ def transform_transaction(df):
         )
 
     # =================================================
+    # SCHEME ID MAPPING
+    #
+    # prodcode
+    # → scheme_mapping.rta_scheme_code
+    # → scheme_mapping.scheme_id
+    # =================================================
+
+    df = map_scheme_id(
+        df,
+        "prodcode"
+    )
+
+    # =================================================
     # STATE MAPPING
     # =================================================
 
@@ -1005,25 +1154,15 @@ def transform_transaction(df):
 
         state_lookup = dict(
             zip(
-                state_dim[
-                    "state_name"
-                ].str.upper(),
-
-                state_dim[
-                    "state_id"
-                ]
+                state_dim["state_name"].str.upper(),
+                state_dim["state_id"]
             )
         )
 
         code_lookup = dict(
             zip(
-                state_dim[
-                    "state_id"
-                ],
-
-                state_dim[
-                    "state_name"
-                ]
+                state_dim["state_id"],
+                state_dim["state_name"]
             )
         )
 
@@ -1043,8 +1182,6 @@ def transform_transaction(df):
                 errors="coerce"
             )
 
-        # STATE → GST CODE
-
         if "state" in df.columns:
 
             mapped_code = (
@@ -1062,11 +1199,7 @@ def transform_transaction(df):
 
             else:
 
-                df["gst_state_code"] = (
-                    mapped_code
-                )
-
-        # GST CODE → STATE
+                df["gst_state_code"] = mapped_code
 
         if "gst_state_code" in df.columns:
 
@@ -1086,9 +1219,7 @@ def transform_transaction(df):
 
             else:
 
-                df["state"] = (
-                    mapped_state
-                )
+                df["state"] = mapped_state
 
     # =================================================
     # SOURCE SYSTEM
@@ -1119,38 +1250,22 @@ def transform_transaction(df):
     # =================================================
 
     bank_mapping = {
-
         "HDFCBANK": "HDFC Bank",
         "HDFC BANK": "HDFC Bank",
         "HDFC BANK LTD": "HDFC Bank",
         "HDFC BANK LIMITED": "HDFC Bank",
-
         "SBI": "State Bank Of India",
-        "STATE BANK OF INDIA":
-            "State Bank Of India",
-
+        "STATE BANK OF INDIA": "State Bank Of India",
         "ICICI BANK": "ICICI Bank",
-        "ICICI BANK LIMITED":
-            "ICICI Bank",
-
+        "ICICI BANK LIMITED": "ICICI Bank",
         "AXIS BANK": "Axis Bank",
         "AXIS BANK LTD": "Axis Bank",
-
-        "BANK OF BARODA":
-            "Bank Of Baroda",
-
-        "BANKOFBARODA":
-            "Bank Of Baroda",
-
-        "BANK OF INDIA":
-            "Bank Of India",
-
-        "KOTAK BANK":
-            "Kotak Mahindra Bank",
-
+        "BANK OF BARODA": "Bank Of Baroda",
+        "BANKOFBARODA": "Bank Of Baroda",
+        "BANK OF INDIA": "Bank Of India",
+        "KOTAK BANK": "Kotak Mahindra Bank",
         "KOTAK MAHINDRA BANK LIMITED":
             "Kotak Mahindra Bank"
-
     }
 
     if "bank_name" in df.columns:
@@ -1172,14 +1287,12 @@ def transform_transaction(df):
     # =================================================
 
     tax_mapping = {
-
         "I": "Individual",
         "1": "Individual",
         "INDIVIDUAL": "Individual",
         "N": "NRI",
         "NRI - REPATRIATION":
             "NRI - Repatriation"
-
     }
 
     if "tax_status" in df.columns:
@@ -1189,9 +1302,7 @@ def transform_transaction(df):
             .astype("string")
             .str.upper()
             .map(tax_mapping)
-            .fillna(
-                df["tax_status"]
-            )
+            .fillna(df["tax_status"])
         )
 
     # =================================================
@@ -1222,56 +1333,41 @@ def transform_transaction(df):
     # PHONE CLEANING
     # =================================================
 
-    phone_cols = [
-
+    for col in [
         "mobile",
         "rphone",
         "ophone"
-
-    ]
-
-    for col in phone_cols:
+    ]:
 
         if col in df.columns:
 
             df[col] = (
                 df[col]
                 .astype("string")
-                .str.replace(
-                    " ",
-                    "",
-                    regex=False
-                )
-                .str.replace(
-                    "-",
-                    "",
-                    regex=False
-                )
+                .str.replace(" ", "", regex=False)
+                .str.replace("-", "", regex=False)
             )
 
     # =================================================
     # DATE COLUMNS
     # =================================================
 
-    date_cols = [
-
+    for col in [
         "trade_date",
         "post_date",
         "report_date",
         "purdate",
         "chqdate",
         "sys_regn_d"
-
-    ]
-
-    for col in date_cols:
+    ]:
 
         if col in df.columns:
 
             df[col] = (
                 pd.to_datetime(
                     df[col],
-                    errors="coerce"
+                    errors="coerce",
+                    dayfirst=True
                 )
                 .dt.date
             )
@@ -1280,8 +1376,7 @@ def transform_transaction(df):
     # NUMERIC COLUMNS
     # =================================================
 
-    numeric_cols = [
-
+    for col in [
         "units",
         "amount",
         "load_amount",
@@ -1289,10 +1384,7 @@ def transform_transaction(df):
         "broker_commission",
         "purprice",
         "stamp_duty"
-
-    ]
-
-    for col in numeric_cols:
+    ]:
 
         if col in df.columns:
 
@@ -1345,11 +1437,23 @@ def transform_sip_master(df):
         )
 
     # =================================================
+    # SCHEME ID MAPPING
+    #
+    # product_code
+    # → scheme_mapping.rta_scheme_code
+    # → scheme_mapping.scheme_id
+    # =================================================
+
+    df = map_scheme_id(
+        df,
+        "product_code"
+    )
+
+    # =================================================
     # IDENTIFIER COLUMNS
     # =================================================
 
-    identifier_cols = [
-
+    for col in [
         "inv_iin",
         "inv_dp_id",
         "inv_client_id",
@@ -1359,10 +1463,7 @@ def transform_sip_master(df):
         "cheq_micr_no",
         "request_ref_no",
         "ft_sip_regno"
-
-    ]
-
-    for col in identifier_cols:
+    ]:
 
         if col in df.columns:
 
@@ -1383,8 +1484,7 @@ def transform_sip_master(df):
     # TITLE CASE COLUMNS
     # =================================================
 
-    title_cols = [
-
+    for col in [
         "location",
         "investor_name",
         "agent_name",
@@ -1394,10 +1494,7 @@ def transform_sip_master(df):
         "ecs_bank_name",
         "ecs_holder_name",
         "dp_inv_name"
-
-    ]
-
-    for col in title_cols:
+    ]:
 
         if col in df.columns:
 
@@ -1423,8 +1520,7 @@ def transform_sip_master(df):
     # UPPER CASE COLUMNS
     # =================================================
 
-    upper_cols = [
-
+    for col in [
         "zone",
         "branch",
         "ihno",
@@ -1438,10 +1534,7 @@ def transform_sip_master(df):
         "inv_dp_id",
         "inv_client_id",
         "umrncode"
-
-    ]
-
-    for col in upper_cols:
+    ]:
 
         if col in df.columns:
 
@@ -1457,10 +1550,8 @@ def transform_sip_master(df):
     # =================================================
 
     plan_mapping = {
-
         "REGULAR": "Regular",
         "DIRECT": "Direct"
-
     }
 
     for col in [
@@ -1499,12 +1590,10 @@ def transform_sip_master(df):
     # =================================================
 
     sip_mode_mapping = {
-
         "AUTO-DEBIT": "Auto Debit",
         "AUTO DEBIT": "Auto Debit",
         "NACH": "NACH",
         "ECS": "ECS"
-
     }
 
     if "sip_mode" in df.columns:
@@ -1562,10 +1651,8 @@ def transform_sip_master(df):
     # =================================================
 
     modify_mapping = {
-
         "Y": "Yes",
         "N": "No"
-
     }
 
     if "modify_flag" in df.columns:
@@ -1600,14 +1687,10 @@ def transform_sip_master(df):
     # NUMERIC COLUMNS
     # =================================================
 
-    numeric_cols = [
-
+    for col in [
         "amount",
         "no_of_installments"
-
-    ]
-
-    for col in numeric_cols:
+    ]:
 
         if col in df.columns:
 
@@ -1625,6 +1708,29 @@ def transform_sip_master(df):
         pd.NA,
         regex=True
     )
+
+    return df
+
+
+# =====================================================
+# ROUND DECIMAL COLUMNS
+# =====================================================
+
+def round_decimal_columns(df):
+
+    df = df.copy()
+
+    float_cols = df.select_dtypes(
+        include=[
+            "float16",
+            "float32",
+            "float64"
+        ]
+    ).columns
+
+    for col in float_cols:
+
+        df[col] = df[col].round(4)
 
     return df
 
@@ -1672,7 +1778,6 @@ def load_silver():
         # -------------------------------------------------
 
         occupation_mapping = {
-
             "SERVICE": 1,
             "BUSINESS": 2,
             "PROFESSIONAL": 3,
@@ -1685,7 +1790,6 @@ def load_silver():
             "PUBLIC SECTOR": 10,
             "SELF EMPLOYED": 11,
             "NOT APPLICABLE": 41
-
         }
 
         if "occupation" in investor_df.columns:
@@ -1695,9 +1799,7 @@ def load_silver():
                 .astype("string")
                 .str.upper()
                 .str.strip()
-                .replace(
-                    occupation_mapping
-                )
+                .replace(occupation_mapping)
             )
 
             investor_df["occupation"] = (
@@ -1812,37 +1914,10 @@ def load_silver():
             "with flag = 0."
         )
 
-    # =================================================
-    # COMPLETE
-    # =================================================
-
     print()
     print("=" * 80)
     print("SILVER LAYER LOADED SUCCESSFULLY")
     print("=" * 80)
-
-
-# =====================================================
-# ROUND DECIMAL COLUMNS
-# =====================================================
-
-def round_decimal_columns(df):
-
-    df = df.copy()
-
-    float_cols = df.select_dtypes(
-        include=[
-            "float16",
-            "float32",
-            "float64"
-        ]
-    ).columns
-
-    for col in float_cols:
-
-        df[col] = df[col].round(4)
-
-    return df
 
 
 # =====================================================

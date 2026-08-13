@@ -4,9 +4,9 @@ import traceback
 from utils.db import engine
 
 
-# ============================================================
+# =====================================================
 # SAFE READ
-# ============================================================
+# =====================================================
 
 def safe_read(query):
 
@@ -21,101 +21,82 @@ def safe_read(query):
 
         print("SQL ERROR :", e)
 
-        traceback.print_exc(limit=3)
-
         return pd.DataFrame()
 
 
-# ============================================================
-# CLEAN FOLIO
-# ============================================================
+# =====================================================
+# CLEAN KEY
+# =====================================================
 
-def clean_folio(series):
+def clean_key(series):
 
     return (
         series
         .fillna("")
         .astype(str)
         .str.strip()
-        .str.replace(
-            r"\.0$",
-            "",
-            regex=True
-        )
         .str.upper()
+        .str.replace(".0", "", regex=False)
     )
 
 
-# ============================================================
-# CLEAN STRING
-# ============================================================
+# =====================================================
+# CREATE NATURAL KEY
+#
+# One nominee row is uniquely identified by:
+#
+# holding_id + seq
+# =====================================================
 
-def clean_string(value):
+def create_row_key(df):
 
-    if pd.isna(value):
+    df = df.copy()
 
-        return None
-
-    value = str(value).strip()
-
-    if value == "":
-        return None
-
-    if value.upper() in [
-        "NAN",
-        "NONE",
-        "NULL",
-        "NAT"
-    ]:
-
-        return None
-
-    return value
+    return (
+        df[
+            [
+                "holding_id",
+                "seq"
+            ]
+        ]
+        .fillna("")
+        .astype(str)
+        .agg("|".join, axis=1)
+    )
 
 
-# ============================================================
-# EXTRACT
-# ============================================================
+# =====================================================
+# EXTRACT FOLIO NOMINEES
+# =====================================================
 
 def extract_folio_nominees():
 
     print("=" * 80)
-    print("EXTRACTING DATA FOR GOLD FOLIO NOMINEES")
+    print("EXTRACTING GOLD FOLIO NOMINEES")
     print("=" * 80)
 
     df = safe_read(
         """
         SELECT *
         FROM silver.investor_master
-        WHERE flag = 0
         """
     )
 
     if df.empty:
 
-        print(
-            "No unprocessed investor records found."
-        )
+        print("No data found.")
 
-        return df
+        return pd.DataFrame()
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.lower()
-        .str.strip()
-    )
+    # =================================================
+    # REQUIRED COLUMNS
+    # =================================================
 
-    print(
-        "Rows fetched from Silver :",
-        len(df)
-    )
+    required_columns = [
 
-    # --------------------------------------------------------
-    # CHECK ACTUAL NOMINEE COLUMNS
-    # --------------------------------------------------------
-
-    nominee_columns = [
+        "source",
+        "folio_no",
+        "pan_no",
 
         "nominee1_name",
         "nominee1_relation",
@@ -135,22 +116,38 @@ def extract_folio_nominees():
 
     ]
 
-    print("\nNominee column availability")
-    print("-" * 80)
+    missing_columns = [
 
-    for col in nominee_columns:
+        col
+        for col in required_columns
+        if col not in df.columns
+
+    ]
+
+    if missing_columns:
 
         print(
-            f"{col:30}",
-            "YES" if col in df.columns else "NO"
+            "ERROR: Required columns are missing "
+            "from silver.investor_master:"
         )
+
+        for col in missing_columns:
+
+            print(" -", col)
+
+        return pd.DataFrame()
+
+    print(
+        "Silver investor rows fetched :",
+        len(df)
+    )
 
     return df
 
 
-# ============================================================
-# TRANSFORM
-# ============================================================
+# =====================================================
+# TRANSFORM GOLD FOLIO NOMINEES
+# =====================================================
 
 def transform_folio_nominees(df):
 
@@ -162,49 +159,30 @@ def transform_folio_nominees(df):
 
         return pd.DataFrame()
 
-    df = df.copy()
-
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.lower()
-        .str.strip()
-    )
-
-    # ========================================================
-    # VALIDATE ONLY REQUIRED COLUMNS
+    # =================================================
+    # LOAD HOLDINGS
     #
-    # scheme_code IS NOT REQUIRED
-    # ========================================================
-
-    required_columns = [
-        "folio_no",
-        "source"
-    ]
-
-    missing = [
-        col
-        for col in required_columns
-        if col not in df.columns
-    ]
-
-    if missing:
-
-        raise Exception(
-            "Required Silver columns missing: "
-            + ", ".join(missing)
-        )
-
-    # ========================================================
-    # LOAD GOLD HOLDINGS
-    # ========================================================
+    # IMPORTANT:
+    #
+    # We DO NOT use scheme_id.
+    # We DO NOT use product_code.
+    # We DO NOT join gold.scheme.
+    #
+    # Holding mapping is based on:
+    #
+    # silver.source     -> gold.rta
+    # silver.folio_no   -> gold.folio_number
+    # silver.pan_no     -> gold.pan
+    #
+    # =================================================
 
     holdings = safe_read(
         """
         SELECT
-            id,
+            id AS holding_id,
             rta,
-            folio_number
+            folio_number,
+            pan
         FROM gold.holdings
         """
     )
@@ -212,216 +190,137 @@ def transform_folio_nominees(df):
     if holdings.empty:
 
         print(
-            "Gold Holdings table is empty."
+            "Gold holdings data is empty."
         )
 
         return pd.DataFrame()
 
-    # ========================================================
-    # LOAD TRANSACTIONS
-    #
-    # ARN:
-    #     brokcode
-    #
-    # SUB ARN:
-    #     src_brk_code
-    #
-    # Match:
-    #     source + folio_no
-    # ========================================================
-
-    transactions = safe_read(
-        """
-        SELECT
-            folio_no,
-            source,
-            brokcode,
-            src_brk_code,
-            created_at
-        FROM silver.transaction_master_new
-        """
+    print(
+        "Gold holdings rows fetched :",
+        len(holdings)
     )
 
-    if transactions.empty:
+    # =================================================
+    # CLEAN SILVER KEYS
+    # =================================================
 
-        print(
-            "Silver Transaction Master is empty."
-        )
+    df = df.copy()
 
-        return pd.DataFrame()
-
-    # ========================================================
-    # CLEAN INVESTOR KEYS
-    # ========================================================
-
-    df["source"] = (
+    df["source"] = clean_key(
         df["source"]
-        .apply(clean_string)
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .str.strip()
     )
 
-    df["folio_no"] = clean_folio(
+    df["folio_no"] = clean_key(
         df["folio_no"]
     )
 
-    # ========================================================
-    # CLEAN HOLDING KEYS
-    # ========================================================
-
-    holdings["rta"] = (
-        holdings["rta"]
-        .apply(clean_string)
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    df["pan_no"] = clean_key(
+        df["pan_no"]
     )
 
-    holdings["folio_number"] = clean_folio(
+    # =================================================
+    # CLEAN HOLDING KEYS
+    # =================================================
+
+    holdings["rta"] = clean_key(
+        holdings["rta"]
+    )
+
+    holdings["folio_number"] = clean_key(
         holdings["folio_number"]
     )
 
-    # ========================================================
-    # REMOVE DUPLICATE HOLDING KEYS
-    # ========================================================
-
-    holdings = (
-        holdings
-        .drop_duplicates(
-            subset=[
-                "rta",
-                "folio_number"
-            ],
-            keep="last"
-        )
+    holdings["pan"] = clean_key(
+        holdings["pan"]
     )
 
-    # ========================================================
-    # CLEAN TRANSACTIONS
-    # ========================================================
+    # =================================================
+    # DEBUG COUNTS
+    # =================================================
 
-    transactions["source"] = (
-        transactions["source"]
-        .apply(clean_string)
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    print("=" * 80)
+    print("HOLDING MAPPING")
+    print("=" * 80)
+
+    print(
+        "Silver investor rows :",
+        len(df)
     )
 
-    transactions["folio_no"] = clean_folio(
-        transactions["folio_no"]
+    print(
+        "Gold holdings rows :",
+        len(holdings)
     )
 
-    transactions["brokcode"] = (
-        transactions["brokcode"]
-        .apply(clean_string)
+    print(
+        "Silver PAN available :",
+        (df["pan_no"] != "").sum()
     )
 
-    transactions["src_brk_code"] = (
-        transactions["src_brk_code"]
-        .apply(clean_string)
+    print(
+        "Silver PAN missing :",
+        (df["pan_no"] == "").sum()
     )
 
-    transactions["created_at"] = pd.to_datetime(
-        transactions["created_at"],
-        errors="coerce"
+    print(
+        "Gold PAN available :",
+        (holdings["pan"] != "").sum()
     )
 
-    # ========================================================
-    # IMPORTANT
+    print(
+        "Gold PAN missing :",
+        (holdings["pan"] == "").sum()
+    )
+
+    # =================================================
+    # DIRECT LEFT JOIN
     #
-    # There can be many transactions for one folio.
+    # source     -> rta
+    # folio_no   -> folio_number
+    # pan_no     -> pan
     #
-    # Sort newest first and take the latest record
-    # containing the broker information.
-    # ========================================================
-
-    transactions = (
-        transactions
-        .sort_values(
-            [
-                "source",
-                "folio_no",
-                "created_at"
-            ],
-            ascending=[
-                True,
-                True,
-                False
-            ],
-            na_position="last"
-        )
-    )
-
-    # Prefer rows where broker information exists
-
-    transactions["broker_available"] = (
-        transactions["brokcode"].notna()
-        |
-        transactions["src_brk_code"].notna()
-    )
-
-    transactions = (
-        transactions
-        .sort_values(
-            [
-                "source",
-                "folio_no",
-                "broker_available",
-                "created_at"
-            ],
-            ascending=[
-                True,
-                True,
-                False,
-                False
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "source",
-                "folio_no"
-            ],
-            keep="first"
-        )
-    )
-
-    transactions = transactions.drop(
-        columns=[
-            "broker_available"
-        ]
-    )
-
-    # ========================================================
-    # MAP HOLDING ID
-    # ========================================================
+    # NO SCHEME MATCHING
+    # NO PRODUCT CODE MATCHING
+    # =================================================
 
     df = df.merge(
 
-        holdings,
+        holdings[
+            [
+                "holding_id",
+                "rta",
+                "folio_number",
+                "pan"
+            ]
+        ],
 
         left_on=[
             "source",
-            "folio_no"
+            "folio_no",
+            "pan_no"
         ],
 
         right_on=[
             "rta",
-            "folio_number"
+            "folio_number",
+            "pan"
         ],
 
         how="left"
+
     )
 
-    df.rename(
-        columns={
-            "id": "holding_id"
-        },
-        inplace=True
+    # =================================================
+    # MAPPING VALIDATION
+    # =================================================
+
+    print("=" * 80)
+    print("HOLDING MAPPING RESULT")
+    print("=" * 80)
+
+    print(
+        "Total Silver investor rows :",
+        len(df)
     )
 
     print(
@@ -434,208 +333,330 @@ def transform_folio_nominees(df):
         df["holding_id"].isna().sum()
     )
 
-    # ========================================================
-    # MAP ARN / SUB ARN
-    # ========================================================
+    # =================================================
+    # MATCHED SAMPLE
+    # =================================================
 
-    df = df.merge(
+    matched = df[
+        df["holding_id"].notna()
+    ]
 
-        transactions[
-            [
-                "source",
-                "folio_no",
-                "brokcode",
-                "src_brk_code"
+    if not matched.empty:
+
+        print(
+            "\nMatched Holding Examples:"
+        )
+
+        print(
+            matched[
+                [
+                    "source",
+                    "folio_no",
+                    "pan_no",
+                    "holding_id"
+                ]
             ]
-        ],
+            .head(20)
+            .to_string(index=False)
+        )
 
-        on=[
-            "source",
-            "folio_no"
-        ],
+    # =================================================
+    # UNMATCHED SAMPLE
+    # =================================================
 
-        how="left"
-    )
+    unmatched = df[
+        df["holding_id"].isna()
+    ]
 
-    print(
-        "Matched ARN records :",
-        df["brokcode"].notna().sum()
-    )
+    if not unmatched.empty:
 
-    print(
-        "Missing ARN records :",
-        df["brokcode"].isna().sum()
-    )
+        print(
+            "\nUnmatched Investor Examples:"
+        )
 
-    print(
-        "Matched Sub ARN records :",
-        df["src_brk_code"].notna().sum()
-    )
+        print(
+            unmatched[
+                [
+                    "source",
+                    "folio_no",
+                    "pan_no"
+                ]
+            ]
+            .head(20)
+            .to_string(index=False)
+        )
 
-    print(
-        "Missing Sub ARN records :",
-        df["src_brk_code"].isna().sum()
-    )
-
-    # ========================================================
-    # BUILD NOMINEE ROWS
-    # ========================================================
-
-    gold_rows = []
+    # =================================================
+    # NOMINEE CONFIGURATION
+    # =================================================
 
     nominee_configs = [
 
-        (1, "nominee1"),
-        (2, "nominee2"),
-        (3, "nominee3")
+        (
+            "nominee1_name",
+            "nominee1_relation",
+            "nominee1_percentage"
+        ),
+
+        (
+            "nominee2_name",
+            "nominee2_relation",
+            "nominee2_percentage"
+        ),
+
+        (
+            "nominee3_name",
+            "nominee3_relation",
+            "nominee3_percentage"
+        )
 
     ]
 
+    # =================================================
+    # BUILD GOLD ROWS
+    # =================================================
+
+    gold_rows = []
+
     for _, row in df.iterrows():
 
-        for seq, prefix in nominee_configs:
+        # =================================================
+        # HOLDING MUST EXIST
+        #
+        # The investor row itself was NOT dropped.
+        # We simply cannot create a folio_nominee row
+        # without a holding_id.
+        # =================================================
 
-            # ------------------------------------------------
+        if pd.isna(
+            row["holding_id"]
+        ):
+
+            continue
+
+        # =================================================
+        # COLLECT AVAILABLE NOMINEES
+        #
+        # Only nominee NAME decides whether nominee exists.
+        #
+        # Blank name = no nominee row.
+        # =================================================
+
+        available_nominees = []
+
+        for (
+            name_col,
+            relation_col,
+            percentage_col
+        ) in nominee_configs:
+
+            # ---------------------------------------------
             # NAME
-            # ------------------------------------------------
+            # ---------------------------------------------
 
-            nominee_name = clean_string(
-                row.get(
-                    f"{prefix}_name"
-                )
+            nominee_name = row.get(
+                name_col
             )
 
-            # ------------------------------------------------
-            # RELATIONSHIP
-            # ------------------------------------------------
+            if pd.isna(
+                nominee_name
+            ):
 
-            relationship = clean_string(
-                row.get(
-                    f"{prefix}_relation"
-                )
-            )
-
-            # ------------------------------------------------
-            # PERCENTAGE
-            # ------------------------------------------------
-
-            percentage = pd.to_numeric(
-                row.get(
-                    f"{prefix}_percentage"
-                ),
-                errors="coerce"
-            )
-
-            # ------------------------------------------------
-            # DOB
-            # ------------------------------------------------
-
-            nominee_dob = row.get(
-                "nominee_dob"
-            )
-
-            if nominee_dob is not None:
-
-                nominee_dob = pd.to_datetime(
-                    nominee_dob,
-                    errors="coerce"
-                )
-
-            if pd.isna(nominee_dob):
-
-                nominee_dob = None
-
-            # ------------------------------------------------
-            # GUARDIAN
-            # ------------------------------------------------
-
-            source = str(
-                row.get(
-                    "source",
-                    ""
-                )
-            ).upper().strip()
-
-            if source == "CAMS":
-
-                guardian_name = clean_string(
-                    row.get(
-                        "nominee_guardian_name"
-                    )
-                )
+                nominee_name = None
 
             else:
 
-                guardian_name = clean_string(
-                    row.get(
-                        "guardian_name"
-                    )
-                )
+                nominee_name = str(
+                    nominee_name
+                ).strip()
 
-            # ------------------------------------------------
-            # IS MINOR
-            # ------------------------------------------------
+                if nominee_name == "":
 
-            is_minor = "N"
+                    nominee_name = None
 
-            if guardian_name is not None:
+            # ---------------------------------------------
+            # NO NAME = NO NOMINEE
+            # ---------------------------------------------
 
-                is_minor = "Y"
-
-            elif nominee_dob is not None:
-
-                today = pd.Timestamp.today()
-
-                age = (
-                    today.year
-                    - nominee_dob.year
-                    - (
-                        (today.month, today.day)
-                        <
-                        (
-                            nominee_dob.month,
-                            nominee_dob.day
-                        )
-                    )
-                )
-
-                if age < 18:
-
-                    is_minor = "Y"
-
-            # ------------------------------------------------
-            # ARN
-            # ------------------------------------------------
-
-            arn = clean_string(
-                row.get(
-                    "brokcode"
-                )
-            )
-
-            # ------------------------------------------------
-            # SUB ARN
-            # ------------------------------------------------
-
-            sub_arn = clean_string(
-                row.get(
-                    "src_brk_code"
-                )
-            )
-
-            # ------------------------------------------------
-            # ONLY CREATE NOMINEE ROW IF THERE IS NOMINEE DATA
-            # ------------------------------------------------
-
-            if (
-                nominee_name is None
-                and relationship is None
-                and pd.isna(percentage)
-                and guardian_name is None
-                and nominee_dob is None
-            ):
+            if nominee_name is None:
 
                 continue
+
+            # ---------------------------------------------
+            # RELATIONSHIP
+            # ---------------------------------------------
+
+            relationship = row.get(
+                relation_col
+            )
+
+            if pd.isna(
+                relationship
+            ):
+
+                relationship = None
+
+            else:
+
+                relationship = str(
+                    relationship
+                ).strip()
+
+                if relationship == "":
+
+                    relationship = None
+
+            # ---------------------------------------------
+            # PERCENTAGE
+            # ---------------------------------------------
+
+            percentage = pd.to_numeric(
+
+                row.get(
+                    percentage_col
+                ),
+
+                errors="coerce"
+
+            )
+
+            # ---------------------------------------------
+            # STORE NOMINEE
+            # ---------------------------------------------
+
+            available_nominees.append({
+
+                "name":
+                    nominee_name,
+
+                "relationship":
+                    relationship,
+
+                "percentage":
+                    percentage
+
+            })
+
+        # =================================================
+        # ZERO NOMINEES
+        #
+        # Do NOT create a gold row.
+        # =================================================
+
+        if not available_nominees:
+
+            continue
+
+        # =================================================
+        # NOMINEE DOB
+        # =================================================
+
+        nominee_dob = row.get(
+            "nominee_dob"
+        )
+
+        if pd.isna(
+            nominee_dob
+        ):
+
+            nominee_dob = None
+
+        else:
+
+            nominee_dob = pd.to_datetime(
+                nominee_dob,
+                errors="coerce"
+            )
+
+            if pd.isna(
+                nominee_dob
+            ):
+
+                nominee_dob = None
+
+        # =================================================
+        # GUARDIAN NAME
+        # =================================================
+
+        source = str(
+            row.get(
+                "source",
+                ""
+            )
+        ).strip().upper()
+
+        if source == "CAMS":
+
+            guardian_name = row.get(
+                "nominee_guardian_name"
+            )
+
+        else:
+
+            guardian_name = row.get(
+                "guardian_name"
+            )
+
+        if pd.isna(
+            guardian_name
+        ):
+
+            guardian_name = None
+
+        else:
+
+            guardian_name = str(
+                guardian_name
+            ).strip()
+
+            if guardian_name == "":
+
+                guardian_name = None
+
+        # =================================================
+        # IS MINOR
+        # =================================================
+
+        is_minor = False
+
+        if guardian_name is not None:
+
+            is_minor = True
+
+        elif nominee_dob is not None:
+
+            today = pd.Timestamp.today()
+
+            age = (
+
+                today.year
+                - nominee_dob.year
+                - (
+                    (
+                        today.month,
+                        today.day
+                    )
+                    <
+                    (
+                        nominee_dob.month,
+                        nominee_dob.day
+                    )
+                )
+
+            )
+
+            if age < 18:
+
+                is_minor = True
+
+        # =================================================
+        # CREATE NOMINEE ROWS
+        # =================================================
+
+        for seq, nominee in enumerate(
+            available_nominees,
+            start=1
+        ):
 
             gold_rows.append({
 
@@ -646,13 +667,13 @@ def transform_folio_nominees(df):
                     seq,
 
                 "name":
-                    nominee_name,
+                    nominee["name"],
 
                 "relationship":
-                    relationship,
+                    nominee["relationship"],
 
                 "percentage":
-                    percentage,
+                    nominee["percentage"],
 
                 "dob":
                     nominee_dob,
@@ -670,23 +691,20 @@ def transform_folio_nominees(df):
                     None,
 
                 "address":
-                    None,
-
-                "arn":
-                    arn,
-
-                "sub_arn":
-                    sub_arn
+                    None
 
             })
 
-    # ========================================================
+    # =================================================
     # CREATE DATAFRAME
-    # ========================================================
+    # =================================================
 
     gold_df = pd.DataFrame(
+
         gold_rows,
+
         columns=[
+
             "holding_id",
             "seq",
             "name",
@@ -697,114 +715,180 @@ def transform_folio_nominees(df):
             "guardian_name",
             "id_type",
             "id_no",
-            "address",
-            "arn",
-            "sub_arn"
+            "address"
+
         ]
+
     )
+
+    # =================================================
+    # NO NOMINEES
+    # =================================================
 
     if gold_df.empty:
 
         print(
-            "No nominee records generated."
+            "No valid nominee records generated."
         )
 
         return gold_df
 
-    # ========================================================
-    # REMOVE INVALID HOLDING IDs
-    # ========================================================
-
-    gold_df = gold_df[
-        gold_df["holding_id"].notna()
-    ]
-
-    # ========================================================
-    # CLEAN STRING LENGTHS
-    # ========================================================
-
-    gold_df["name"] = (
-        gold_df["name"]
-        .astype("string")
-        .str[:255]
-    )
-
-    gold_df["relationship"] = (
-        gold_df["relationship"]
-        .astype("string")
-        .str[:60]
-    )
-
-    gold_df["guardian_name"] = (
-        gold_df["guardian_name"]
-        .astype("string")
-        .str[:255]
-    )
-
-    gold_df["id_type"] = (
-        gold_df["id_type"]
-        .astype("string")
-        .str[:20]
-    )
-
-    gold_df["id_no"] = (
-        gold_df["id_no"]
-        .astype("string")
-        .str[:50]
-    )
-
-    # Address intentionally NULL for now
-
-    gold_df["address"] = None
-
-    gold_df["arn"] = (
-        gold_df["arn"]
-        .astype("string")
-        .str.strip()
-        .str[:50]
-    )
-
-    gold_df["sub_arn"] = (
-        gold_df["sub_arn"]
-        .astype("string")
-        .str.strip()
-        .str[:50]
-    )
-
-    # ========================================================
-    # REMOVE CURRENT-BATCH DUPLICATES
-    # ========================================================
+    # =================================================
+    # REMOVE DUPLICATES
+    #
+    # Natural key:
+    #
+    # holding_id + seq
+    # =================================================
 
     gold_df = gold_df.drop_duplicates(
+
         subset=[
             "holding_id",
             "seq"
         ],
+
         keep="last"
+
     )
 
-    # ========================================================
-    # CREATED AT
-    # ========================================================
+    # =================================================
+    # STRING LENGTH VALIDATION
+    # =================================================
+
+    gold_df["name"] = (
+
+        gold_df["name"]
+        .astype("string")
+        .str[:255]
+
+    )
+
+    gold_df["relationship"] = (
+
+        gold_df["relationship"]
+        .astype("string")
+        .str[:60]
+
+    )
+
+    gold_df["guardian_name"] = (
+
+        gold_df["guardian_name"]
+        .astype("string")
+        .str[:255]
+
+    )
+
+    gold_df["id_type"] = (
+
+        gold_df["id_type"]
+        .astype("string")
+        .str[:20]
+
+    )
+
+    gold_df["id_no"] = (
+
+        gold_df["id_no"]
+        .astype("string")
+        .str[:50]
+
+    )
+
+    gold_df["address"] = (
+
+        gold_df["address"]
+        .astype("string")
+        .str[:500]
+
+    )
+
+    # =================================================
+    # AUDIT TIMESTAMP
+    # =================================================
 
     gold_df["created_at"] = pd.Timestamp.now()
 
+    # =================================================
+    # VALIDATION
+    # =================================================
+
     print(
-        "\nRows Ready :",
+        "Rows Ready :",
         len(gold_df)
     )
 
     print(
-        "Unique Holdings :",
+        "Unique Holdings with Nominees :",
         gold_df["holding_id"].nunique()
     )
+
+    print(
+        "Sequence Distribution:"
+    )
+
+    print(
+        gold_df[
+            "seq"
+        ]
+        .value_counts()
+        .sort_index()
+    )
+
+    # =================================================
+    # CHECK NO SEQUENCE GAPS
+    # =================================================
+
+    sequence_errors = 0
+
+    for holding_id, group in gold_df.groupby(
+        "holding_id"
+    ):
+
+        actual = sorted(
+            group["seq"].tolist()
+        )
+
+        expected = list(
+            range(
+                1,
+                len(actual) + 1
+            )
+        )
+
+        if actual != expected:
+
+            sequence_errors += 1
+
+            print(
+                "SEQUENCE ERROR:",
+                holding_id,
+                "actual=",
+                actual,
+                "expected=",
+                expected
+            )
+
+    print(
+        "Holdings with sequence errors :",
+        sequence_errors
+    )
+
+    if sequence_errors > 0:
+
+        print(
+            "ERROR: Sequence validation failed."
+        )
+
+        return pd.DataFrame()
 
     return gold_df
 
 
-# ============================================================
-# LOAD
-# ============================================================
+# =====================================================
+# LOAD GOLD FOLIO NOMINEES
+# =====================================================
 
 def load_folio_nominees(gold_df):
 
@@ -815,92 +899,142 @@ def load_folio_nominees(gold_df):
     if gold_df.empty:
 
         print(
-            "No nominee records to insert."
+            "No new nominee records found."
         )
 
         return True
 
-    existing = safe_read(
-        """
-        SELECT
-            holding_id,
-            seq
-        FROM gold.folio_nominees
-        """
-    )
+    # =================================================
+    # LOAD EXISTING DATA
+    # =================================================
 
-    # ========================================================
-    # REMOVE EXISTING KEYS
-    # ========================================================
+    try:
+
+        existing = pd.read_sql(
+
+            """
+            SELECT
+                holding_id,
+                seq
+            FROM gold.folio_nominees
+            """,
+
+            engine
+
+        )
+
+    except Exception as e:
+
+        print(
+            "Could not read existing "
+            "folio nominees:",
+            e
+        )
+
+        existing = pd.DataFrame()
+
+    # =================================================
+    # REMOVE ALREADY EXISTING KEYS
+    #
+    # Natural key:
+    #
+    # holding_id + seq
+    # =================================================
 
     if not existing.empty:
 
-        existing["key"] = (
-            existing["holding_id"]
-            .astype(str)
-            + "|"
-            + existing["seq"]
-            .astype(str)
-        )
-
-        gold_df["key"] = (
-            gold_df["holding_id"]
-            .astype(str)
-            + "|"
-            + gold_df["seq"]
-            .astype(str)
-        )
-
-        gold_df = gold_df[
-            ~gold_df["key"].isin(
-                set(existing["key"])
+        old_keys = set(
+            create_row_key(
+                existing
             )
-        ].copy()
-
-        gold_df.drop(
-            columns=["key"],
-            inplace=True
         )
 
-    print(
-        "Rows after duplicate check :",
-        len(gold_df)
-    )
+        new_keys = create_row_key(
+            gold_df
+        )
+
+        gold_df = gold_df.loc[
+            ~new_keys.isin(
+                old_keys
+            )
+        ]
 
     if gold_df.empty:
 
         print(
-            "No new nominee records to insert."
+            "All nominee records already exist."
         )
 
         return True
+
+    # =================================================
+    # FINAL DUPLICATE CHECK
+    # =================================================
+
+    duplicate_count = (
+
+        gold_df
+        .duplicated(
+            subset=[
+                "holding_id",
+                "seq"
+            ]
+        )
+        .sum()
+
+    )
+
+    print(
+        "Duplicate holding_id + seq :",
+        duplicate_count
+    )
+
+    if duplicate_count > 0:
+
+        print(
+            "ERROR: Duplicate nominee keys "
+            "found before insert."
+        )
+
+        return False
+
+    # =================================================
+    # INSERT
+    # =================================================
 
     try:
 
         gold_df.to_sql(
-            "folio_nominees",
-            engine,
+
+            name="folio_nominees",
+
             schema="gold",
+
+            con=engine,
+
             if_exists="append",
+
             index=False,
+
             method="multi",
-            chunksize=1000
+
+            chunksize=5000
+
         )
 
         print(
-            f"{len(gold_df)} rows inserted."
+            f"{len(gold_df)} rows inserted "
+            "into Gold Folio Nominees."
         )
 
         return True
 
-    except Exception as e:
+    except Exception:
 
         print(
             "FAILED LOADING GOLD FOLIO NOMINEES"
         )
 
-        print(e)
-
         traceback.print_exc(
             limit=5
         )
@@ -908,97 +1042,9 @@ def load_folio_nominees(gold_df):
         return False
 
 
-# ============================================================
-# UPDATE SILVER FLAG
-# ============================================================
-
-def update_investor_master_flag(source_df):
-
-    print("=" * 80)
-    print("UPDATING SILVER INVESTOR MASTER FLAGS")
-    print("=" * 80)
-
-    if source_df.empty:
-
-        return True
-
-    try:
-
-        # Use one UPDATE instead of executing one SQL
-        # statement per row.
-
-        source_keys = source_df[
-            [
-                "folio_no",
-                "source",
-                "created_at"
-            ]
-        ].copy()
-
-        source_keys["folio_no"] = clean_folio(
-            source_keys["folio_no"]
-        )
-
-        source_keys["source"] = (
-            source_keys["source"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-
-        # ----------------------------------------------------
-        # Update using source + folio + created_at
-        # ----------------------------------------------------
-
-        with engine.begin() as conn:
-
-            for _, row in source_keys.iterrows():
-
-                conn.exec_driver_sql(
-                    """
-                    UPDATE silver.investor_master
-                    SET flag = 1
-                    WHERE flag = 0
-                      AND REGEXP_REPLACE(
-                          TRIM(CAST(folio_no AS TEXT)),
-                          '\\.0$',
-                          ''
-                      ) = %s
-                      AND UPPER(TRIM(source)) = %s
-                      AND created_at = %s
-                    """,
-                    (
-                        row["folio_no"],
-                        row["source"],
-                        row["created_at"]
-                    )
-                )
-
-        print(
-            "Silver investor_master rows marked flag = 1."
-        )
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "FAILED UPDATING SILVER INVESTOR MASTER FLAGS"
-        )
-
-        print(e)
-
-        traceback.print_exc(
-            limit=5
-        )
-
-        return False
-
-
-# ============================================================
+# =====================================================
 # MAIN
-# ============================================================
+# =====================================================
 
 def main():
 
@@ -1006,157 +1052,171 @@ def main():
     print("STARTING GOLD FOLIO NOMINEES ETL")
     print("=" * 80)
 
-    try:
+    # =================================================
+    # EXTRACT
+    # =================================================
 
-        # ====================================================
-        # EXTRACT
-        # ====================================================
+    silver_df = extract_folio_nominees()
 
-        silver_df = extract_folio_nominees()
+    if silver_df.empty:
 
-        if silver_df.empty:
-
-            print(
-                "No nominee source data found."
-            )
-
-            return
-
-        source_batch = silver_df.copy()
-
-        # ====================================================
-        # TRANSFORM
-        # ====================================================
-
-        gold_df = transform_folio_nominees(
-            silver_df
+        print(
+            "No nominee data found."
         )
 
-        # ====================================================
-        # IMPORTANT
-        #
-        # If there are no nominees, we still consider the
-        # Silver records evaluated. However, don't mark them
-        # processed here unless that is the desired business
-        # behavior.
-        # ====================================================
+        return
 
-        if gold_df.empty:
+    # =================================================
+    # TRANSFORM
+    # =================================================
 
-            print(
-                "No valid nominee rows generated."
-            )
+    gold_df = transform_folio_nominees(
+        silver_df
+    )
 
-            print(
-                "Silver flags were NOT changed."
-            )
+    if gold_df.empty:
 
-            return
+        print(
+            "No valid nominee records generated."
+        )
 
-        # ====================================================
-        # VALIDATION
-        # ====================================================
+        return
+
+    # =================================================
+    # FINAL VALIDATION
+    # =================================================
+
+    print("=" * 80)
+    print(
+        "FINAL GOLD FOLIO NOMINEES VALIDATION"
+    )
+    print("=" * 80)
+
+    print(
+        "\nColumns:"
+    )
+
+    print(
+        gold_df.columns.tolist()
+    )
+
+    print(
+        "\nData Types:"
+    )
+
+    print(
+        gold_df.dtypes
+    )
+
+    print(
+        "\nNull Count:"
+    )
+
+    print(
+        gold_df.isnull().sum()
+    )
+
+    print(
+        "\nDuplicate Check:"
+    )
+
+    duplicate_count = (
+
+        gold_df
+        .duplicated(
+            subset=[
+                "holding_id",
+                "seq"
+            ]
+        )
+        .sum()
+
+    )
+
+    print(
+        "Duplicate holding_id + seq :",
+        duplicate_count
+    )
+
+    print(
+        "\nSequence Counts:"
+    )
+
+    print(
+        gold_df[
+            "seq"
+        ]
+        .value_counts()
+        .sort_index()
+    )
+
+    print(
+        "\nSample Data:"
+    )
+
+    print(
+        gold_df.head(20)
+    )
+
+    # =================================================
+    # LOAD
+    # =================================================
+
+    status = load_folio_nominees(
+        gold_df
+    )
+
+    if status:
+
+        print("\n")
 
         print("=" * 80)
-        print("FINAL GOLD FOLIO NOMINEES VALIDATION")
+
+        print(
+            "GOLD FOLIO NOMINEES ETL "
+            "COMPLETED SUCCESSFULLY"
+        )
+
         print("=" * 80)
 
-        print(
-            "Rows :",
-            len(gold_df)
-        )
-
-        print(
-            "Duplicate holding_id + seq :",
-            gold_df
-            .duplicated(
-                subset=[
-                    "holding_id",
-                    "seq"
-                ]
-            )
-            .sum()
-        )
-
-        print(
-            "\nSample:"
-        )
-
-        print(
-            gold_df.head()
-        )
-
-        # ====================================================
-        # LOAD
-        # ====================================================
-
-        status = load_folio_nominees(
-            gold_df
-        )
-
-        if not status:
-
-            print(
-                "Gold Folio Nominees load failed."
-            )
-
-            return
-
-        # ====================================================
-        # FLAG UPDATE
-        # ====================================================
-
-        flag_status = update_investor_master_flag(
-            source_batch
-        )
-
-        if not flag_status:
-
-            print(
-                "Gold loaded but Silver flag update failed."
-            )
-
-            return
-
-        # ====================================================
-        # SUCCESS
-        # ====================================================
-
-        print("=" * 80)
-        print(
-            "GOLD FOLIO NOMINEES ETL COMPLETED SUCCESSFULLY"
-        )
-        print("=" * 80)
+        # =================================================
+        # FINAL DATABASE CHECK
+        # =================================================
 
         final_count = safe_read(
+
             """
-            SELECT COUNT(*) AS total_rows
+            SELECT
+                COUNT(*) AS total_rows
             FROM gold.folio_nominees
             """
+
         )
 
         print(
-            "\nGold Folio Nominees Row Count:"
+            "\nGold Folio Nominees Row Count"
         )
 
         print(
             final_count
         )
 
-    except Exception as e:
+    else:
 
-        print("=" * 80)
-        print("GOLD FOLIO NOMINEES ETL ERROR")
+        print("\n")
+
         print("=" * 80)
 
         print(
-            type(e).__name__
+            "GOLD FOLIO NOMINEES ETL FAILED"
         )
 
-        print(e)
+        print("=" * 80)
 
-        traceback.print_exc()
 
+# =====================================================
+# RUN
+# =====================================================
 
 if __name__ == "__main__":
 
