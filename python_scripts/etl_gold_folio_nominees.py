@@ -1,4 +1,3 @@
-
 import pandas as pd
 import traceback
 
@@ -621,39 +620,6 @@ def transform_folio_nominees(df):
             if age < 18:
 
                 is_minor = True
-
-        # =================================================
-        # CREATE SEQUENTIAL NOMINEE ROWS
-        #
-        # IMPORTANT:
-        #
-        # Sequence is based on AVAILABLE nominees.
-        #
-        # Example:
-        #
-        # nominee1 = Rutvi
-        # nominee2 = Vrund
-        # nominee3 = Utkarsh
-        #
-        #     seq 1 = Rutvi
-        #     seq 2 = Vrund
-        #     seq 3 = Utkarsh
-        #
-        # Example:
-        #
-        # nominee1 = Rutvi
-        # nominee2 = NULL
-        # nominee3 = Utkarsh
-        #
-        #     seq 1 = Rutvi
-        #     seq 2 = Utkarsh
-        #
-        # Example:
-        #
-        # all NULL
-        #
-        #     NO ROWS
-        # =================================================
 
         for seq, nominee in enumerate(
             available_nominees,
