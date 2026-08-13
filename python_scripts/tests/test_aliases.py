@@ -2,7 +2,7 @@ import pytest
 
 from scheme_matching.aliases import build_alias_fn, load_aliases
 from scheme_matching.scheme_key import parse_scheme_key
-from utils.db import master_engine
+from utils.db import engine
 
 TOKEN_ROWS = [
     {"raw_term": "GR", "normalized_term": "GROWTH", "alias_type": "TOKEN", "amc_code": None},
@@ -74,8 +74,14 @@ class TestAliasIntegrationWithParser:
 
 @pytest.fixture(scope="module")
 def live_alias_fn():
-    """The alias set actually configured in public.scheme_name_alias."""
-    return build_alias_fn(load_aliases(master_engine))
+    """The alias set actually configured in bronze.scheme_name_alias.
+
+    Reads the project engine, not master_engine: the table lives in the project
+    database, and scheme_mapping.load_scheme_mapping() calls load_aliases(engine).
+    Pointed at master_engine these seven tests errored on every run instead of
+    guarding anything.
+    """
+    return build_alias_fn(load_aliases(engine))
 
 
 class TestConfiguredAliases:

@@ -86,8 +86,18 @@ def build_context(df, amfi_df, alias_fn, overrides):
     amfi_names = {}
 
     for amfi_row in amfi_df.itertuples():
+        # name_raw is scheme_nav_name verbatim; name_norm is the same name with
+        # punctuation already flattened. Parse the raw one: the flattened
+        # spelling has lost the parentheses that strip_parentheticals() keys
+        # on, so "(Formerly Known as X)" degrades into the bare
+        # "FORMERLY KNOWN AS ...$" rule and carries off the plan and option —
+        # 222 of 237 such names collapse onto 27 shared keys. It also spells
+        # "&" as a space rather than AND, which the RTA side does not.
+        raw_name = getattr(amfi_row, "name_raw", None)
+        if raw_name is None or not str(raw_name).strip():
+            raw_name = amfi_row.name_norm
         key = parse_scheme_key(
-            amfi_row.name_norm, amc_code=amfi_row.amc_code, alias_fn=alias_fn
+            raw_name, amc_code=amfi_row.amc_code, alias_fn=alias_fn
         )
         if key is None:
             continue
@@ -289,6 +299,12 @@ def load_scheme_mapping():
     # =================================================
     # NORMALIZE AMFI NAMES
     # =================================================
+
+    # Keep scheme_nav_name verbatim before it is flattened. build_context parses
+    # this one, because normalize_scheme_name() strips the parentheses that
+    # strip_parentheticals() depends on. name_norm stays normalized: Rule 2
+    # compares it against the equally-normalized RTA name.
+    amfi_df["name_raw"] = amfi_df["name_norm"]
 
     amfi_df["name_norm"] = (
         amfi_df["name_norm"]
@@ -512,11 +528,15 @@ def load_scheme_mapping():
         if rta_codes:
             rta_codes_str = f"('{rta_codes[0]}')" if len(rta_codes) == 1 else str(rta_codes)
             
+            # nav > 0, not merely NOT NULL: gold.scheme_nav records a dividend
+            # payout as nav = 0 (1,604 of 51,061 rows). Those zeros are not a
+            # NAV, and letting them into the top-3 sample invites a match
+            # against any other scheme that also happens to carry a zero.
             scheme_nav_query = f"""
                 SELECT s.rta, s.scheme_code AS rta_scheme_code, sn.nav_date, sn.nav
                 FROM gold.scheme_nav sn
                 JOIN gold.scheme s ON sn.scheme_id = s.id
-                WHERE sn.nav_date IS NOT NULL AND sn.nav IS NOT NULL AND s.scheme_code IN {rta_codes_str}
+                WHERE sn.nav_date IS NOT NULL AND sn.nav > 0 AND s.scheme_code IN {rta_codes_str}
             """
             rta_nav_df = pd.read_sql(scheme_nav_query, engine)
             
@@ -661,7 +681,11 @@ def load_scheme_mapping():
                 and len(context.amfi_by_key.get(record["scheme_key"], [])) > 1
             )
             if ambiguous:
-                pending_candidates = sorted(candidates, key=lambda x: -x.score)[:3]
+                # Every STRUCT_EXACT candidate scores 100.0, so a top-3 slice
+                # cuts arbitrarily: for KFIN/176LDGP the correct scheme was not
+                # among the three offered, leaving the row unresolvable by the
+                # reviewer it was raised for. Offer them all.
+                pending_candidates = sorted(candidates, key=lambda x: -x.score)
             else:
                 update_best_match(
                     df,
