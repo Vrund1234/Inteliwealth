@@ -33,10 +33,32 @@ _FREQUENCIES = [
 # its own NAV series, so it must never share a key with the live plan.
 _QUALIFIERS = ["SEGREGATED", "RETAIL", "INSTITUTIONAL", "DISCONTINUED"]
 
+# A fund-of-funds is a different scheme from the ETF it holds, with its own NAV
+# (DSP Gold ETF trades at 147.85, DSP Gold ETF Fund of Fund at 23.84). FUND and
+# OF are both filler, so without this the two reduce to the same core name.
+# The FOF -> FUND OF FUNDS token alias means the bare abbreviation lands here too.
+_FOF_PATTERN = r"\bFUND\s+OF\s+FUNDS?\b"
+
+# SEBI's 2021 circular renamed the dividend option to "Income Distribution cum
+# Capital Withdrawal". 654 live AMFI names use it and 350 of those carry no
+# IDCW/DIVIDEND token at all, so without the phrase they read as Growth.
+# PAYOUT and REINVESTMENT name the same share class and never co-occur with
+# GROWTH in the AMFI master (0 of 14,268 names).
+#
 # "DIVIDEND YIELD" is a fund category, not a payout option — 52 AMFI schemes
 # are named that way and most of them are Growth. The lookahead stops the
 # category name being read as an IDCW signal.
-_IDCW_TOKENS = r"\b(IDCW|DIVIDEND|DIV)\b(?!\s+YIELD)"
+_IDCW_TOKENS = (
+    r"\b(IDCW|DIVIDEND|DIV)\b(?!\s+YIELD)"
+    r"|INCOME\s+DISTRIBUTION"
+    r"|\bPAYOUT\b"
+    r"|\bREINVEST"
+)
+
+# Removed as a phrase, never word by word: CAPITAL appears in 397 live names
+# outside this phrase ("HDFC Capital Builder"), so dropping it as filler would
+# erase part of those fund names.
+_IDCW_PHRASE = r"\bINCOME\s+DISTRIBUTION\s+CUM\s+CAPITAL\s+WITHDRAWAL\b"
 
 # Deleted only after attribute extraction.
 _FILLER = {
@@ -44,6 +66,9 @@ _FILLER = {
     "THE", "OF", "AN", "A", "MUTUAL",
     "REGULAR", "DIRECT", "GROWTH", "IDCW", "DIVIDEND", "DIV",
     "APPRECIATION",
+    # ABSL writes its growth option as "Growth / Payment". Only 6 live names
+    # use the word at all, none of them as part of a fund name.
+    "PAYMENT",
     "PAYOUT", "REINVESTMENT", "REINVEST", "REINVESTED",
     "SEGREGATED", "RETAIL", "INSTITUTIONAL", "DISCONTINUED",
     "DAILY", "WEEKLY", "FORTNIGHTLY", "MONTHLY", "QUARTERLY",
@@ -110,9 +135,10 @@ def extract_attributes(text):
             frequency = value
             break
 
-    qualifiers = frozenset(
-        q for q in _QUALIFIERS if re.search(r"\b" + q + r"\b", upper)
-    )
+    found = {q for q in _QUALIFIERS if re.search(r"\b" + q + r"\b", upper)}
+    if re.search(_FOF_PATTERN, upper):
+        found.add("FOF")
+    qualifiers = frozenset(found)
 
     return text, {
         "plan": plan,
@@ -127,6 +153,10 @@ def _to_core_name(text):
     out = text.upper()
     out = out.replace("&", " AND ")
     out = re.sub(r"[^A-Z0-9\s]", " ", out)
+    out = re.sub(r"\s+", " ", out).strip()
+    # After punctuation is flattened, so "Withdrawal(IDCW)" and "Withdrawal
+    # (IDCW)" reduce alike; before word filler, so the phrase goes as a unit.
+    out = re.sub(_IDCW_PHRASE, " ", out)
     out = re.sub(r"\s+", " ", out).strip()
     words = [w for w in out.split() if w not in _FILLER]
     return " ".join(words)

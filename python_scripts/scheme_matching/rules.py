@@ -151,6 +151,26 @@ def numbers_in(core_name):
     return set(re.findall(r"\d+", core_name or ""))
 
 
+# Deliberately not a well-formed-numeral pattern: AMFI ships "XXXX" as a series
+# label on 55 live schemes, and a validating regex rejects it, which is exactly
+# the case that has to be caught. Any run of Roman-numeral letters counts.
+_ROMAN_LETTERS_RE = re.compile(r"^[MDCLXVI]{2,}$")
+
+
+def romans_in(core_name):
+    """Roman series markers in a core name, e.g. "XXVI SERIES 1" -> {"XXVI"}.
+
+    Only names that say SERIES are considered. ICICI, LIC, MID and DIV are all
+    spelled purely from Roman-numeral letters and appear in thousands of live
+    names; outside a series name the numeral is not identity and treating those
+    words as markers would block legitimate matches.
+    """
+    text = core_name or ""
+    if "SERIES" not in text:
+        return set()
+    return {t for t in text.split() if _ROMAN_LETTERS_RE.match(t)}
+
+
 def numbers_conflict(left, right):
     """True when two core names carry numbers that cannot be the same fund.
 
@@ -165,7 +185,13 @@ def numbers_conflict(left, right):
     other lacks are a genuine contradiction.
     """
     a, b = numbers_in(left), numbers_in(right)
-    return bool(a - b) and bool(b - a)
+    if bool(a - b) and bool(b - a):
+        return True
+
+    # Same subset rule for the Roman series marker, so a word that merely looks
+    # like a numeral on one side stays "extra detail" rather than a conflict.
+    ra, rb = romans_in(left), romans_in(right)
+    return bool(ra - rb) and bool(rb - ra)
 
 
 def rule_core_fuzzy(row, context):
