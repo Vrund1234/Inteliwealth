@@ -5,13 +5,11 @@ from datetime import datetime
 
 from sqlalchemy import text
 
-from utils.db import engine
-from utils.db import master_engine
+from utils.db import engine, master_engine
 
 
 # =====================================================
 # FIXED SCHEME UUID NAMESPACE
-#
 # NEVER CHANGE THIS VALUE
 # =====================================================
 
@@ -21,25 +19,7 @@ SCHEME_NAMESPACE = uuid.UUID(
 
 
 # =====================================================
-# LOAD SCHEME MASTER
-# =====================================================
-
-scheme_master = pd.read_sql(
-    """
-    SELECT
-        id,
-        scheme_code,
-        name,
-        name_norm,
-        name_norm_loose
-    FROM public.scheme_master
-    """,
-    master_engine
-)
-
-
-# =====================================================
-# COMMON CLEANING FUNCTIONS
+# COMMON CLEANING
 # =====================================================
 
 def clean_text(series):
@@ -52,34 +32,37 @@ def clean_text(series):
     )
 
 
-def first_valid(series):
+def clean_value(value):
 
-    series = series.dropna()
+    if pd.isna(value):
+        return None
 
-    series = (
+    value = str(value).strip()
+
+    if value.upper() in ["", "<NA>", "NAN", "NONE"]:
+        return None
+
+    return value.upper()
+
+
+def normalize_scheme_name(series):
+
+    s = (
         series
         .astype("string")
+        .str.upper()
         .str.strip()
     )
 
-    series = series[
-        series.ne("")
-        &
-        series.ne("<NA>")
-        &
-        series.ne("NAN")
-        &
-        series.ne("NONE")
-    ]
+    s = s.str.replace(r"[^A-Z0-9]+", " ", regex=True)
+    s = s.str.replace(r"\s+", " ", regex=True)
+    s = s.str.strip()
 
-    if series.empty:
-        return None
-
-    return series.iloc[0]
+    return s
 
 
 # =====================================================
-# EXTRACT GOLD SCHEME DATA
+# EXTRACT SILVER DATA
 # =====================================================
 
 def extract_scheme():
@@ -88,55 +71,31 @@ def extract_scheme():
     print("EXTRACTING DATA FOR GOLD SCHEME")
     print("=" * 80)
 
-    # =================================================
-    # TRANSACTION MASTER
-    # =================================================
-
     transaction_query = """
 
-    SELECT
-
-        source,
-
-        amc_code,
-
-        prodcode,
-
-        scheme,
-
-        funddesc,
-
-        scheme_type,
-
-        brokcode,
-
-        src_brk_code
-
-    FROM silver.transaction_master_new
+        SELECT
+            source,
+            amc_code,
+            prodcode,
+            scheme,
+            funddesc,
+            scheme_type,
+            brokcode,
+            src_brk_code
+        FROM silver.transaction_master_new
 
     """
 
-    # =================================================
-    # INVESTOR MASTER
-    # =================================================
-
     investor_query = """
 
-    SELECT
-
-        source,
-
-        amc_code,
-
-        product_code,
-
-        scheme_name,
-
-        fund_description,
-
-        categorydesc
-
-    FROM silver.investor_master
+        SELECT
+            source,
+            amc_code,
+            product_code,
+            scheme_name,
+            fund_description,
+            categorydesc
+        FROM silver.investor_master
 
     """
 
@@ -163,28 +122,190 @@ def extract_scheme():
         len(investor_df)
     )
 
-    print("\nTransaction Preview")
-    print("-" * 80)
-
-    print(
-        transaction_df.head()
-    )
-
-    print("\nInvestor Preview")
-    print("-" * 80)
-
-    print(
-        investor_df.head()
-    )
-
-    return (
-        transaction_df,
-        investor_df
-    )
+    return transaction_df, investor_df
 
 
 # =====================================================
-# TRANSFORM GOLD SCHEME DATA
+# LOAD AMFI MASTER
+#
+# IMPORTANT:
+# We intentionally DO NOT select name_norm from DB.
+# We generate it in Python.
+#
+# Therefore this code will not fail because of
+# name_norm being absent from the actual DB table.
+# =====================================================
+
+def load_amfi_master():
+
+    print("=" * 80)
+    print("LOADING AMFI SCHEME MASTER")
+    print("=" * 80)
+
+    query = """
+
+        SELECT
+            amfi_scheme_code,
+            amfi_unique_code,
+            amc_code,
+            amc_name,
+            scheme_name,
+            scheme_nav_name,
+            scheme_type,
+            scheme_category,
+            asset_category,
+            sub_category,
+            plan_type,
+            option_type,
+            isin_growth,
+            isin_idcw,
+            min_amount,
+            launch_date,
+            closure_date,
+            risk_category,
+            status,
+            created_at,
+            updated_at,
+            is_deleted,
+            deleted_at,
+            created_by,
+            updated_by
+        FROM public.amfi_scheme_master
+
+    """
+
+    amfi_df = pd.read_sql(
+        query,
+        master_engine
+    )
+
+    print(
+        "AMFI master rows :",
+        len(amfi_df)
+    )
+
+    if amfi_df.empty:
+        print("WARNING: AMFI scheme master is empty.")
+        return amfi_df
+
+    # -------------------------------------------------
+    # Clean columns
+    # -------------------------------------------------
+
+    amfi_df["amfi_scheme_code"] = (
+        amfi_df["amfi_scheme_code"]
+        .astype("string")
+        .str.strip()
+    )
+
+    amfi_df["amfi_unique_code"] = (
+        amfi_df["amfi_unique_code"]
+        .astype("string")
+        .str.strip()
+    )
+
+    amfi_df["amc_code"] = clean_text(
+        amfi_df["amc_code"]
+    )
+
+    amfi_df["scheme_name"] = (
+        amfi_df["scheme_name"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # -------------------------------------------------
+    # Generate name_norm in Python
+    #
+    # We do NOT depend on DB name_norm column.
+    # -------------------------------------------------
+
+    amfi_df["name_norm"] = normalize_scheme_name(
+        amfi_df["scheme_name"]
+    )
+
+    # -------------------------------------------------
+    # Remove invalid AMFI codes
+    # -------------------------------------------------
+
+    amfi_df = amfi_df[
+        amfi_df["amfi_scheme_code"].notna()
+        &
+        amfi_df["amfi_scheme_code"].ne("")
+        &
+        amfi_df["amfi_scheme_code"].ne("<NA>")
+    ].copy()
+
+    # -------------------------------------------------
+    # One normalized scheme name per AMC
+    #
+    # Keep first deterministic record.
+    # -------------------------------------------------
+
+    amfi_df = (
+        amfi_df
+        .drop_duplicates(
+            subset=[
+                "amc_code",
+                "name_norm"
+            ],
+            keep="first"
+        )
+        .reset_index(drop=True)
+    )
+
+    print(
+        "Valid AMFI master rows :",
+        len(amfi_df)
+    )
+
+    return amfi_df
+
+
+# =====================================================
+# LOAD AMC MASTER
+# =====================================================
+
+def load_amc_master():
+
+    print("=" * 80)
+    print("LOADING AMC MASTER")
+    print("=" * 80)
+
+    query = """
+
+        SELECT
+            amc_id,
+            amc_code
+        FROM bronze.amc_master
+
+    """
+
+    amc_df = pd.read_sql(
+        query,
+        engine
+    )
+
+    if amc_df.empty:
+        return amc_df
+
+    amc_df["amc_code"] = clean_text(
+        amc_df["amc_code"]
+    )
+
+    amc_df = (
+        amc_df
+        .drop_duplicates(
+            subset=["amc_code"],
+            keep="first"
+        )
+    )
+
+    return amc_df
+
+
+# =====================================================
+# TRANSFORM GOLD SCHEME
 # =====================================================
 
 def transform_scheme(
@@ -224,55 +345,45 @@ def transform_scheme(
     )
 
     # =================================================
-    # CLEAN SCHEME CODE
+    # RTA SCHEME CODE
+    #
+    # Transaction:
+    #     prodcode
+    #
+    # Investor:
+    #     product_code
     # =================================================
 
-    transaction_df["join_scheme_code"] = (
-
+    transaction_df["scheme_code"] = clean_text(
         transaction_df["prodcode"]
-
-        .astype("string")
-
-        .str.strip()
-
-        .str.upper()
-
     )
 
-    investor_df["join_scheme_code"] = (
-
+    investor_df["scheme_code"] = clean_text(
         investor_df["product_code"]
-
-        .astype("string")
-
-        .str.strip()
-
-        .str.upper()
-
     )
 
     # =================================================
-    # REMOVE INVALID SCHEME CODES
+    # REMOVE INVALID CODES
     # =================================================
 
     transaction_df = transaction_df[
-        transaction_df["join_scheme_code"].notna()
+        transaction_df["scheme_code"].notna()
         &
-        transaction_df["join_scheme_code"].ne("")
+        transaction_df["scheme_code"].ne("")
         &
-        transaction_df["join_scheme_code"].ne("<NA>")
+        transaction_df["scheme_code"].ne("<NA>")
     ].copy()
 
     investor_df = investor_df[
-        investor_df["join_scheme_code"].notna()
+        investor_df["scheme_code"].notna()
         &
-        investor_df["join_scheme_code"].ne("")
+        investor_df["scheme_code"].ne("")
         &
-        investor_df["join_scheme_code"].ne("<NA>")
+        investor_df["scheme_code"].ne("<NA>")
     ].copy()
 
     # =================================================
-    # CLEAN ARN
+    # ARN
     #
     # arn <- brokcode
     # =================================================
@@ -282,6 +393,7 @@ def transform_scheme(
         .astype("string")
         .str.strip()
         .str.upper()
+        .str[:50]
     )
 
     transaction_df.loc[
@@ -291,13 +403,8 @@ def transform_scheme(
         "arn"
     ] = pd.NA
 
-    transaction_df["arn"] = (
-        transaction_df["arn"]
-        .str[:50]
-    )
-
     # =================================================
-    # CLEAN SUB ARN
+    # SUB ARN
     #
     # sub_arn <- src_brk_code
     # =================================================
@@ -307,6 +414,7 @@ def transform_scheme(
         .astype("string")
         .str.strip()
         .str.upper()
+        .str[:50]
     )
 
     transaction_df.loc[
@@ -316,46 +424,38 @@ def transform_scheme(
         "sub_arn"
     ] = pd.NA
 
-    transaction_df["sub_arn"] = (
-        transaction_df["sub_arn"]
-        .str[:50]
-    )
-
     # =================================================
-    # REMOVE SOURCE DUPLICATES
-    #
-    # One row per:
-    # source + amc_code + scheme_code
+    # UNIQUE TRANSACTION SCHEMES
     # =================================================
 
     transaction_scheme = (
-
         transaction_df
-
         .drop_duplicates(
             subset=[
                 "source",
                 "amc_code",
-                "join_scheme_code"
+                "scheme_code"
             ],
             keep="first"
         )
-
+        .copy()
     )
 
+    # =================================================
+    # UNIQUE INVESTOR SCHEMES
+    # =================================================
+
     investor_scheme = (
-
         investor_df
-
         .drop_duplicates(
             subset=[
                 "source",
                 "amc_code",
-                "join_scheme_code"
+                "scheme_code"
             ],
             keep="first"
         )
-
+        .copy()
     )
 
     print(
@@ -369,72 +469,77 @@ def transform_scheme(
     )
 
     # =================================================
+    # IMPORTANT:
+    #
+    # Rename investor columns BEFORE MERGE.
+    #
+    # This prevents pandas from generating:
+    #
+    # scheme_name_x
+    # scheme_name_y
+    # rta_scheme_code_x
+    # rta_scheme_code_y
+    #
+    # =================================================
+
+    investor_scheme = investor_scheme.rename(
+        columns={
+            "scheme_name": "investor_scheme_name",
+            "fund_description": "investor_fund_description",
+            "categorydesc": "investor_category"
+        }
+    )
+
+    # =================================================
     # MERGE TRANSACTION + INVESTOR
     # =================================================
 
-    gold_df = transaction_scheme.merge(
+    gold_base = transaction_scheme.merge(
 
         investor_scheme[
             [
                 "source",
                 "amc_code",
-                "join_scheme_code",
-                "scheme_name",
-                "fund_description",
-                "categorydesc"
+                "scheme_code",
+                "investor_scheme_name",
+                "investor_fund_description",
+                "investor_category"
             ]
         ],
 
         on=[
             "source",
             "amc_code",
-            "join_scheme_code"
+            "scheme_code"
         ],
 
-        how="left",
-
-        suffixes=(
-            "_txn",
-            "_inv"
-        )
+        how="left"
 
     )
 
-    print("\nRows After Merge")
+    print("\nRows After Transaction + Investor Merge")
     print("-" * 80)
 
-    print(
-        len(gold_df)
-    )
+    print(len(gold_base))
 
     # =================================================
-    # SCHEME NAME PRIORITY
-    #
-    # Transaction:
-    # funddesc
-    #     ↓
-    # scheme
-    #
-    # Investor:
-    # scheme_name
-    #     ↓
-    # fund_description
+    # SCHEME NAME
     # =================================================
 
     scheme_name = (
 
-        gold_df["funddesc"]
+        gold_base["funddesc"]
 
         .combine_first(
-            gold_df["scheme"]
+            gold_base["scheme"]
         )
 
         .combine_first(
-            gold_df["scheme_name"]
+            gold_base["investor_scheme_name"]
         )
 
         .combine_first(
-            gold_df["fund_description"]
+            gold_base["investor_fund_description"]
         )
 
     )
@@ -446,181 +551,361 @@ def transform_scheme(
     )
 
     # =================================================
+    # CATEGORY
+    # =================================================
+
+    category = (
+
+        gold_base["scheme_type"]
+
+        .combine_first(
+            gold_base["investor_category"]
+        )
+
+    )
+
+    # =================================================
+    # PLAN
+    # =================================================
+
+    plan = (
+        scheme_name
+        .str.extract(
+            r"(?i)\b(Direct|Regular)\b",
+            expand=False
+        )
+    )
+
+    # =================================================
     # CREATE GOLD DATAFRAME
+    #
+    # ONLY FINAL DATABASE COLUMNS.
+    #
+    # NO rta_scheme_code_x
+    # NO rta_scheme_code_y
     # =================================================
 
-    gold_df = pd.DataFrame(
-        {
+    gold_df = pd.DataFrame({
 
-            "rta":
-                gold_df["source"],
+        "rta":
+            gold_base["source"],
 
-            "scheme_code":
-                gold_df["join_scheme_code"],
+        "scheme_code":
+            gold_base["scheme_code"],
 
-            "scheme_name":
-                scheme_name,
+        "scheme_name":
+            scheme_name,
 
-            "category":
-                gold_df["scheme_type"]
-                .combine_first(
-                    gold_df["categorydesc"]
-                ),
+        "category":
+            category,
 
-            "plan":
-                scheme_name
-                .str.extract(
-                    r"(?i)\b(Direct|Regular)\b",
-                    expand=False
-                ),
+        "plan":
+            plan,
 
-            "isin":
-                None,
+        "isin":
+            None,
 
-            "amc_code":
-                gold_df["amc_code"],
+        "amc_code":
+            gold_base["amc_code"],
 
-            "amfi_code":
-                None,
+        "amfi_code":
+            None,
 
-            "category_id":
-                None,
+        "category_id":
+            None,
 
-            "plan_type":
-                None,
+        "plan_type":
+            None,
 
-            "option_type":
-                None,
+        "option_type":
+            None,
 
-            "rta_scheme_code":
-                gold_df["join_scheme_code"],
+        "rta_scheme_code":
+            gold_base["scheme_code"],
 
-            "benchmark_id":
-                None,
+        "benchmark_id":
+            None,
 
-            "expense_ratio":
-                None,
+        "expense_ratio":
+            None,
 
-            "exit_load_json":
-                None,
+        "exit_load_json":
+            None,
 
-            "lock_in_months":
-                None,
+        "lock_in_months":
+            None,
 
-            "riskometer":
-                None,
+        "riskometer":
+            None,
 
-            "status":
-                None,
+        "status":
+            None,
 
-            # =========================================
-            # ARN
-            # =========================================
+        "arn":
+            gold_base["arn"],
 
-            "arn":
-                gold_df["arn"],
+        "sub_arn":
+            gold_base["sub_arn"]
 
-            # =========================================
-            # SUB ARN
-            # =========================================
+    })
 
-            "sub_arn":
-                gold_df["sub_arn"]
+    # =================================================
+    # CLEAN BASIC COLUMNS
+    # =================================================
 
-        }
+    gold_df["rta"] = clean_text(
+        gold_df["rta"]
     )
-
-    # =================================================
-    # NORMALIZE SCHEME NAME
-    # =================================================
-
-    def normalize_name(name):
-
-        if pd.isna(name):
-            return None
-
-        name = str(name).upper()
-
-        name = re.sub(
-            r"[^A-Z0-9 ]",
-            " ",
-            name
-        )
-
-        name = re.sub(
-            r"\s+",
-            " ",
-            name
-        ).strip()
-
-        return name
-
-    gold_df["name_norm"] = (
-        gold_df["scheme_name"]
-        .apply(normalize_name)
-    )
-
-    # =================================================
-    # SCHEME MASTER LOOKUP
-    # =================================================
-
-    gold_df = gold_df.merge(
-
-        scheme_master,
-
-        on="name_norm",
-
-        how="left",
-
-        suffixes=(
-            "",
-            "_master"
-        )
-
-    )
-
-    # =================================================
-    # AMFI CODE
-    # =================================================
-
-    gold_df["amfi_code"] = (
-        gold_df["scheme_code_master"]
-    )
-
-    print("\nScheme Master Match")
-    print("-" * 80)
-
-    print(
-        "Total     :",
-        len(gold_df)
-    )
-
-    print(
-        "Matched   :",
-        gold_df["id"].notna().sum()
-    )
-
-    print(
-        "Unmatched :",
-        gold_df["id"].isna().sum()
-    )
-
-    # =================================================
-    # CLEAN SCHEME CODE
-    # =================================================
 
     gold_df["scheme_code"] = clean_text(
         gold_df["scheme_code"]
+    )
+
+    gold_df["amc_code"] = clean_text(
+        gold_df["amc_code"]
     )
 
     gold_df = gold_df[
         gold_df["scheme_code"].notna()
         &
         gold_df["scheme_code"].ne("")
+        &
+        gold_df["scheme_code"].ne("<NA>")
     ].copy()
 
     # =================================================
-    # CLEAN ARN / SUB ARN AFTER MERGE
+    # CREATE NORMALIZED SCHEME NAME
+    #
+    # This is used only internally.
+    # It is NOT inserted into gold.scheme.
+    # =================================================
+
+    gold_df["_name_norm"] = normalize_scheme_name(
+        gold_df["scheme_name"]
+    )
+
+    # =================================================
+    # LOAD AMFI MASTER
+    # =================================================
+
+    amfi_df = load_amfi_master()
+
+    # =================================================
+    # AMFI MAPPING
+    #
+    # IMPORTANT:
+    #
+    # We use a dictionary/map instead of pandas merge.
+    #
+    # Therefore NO _x / _y columns can ever be created.
+    # =================================================
+
+    if not amfi_df.empty:
+
+        # -------------------------------------------------
+        # First mapping:
+        #
+        # AMC + normalized scheme name
+        # -------------------------------------------------
+
+        amfi_key = (
+            amfi_df["amc_code"].fillna("")
+            + "|"
+            + amfi_df["name_norm"].fillna("")
+        )
+
+        amfi_lookup = pd.Series(
+            amfi_df["amfi_scheme_code"].values,
+            index=amfi_key
+        ).to_dict()
+
+        gold_key = (
+            gold_df["amc_code"].fillna("")
+            + "|"
+            + gold_df["_name_norm"].fillna("")
+        )
+
+        gold_df["amfi_code"] = gold_key.map(
+            amfi_lookup
+        )
+
+        # -------------------------------------------------
+        # AMFI master attributes
+        # -------------------------------------------------
+
+        amfi_attribute_df = (
+            amfi_df[
+                [
+                    "amfi_scheme_code",
+                    "scheme_type",
+                    "scheme_category",
+                    "plan_type",
+                    "option_type",
+                    "isin_growth",
+                    "isin_idcw",
+                    "risk_category",
+                    "status"
+                ]
+            ]
+            .drop_duplicates(
+                subset=["amfi_scheme_code"],
+                keep="first"
+            )
+        )
+
+        # -------------------------------------------------
+        # Dictionary lookup for attributes.
+        #
+        # Again, NO merge.
+        # -------------------------------------------------
+
+        amfi_attr = (
+            amfi_attribute_df
+            .set_index("amfi_scheme_code")
+        )
+
+        # Scheme type
+        scheme_type_map = (
+            amfi_attr["scheme_type"]
+            .to_dict()
+        )
+
+        # Scheme category
+        scheme_category_map = (
+            amfi_attr["scheme_category"]
+            .to_dict()
+        )
+
+        # Plan type
+        plan_type_map = (
+            amfi_attr["plan_type"]
+            .to_dict()
+        )
+
+        # Option type
+        option_type_map = (
+            amfi_attr["option_type"]
+            .to_dict()
+        )
+
+        # Risk
+        risk_map = (
+            amfi_attr["risk_category"]
+            .to_dict()
+        )
+
+        # Status
+        status_map = (
+            amfi_attr["status"]
+            .to_dict()
+        )
+
+        # ISIN growth
+        isin_growth_map = (
+            amfi_attr["isin_growth"]
+            .to_dict()
+        )
+
+        # ISIN IDCW
+        isin_idcw_map = (
+            amfi_attr["isin_idcw"]
+            .to_dict()
+        )
+
+        # -------------------------------------------------
+        # Populate fields only when available.
+        # Existing derived values remain as fallback.
+        # -------------------------------------------------
+
+        gold_df["category"] = (
+            gold_df["amfi_code"]
+            .map(scheme_category_map)
+            .combine_first(
+                gold_df["category"]
+            )
+        )
+
+        gold_df["plan_type"] = (
+            gold_df["amfi_code"]
+            .map(plan_type_map)
+        )
+
+        gold_df["option_type"] = (
+            gold_df["amfi_code"]
+            .map(option_type_map)
+        )
+
+        gold_df["riskometer"] = (
+            gold_df["amfi_code"]
+            .map(risk_map)
+        )
+
+        gold_df["status"] = (
+            gold_df["amfi_code"]
+            .map(status_map)
+        )
+
+        # -------------------------------------------------
+        # ISIN
+        #
+        # Prefer growth / IDCW based on option.
+        # -------------------------------------------------
+
+        gold_df["_isin_growth"] = (
+            gold_df["amfi_code"]
+            .map(isin_growth_map)
+        )
+
+        gold_df["_isin_idcw"] = (
+            gold_df["amfi_code"]
+            .map(isin_idcw_map)
+        )
+
+        gold_df["isin"] = (
+            gold_df["_isin_growth"]
+            .combine_first(
+                gold_df["_isin_idcw"]
+            )
+        )
+
+        # -------------------------------------------------
+        # If AMFI plan_type exists, use it for plan.
+        # Otherwise keep Direct/Regular extraction.
+        # -------------------------------------------------
+
+        gold_df["plan"] = (
+            gold_df["plan_type"]
+            .combine_first(
+                gold_df["plan"]
+            )
+        )
+
+    else:
+
+        print(
+            "WARNING: AMFI master empty. "
+            "AMFI mapping skipped."
+        )
+
+    # =================================================
+    # AMFI CODE CLEANING
+    # =================================================
+
+    gold_df["amfi_code"] = (
+        gold_df["amfi_code"]
+        .astype("string")
+        .str.strip()
+    )
+
+    gold_df.loc[
+        gold_df["amfi_code"].isin(
+            ["", "<NA>", "NAN", "NONE"]
+        ),
+        "amfi_code"
+    ] = pd.NA
+
+    # =================================================
+    # ARN CLEANING
     # =================================================
 
     gold_df["arn"] = (
@@ -638,6 +923,10 @@ def transform_scheme(
         "arn"
     ] = pd.NA
 
+    # =================================================
+    # SUB ARN CLEANING
+    # =================================================
+
     gold_df["sub_arn"] = (
         gold_df["sub_arn"]
         .astype("string")
@@ -654,48 +943,45 @@ def transform_scheme(
     ] = pd.NA
 
     # =================================================
-    # AMC ID LOOKUP
+    # AMC ID
     # =================================================
 
-    amc_master = pd.read_sql(
+    amc_master = load_amc_master()
 
-        """
-        SELECT
-            amc_id,
-            amc_code
-        FROM bronze.amc_master
-        """,
+    if not amc_master.empty:
 
-        engine
+        amc_lookup = (
+            amc_master
+            .drop_duplicates(
+                subset=["amc_code"],
+                keep="first"
+            )
+            .set_index("amc_code")["amc_id"]
+            .to_dict()
+        )
 
-    )
+        gold_df["amc_id"] = (
+            gold_df["amc_code"]
+            .map(amc_lookup)
+        )
 
-    amc_master["amc_code"] = clean_text(
-        amc_master["amc_code"]
-    )
+    else:
 
-    gold_df["amc_code"] = clean_text(
-        gold_df["amc_code"]
-    )
-
-    gold_df = gold_df.merge(
-        amc_master,
-        on="amc_code",
-        how="left"
-    )
+        gold_df["amc_id"] = None
 
     # =================================================
     # DROP TEMPORARY COLUMNS
+    #
+    # IMPORTANT:
+    # No temporary x/y columns exist.
     # =================================================
 
     gold_df.drop(
         columns=[
             "amc_code",
-            "id",
-            "name",
-            "name_norm",
-            "name_norm_loose",
-            "scheme_code_master"
+            "_name_norm",
+            "_isin_growth",
+            "_isin_idcw"
         ],
         inplace=True,
         errors="ignore"
@@ -704,28 +990,22 @@ def transform_scheme(
     # =================================================
     # FINAL DEDUPLICATION
     #
-    # ARN / SUB ARN are taken from the first
-    # transaction row for each scheme.
+    # One row per RTA + scheme_code
     # =================================================
 
     print("\nRows Before Final Dedup")
     print("-" * 80)
 
-    print(
-        len(gold_df)
-    )
+    print(len(gold_df))
 
     gold_df = (
-
         gold_df
-
         .sort_values(
             [
                 "rta",
                 "scheme_code"
             ]
         )
-
         .drop_duplicates(
             subset=[
                 "rta",
@@ -733,19 +1013,13 @@ def transform_scheme(
             ],
             keep="first"
         )
-
-        .reset_index(
-            drop=True
-        )
-
+        .reset_index(drop=True)
     )
 
     print("\nRows After Final Dedup")
     print("-" * 80)
 
-    print(
-        len(gold_df)
-    )
+    print(len(gold_df))
 
     # =================================================
     # GENERATE DETERMINISTIC UUID
@@ -763,7 +1037,6 @@ def transform_scheme(
         ),
 
         axis=1
-
     )
 
     # =================================================
@@ -811,40 +1084,109 @@ def transform_scheme(
     # FINAL COLUMN ORDER
     # =================================================
 
-    cols = [
-        "id"
-    ] + [
-        c
-        for c in gold_df.columns
-        if c != "id"
+    final_columns = [
+
+        "id",
+        "rta",
+        "scheme_code",
+        "scheme_name",
+        "category",
+        "plan",
+        "isin",
+        "amfi_code",
+        "category_id",
+        "plan_type",
+        "option_type",
+        "rta_scheme_code",
+        "benchmark_id",
+        "expense_ratio",
+        "exit_load_json",
+        "lock_in_months",
+        "riskometer",
+        "status",
+        "arn",
+        "sub_arn",
+        "amc_id",
+        "created_at"
+
     ]
 
-    gold_df = gold_df[cols]
+    # -------------------------------------------------
+    # HARD CHECK
+    #
+    # Only columns in final_columns can reach DB.
+    # -------------------------------------------------
+
+    gold_df = gold_df[
+        final_columns
+    ].copy()
 
     # =================================================
-    # FINAL VALIDATION
+    # PRINT FINAL COLUMNS
     # =================================================
+
+    print("\nFINAL GOLD.SCHEME COLUMNS")
+    print("-" * 80)
+
+    print(
+        list(gold_df.columns)
+    )
+
+    # =================================================
+    # EXPLICIT CHECK FOR BAD PANDAS SUFFIX COLUMNS
+    # =================================================
+
+    bad_columns = [
+        c
+        for c in gold_df.columns
+        if c.endswith("_x")
+        or c.endswith("_y")
+    ]
+
+    if bad_columns:
+
+        raise Exception(
+            f"ERROR: Pandas generated unexpected columns: "
+            f"{bad_columns}"
+        )
+
+    # =================================================
+    # VALIDATION
+    # =================================================
+
+    print("\nAMFI CODE Validation")
+    print("-" * 80)
+
+    print(
+        "AMFI code populated :",
+        gold_df["amfi_code"].notna().sum()
+    )
+
+    print(
+        "AMFI code null      :",
+        gold_df["amfi_code"].isna().sum()
+    )
 
     print("\nARN Validation")
     print("-" * 80)
 
     print(
-        "ARN populated     :",
+        "ARN populated       :",
         gold_df["arn"].notna().sum()
     )
 
     print(
-        "ARN null          :",
+        "ARN null            :",
         gold_df["arn"].isna().sum()
     )
 
     print(
-        "SUB ARN populated :",
+        "SUB ARN populated   :",
         gold_df["sub_arn"].notna().sum()
     )
 
     print(
-        "SUB ARN null      :",
+        "SUB ARN null        :",
         gold_df["sub_arn"].isna().sum()
     )
 
@@ -866,7 +1208,12 @@ def transform_scheme(
                 "rta",
                 "scheme_code",
                 "scheme_name",
+                "amfi_code",
                 "category",
+                "plan",
+                "plan_type",
+                "option_type",
+                "rta_scheme_code",
                 "amc_id",
                 "arn",
                 "sub_arn",
@@ -881,11 +1228,7 @@ def transform_scheme(
 
 
 # =====================================================
-# LOAD GOLD SCHEME
-#
-# Existing schemes are UPDATED.
-#
-# New schemes are INSERTED.
+# LOAD GOLD.SCHEME
 # =====================================================
 
 def load_scheme(gold_df):
@@ -901,6 +1244,72 @@ def load_scheme(gold_df):
         )
 
         return True
+
+    # =================================================
+    # FINAL DATABASE COLUMN CHECK
+    # =================================================
+
+    expected_columns = [
+        "id",
+        "rta",
+        "scheme_code",
+        "scheme_name",
+        "category",
+        "plan",
+        "isin",
+        "amfi_code",
+        "category_id",
+        "plan_type",
+        "option_type",
+        "rta_scheme_code",
+        "benchmark_id",
+        "expense_ratio",
+        "exit_load_json",
+        "lock_in_months",
+        "riskometer",
+        "status",
+        "arn",
+        "sub_arn",
+        "amc_id",
+        "created_at"
+    ]
+
+    # Keep ONLY expected columns
+    gold_df = gold_df[
+        [
+            c
+            for c in expected_columns
+            if c in gold_df.columns
+        ]
+    ].copy()
+
+    # Check unexpected columns
+    unexpected = [
+        c
+        for c in gold_df.columns
+        if c not in expected_columns
+    ]
+
+    if unexpected:
+
+        raise Exception(
+            f"Unexpected columns before insert: {unexpected}"
+        )
+
+    # Check x/y
+    bad_columns = [
+        c
+        for c in gold_df.columns
+        if c.endswith("_x")
+        or c.endswith("_y")
+    ]
+
+    if bad_columns:
+
+        raise Exception(
+            f"x/y columns detected before database insert: "
+            f"{bad_columns}"
+        )
 
     # =================================================
     # NORMALIZE KEYS
@@ -930,7 +1339,6 @@ def load_scheme(gold_df):
         """,
 
         engine
-
     )
 
     if not existing_scheme.empty:
@@ -981,12 +1389,13 @@ def load_scheme(gold_df):
         "riskometer",
         "status",
         "arn",
-        "sub_arn"
+        "sub_arn",
+        "amc_id"
 
     ]
 
     # =================================================
-    # UPDATE EXISTING SCHEMES
+    # UPDATE EXISTING
     # =================================================
 
     existing_updates = 0
@@ -995,9 +1404,7 @@ def load_scheme(gold_df):
         "\nUpdating existing schemes..."
     )
 
-    print(
-        "-" * 80
-    )
+    print("-" * 80)
 
     with engine.begin() as connection:
 
@@ -1057,16 +1464,17 @@ def load_scheme(gold_df):
     # FIND NEW SCHEMES
     # =================================================
 
+    new_mask = ~gold_df.apply(
+        lambda row:
+        (
+            row["rta"],
+            row["scheme_code"]
+        ) in existing_keys,
+        axis=1
+    )
+
     new_gold_df = gold_df[
-        ~gold_df.apply(
-            lambda row:
-                (
-                    row["rta"],
-                    row["scheme_code"]
-                )
-                in existing_keys,
-            axis=1
-        )
+        new_mask
     ].copy()
 
     print(
@@ -1079,6 +1487,35 @@ def load_scheme(gold_df):
     # =================================================
 
     if not new_gold_df.empty:
+
+        # -------------------------------------------------
+        # ABSOLUTE FINAL COLUMN FILTER
+        # -------------------------------------------------
+
+        new_gold_df = new_gold_df[
+            expected_columns
+        ].copy()
+
+        # -------------------------------------------------
+        # No x/y allowed
+        # -------------------------------------------------
+
+        bad_columns = [
+            c
+            for c in new_gold_df.columns
+            if c.endswith("_x")
+            or c.endswith("_y")
+        ]
+
+        if bad_columns:
+
+            raise Exception(
+                f"Cannot insert. Unexpected x/y columns: "
+                f"{bad_columns}"
+            )
+
+        print("\nColumns being inserted:")
+        print(list(new_gold_df.columns))
 
         try:
 
@@ -1144,7 +1581,7 @@ def load_scheme(gold_df):
 
 
 # =====================================================
-# MAIN EXECUTION
+# MAIN
 # =====================================================
 
 def main():
@@ -1222,5 +1659,4 @@ def main():
 # =====================================================
 
 if __name__ == "__main__":
-
     main()
