@@ -157,7 +157,7 @@ def load_scheme_mapping():
             amc_code,
             prodcode,
             scheme
-        FROM silver.transaction_master_new
+        FROM bronze.transaction_master_new
         WHERE source IS NOT NULL
           AND scheme IS NOT NULL
           AND NULLIF(TRIM(prodcode), '') IS NOT NULL
@@ -515,90 +515,145 @@ def load_scheme_mapping():
 
     # =================================================
     # RULE 3.5 : NAV MATCH (97)
+    # Uses bronze.transaction_master_new purprice as the
+    # NAV source — covers both CAMS and KFIN.
     # =================================================
 
     print("=" * 80)
-    print("RULE 3.5 : NAV MATCH")
+    print("RULE 3.5 : NAV MATCH (from bronze.transaction_master_new)")
     print("=" * 80)
 
     unmatched_nav_df = df[df["best_amfi_scheme_code"].isna()].copy()
-    
+
     if not unmatched_nav_df.empty:
         rta_codes = tuple(unmatched_nav_df["rta_scheme_code"].dropna().unique())
         if rta_codes:
-            rta_codes_str = f"('{rta_codes[0]}')" if len(rta_codes) == 1 else str(rta_codes)
-            
-            # nav > 0, not merely NOT NULL: gold.scheme_nav records a dividend
-            # payout as nav = 0 (1,604 of 51,061 rows). Those zeros are not a
-            # NAV, and letting them into the top-3 sample invites a match
-            # against any other scheme that also happens to carry a zero.
-            scheme_nav_query = f"""
-                SELECT s.rta, s.scheme_code AS rta_scheme_code, sn.nav_date, sn.nav
-                FROM gold.scheme_nav sn
-                JOIN gold.scheme s ON sn.scheme_id = s.id
-                WHERE sn.nav_date IS NOT NULL AND sn.nav > 0 AND s.scheme_code IN {rta_codes_str}
+            rta_codes_str = (
+                f"('{rta_codes[0]}')" if len(rta_codes) == 1
+                else str(rta_codes)
+            )
+
+            # Pull NAV (purprice) from bronze.transaction_master_new.
+            # purprice > 0 filters out zero-NAV rows (dividend payouts /
+            # placeholders) that would create false fingerprint matches.
+            txn_nav_query = f"""
+                SELECT source AS rta,
+                       prodcode AS rta_scheme_code,
+                       traddate::date AS nav_date,
+                       purprice::numeric AS nav
+                FROM bronze.transaction_master_new
+                WHERE prodcode IN {rta_codes_str}
+                  AND purprice IS NOT NULL
+                  AND TRIM(purprice) != ''
+                  AND purprice::numeric > 0
+                  AND traddate IS NOT NULL
             """
-            rta_nav_df = pd.read_sql(scheme_nav_query, engine)
-            
+            rta_nav_df = pd.read_sql(txn_nav_query, engine)
+
+            print(
+                f"  RTA NAV rows from bronze.transaction_master_new: "
+                f"{len(rta_nav_df)} across "
+                f"{rta_nav_df['rta_scheme_code'].nunique()} schemes"
+            )
+
             if not rta_nav_df.empty:
+                # De-duplicate: keep the last NAV per scheme per date
                 rta_nav_df = rta_nav_df.sort_values(
                     ['rta', 'rta_scheme_code', 'nav_date', 'nav']
                 ).drop_duplicates(
-                    subset=['rta', 'rta_scheme_code', 'nav_date'], keep='last'
+                    subset=['rta', 'rta_scheme_code', 'nav_date'],
+                    keep='last'
                 )
                 rta_nav_df['nav_round'] = rta_nav_df['nav'].round(4)
-                
-                amfi_dates_df = pd.read_sql("SELECT DISTINCT nav_date FROM public.nav_master", master_engine)
+
+                # Only keep dates that AMFI also publishes
+                amfi_dates_df = pd.read_sql(
+                    "SELECT DISTINCT nav_date FROM public.nav_master",
+                    master_engine
+                )
                 amfi_dates = set(amfi_dates_df['nav_date'])
-                
-                rta_nav_df = rta_nav_df[rta_nav_df['nav_date'].isin(amfi_dates)]
-                rta_nav_df = rta_nav_df.sort_values('nav_date', ascending=False)
-                top3_navs = rta_nav_df.groupby(['rta', 'rta_scheme_code']).head(3)
-                
-                counts = top3_navs.groupby(['rta', 'rta_scheme_code']).size()
+
+                rta_nav_df = rta_nav_df[
+                    rta_nav_df['nav_date'].isin(amfi_dates)
+                ]
+                rta_nav_df = rta_nav_df.sort_values(
+                    'nav_date', ascending=False
+                )
+
+                # Take top 3 most recent NAVs per scheme
+                top3_navs = rta_nav_df.groupby(
+                    ['rta', 'rta_scheme_code']
+                ).head(3)
+
+                counts = top3_navs.groupby(
+                    ['rta', 'rta_scheme_code']
+                ).size()
                 valid_rta = counts[counts == 3].index
-                
+
+                print(
+                    f"  Schemes with 3+ NAV dates on AMFI calendar: "
+                    f"{len(valid_rta)}"
+                )
+
                 if not valid_rta.empty:
-                    top3_navs = top3_navs.set_index(['rta', 'rta_scheme_code']).loc[valid_rta].reset_index()
-                    required_dates = tuple(top3_navs['nav_date'].astype(str).unique())
-                    req_dates_str = f"('{required_dates[0]}')" if len(required_dates) == 1 else str(required_dates)
-                    
+                    top3_navs = (
+                        top3_navs
+                        .set_index(['rta', 'rta_scheme_code'])
+                        .loc[valid_rta]
+                        .reset_index()
+                    )
+                    required_dates = tuple(
+                        top3_navs['nav_date'].astype(str).unique()
+                    )
+                    req_dates_str = (
+                        f"('{required_dates[0]}')" if len(required_dates) == 1
+                        else str(required_dates)
+                    )
+
                     nav_master_query = f"""
-                        SELECT nm.scheme_code, nm.nav_date, ROUND(nm.nav, 4) as nav_round
+                        SELECT nm.scheme_code,
+                               nm.nav_date,
+                               ROUND(nm.nav, 4) as nav_round
                         FROM public.nav_master nm
                         WHERE nm.nav_date IN {req_dates_str}
                     """
-                    amfi_nav_df = pd.read_sql(nav_master_query, master_engine)
-                    
+                    amfi_nav_df = pd.read_sql(
+                        nav_master_query, master_engine
+                    )
+
                     for idx, row in unmatched_nav_df.iterrows():
                         rta = row['rta']
                         rta_code = row['rta_scheme_code']
-                        
+
                         if (rta, rta_code) not in valid_rta:
                             continue
-                            
-                        sample_navs = top3_navs[(top3_navs['rta'] == rta) & (top3_navs['rta_scheme_code'] == rta_code)]
-                        
+
+                        sample_navs = top3_navs[
+                            (top3_navs['rta'] == rta)
+                            & (top3_navs['rta_scheme_code'] == rta_code)
+                        ]
+
                         matched_codes = []
                         for _, sample in sample_navs.iterrows():
                             amfi_matches = amfi_nav_df[
-                                (amfi_nav_df['nav_date'] == sample['nav_date']) &
-                                (amfi_nav_df['nav_round'] == sample['nav_round'])
+                                (amfi_nav_df['nav_date']
+                                 == sample['nav_date'])
+                                & (amfi_nav_df['nav_round']
+                                   == sample['nav_round'])
                             ]
-                            matched_codes.append(set(amfi_matches['scheme_code'].astype(str)))
-                            
+                            matched_codes.append(
+                                set(amfi_matches['scheme_code'].astype(str))
+                            )
+
                         if any(not codes for codes in matched_codes):
                             continue
 
                         common_codes = set.intersection(*matched_codes)
 
                         if len(common_codes) == 1:
-                            # Fix 1: nav_master.scheme_code may be string;
-                            # validate it against amfi_df to ensure type
-                            # consistency before calling update_best_match.
                             raw_code = list(common_codes)[0]
 
-                            # Try integer lookup first, then string fallback
+                            # Validate against amfi_df for type consistency
                             amfi_lookup = amfi_df[
                                 amfi_df["amfi_scheme_code"].astype(str)
                                 == str(raw_code)
@@ -606,19 +661,21 @@ def load_scheme_mapping():
 
                             if len(amfi_lookup) != 1:
                                 print(
-                                    f"[NAV_MATCH SKIP] nav_master code {raw_code} "
-                                    f"did not resolve uniquely in amfi_df "
-                                    f"({len(amfi_lookup)} rows) for "
-                                    f"{rta}/{rta_code}"
+                                    f"[NAV_MATCH SKIP] nav_master code "
+                                    f"{raw_code} did not resolve uniquely "
+                                    f"in amfi_df ({len(amfi_lookup)} rows) "
+                                    f"for {rta}/{rta_code}"
                                 )
                                 continue
 
-                            matched_amfi = amfi_lookup.iloc[0]["amfi_scheme_code"]
+                            matched_amfi = (
+                                amfi_lookup.iloc[0]["amfi_scheme_code"]
+                            )
                             update_best_match(
                                 df, idx, matched_amfi, "NAV_MATCH", 97
                             )
 
-    # Fix 3: Diagnostic — Rule 3.5 contribution
+    # Diagnostic — Rule 3.5 contribution
     rule35_matched = df["best_mapping_source"].eq("NAV_MATCH").sum()
     print(
         f"[DIAG] Rule 3.5 (NAV_MATCH) total matched: {rule35_matched}"
