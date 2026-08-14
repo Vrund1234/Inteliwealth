@@ -133,6 +133,19 @@ def update_best_match(df, idx, amfi_code, source, confidence, force=False):
         ] = confidence
 
 
+def dedupe_mappings(df):
+    """One row per (rta, rta_scheme_code).
+
+    An RTA scheme code is a single share class with a single NAV, so it resolves
+    to exactly one AMFI scheme. bronze.scheme_mapping enforces that with
+    uq_scheme_mapping, and the upsert conflicts on the same two columns.
+    Deduplicating on the code as well would let a merge fan-out reach the insert
+    as two competing rows, where DO UPDATE silently keeps whichever landed last.
+    """
+
+    return df.drop_duplicates(subset=["rta", "rta_scheme_code"], keep="first")
+
+
 def clear_best_match(df, idx):
     """Drop any match already recorded for a row.
 
@@ -385,29 +398,12 @@ def load_scheme_mapping():
     )
 
 
-    # =================================================
-    # IDENTIFY DUPLICATE AMFI NORMALIZED NAMES
-    # =================================================
-
-    amfi_name_counts = (
-        amfi_df[
-            amfi_df["name_norm"].notna()
-        ]
-        .groupby("name_norm")
-        .size()
-        .reset_index(name="amfi_count")
-    )
-
-    duplicate_amfi_names = set(
-        amfi_name_counts[
-            amfi_name_counts["amfi_count"] > 1
-        ]["name_norm"]
-    )
-
-    print(
-        f"AMFI duplicate normalized names found: "
-        f"{len(duplicate_amfi_names)}"
-    )
+    # Names shared by several AMFI schemes used to be counted here to drive a
+    # duplicate-expansion phase, which wrote one mapping row per sharing code.
+    # That contradicted uq_scheme_mapping (one row per rta + rta_scheme_code)
+    # and guessed at confidence 99 where every other rule refuses. The
+    # structured engine already handles the same situation correctly, by
+    # routing the scheme to PENDING_REVIEW with all candidates listed.
 
 
     # =================================================
@@ -945,14 +941,7 @@ def load_scheme_mapping():
         f"Before dedup: {len(df)}"
     )
 
-    df = df.drop_duplicates(
-        subset=[
-            "rta",
-            "rta_scheme_code",
-            "amfi_scheme_code"
-        ],
-        keep="first"
-    )
+    df = dedupe_mappings(df)
 
     print(
         f"After dedup: {len(df)}"
@@ -1074,336 +1063,6 @@ def load_scheme_mapping():
 
 
     # =================================================
-    # DUPLICATE AMFI NAME EXPANSION
-    # =================================================
-
-    print("=" * 80)
-    print("START: DUPLICATE AMFI NAME EXPANSION")
-    print("=" * 80)
-
-
-    # -------------------------------------------------
-    # LOAD EXISTING SCHEME MAPPINGS
-    # -------------------------------------------------
-
-    existing_mapping_query = """
-        SELECT
-            mapping_id,
-            scheme_id,
-            rta,
-            rta_amc_code,
-            rta_scheme_code,
-            rta_scheme_name,
-            normalized_scheme_name,
-            amfi_scheme_code,
-            mapping_source,
-            mapping_confidence
-        FROM bronze.scheme_mapping
-        WHERE normalized_scheme_name IS NOT NULL;
-    """
-
-
-    existing_mapping_df = pd.read_sql(
-        existing_mapping_query,
-        engine
-    )
-
-
-    print(
-        f"Existing scheme mappings loaded: "
-        f"{len(existing_mapping_df)}"
-    )
-
-
-    # -------------------------------------------------
-    # COUNT MAPPINGS PER NORMALIZED NAME
-    # -------------------------------------------------
-
-    mapping_counts = (
-        existing_mapping_df
-        .groupby(
-            "normalized_scheme_name"
-        )
-        .size()
-        .reset_index(
-            name="mapping_count"
-        )
-    )
-
-
-    # -------------------------------------------------
-    # FIND TARGET NAMES
-    #
-    # AMFI count > 1
-    # AND
-    # scheme_mapping count == 1
-    # -------------------------------------------------
-
-    target_names = (
-        amfi_name_counts
-        .merge(
-            mapping_counts,
-            left_on="name_norm",
-            right_on="normalized_scheme_name",
-            how="inner"
-        )
-    )
-
-
-    target_names = target_names[
-        (
-            target_names["amfi_count"]
-            > 1
-        )
-        &
-        (
-            target_names["mapping_count"]
-            == 1
-        )
-    ]
-
-
-    print(
-        "Names requiring duplicate expansion: "
-        f"{len(target_names)}"
-    )
-
-
-    # -------------------------------------------------
-    # NO TARGETS
-    # -------------------------------------------------
-
-    if target_names.empty:
-
-        print(
-            "No duplicate AMFI mappings "
-            "require expansion."
-        )
-
-    else:
-
-        target_name_list = (
-            target_names[
-                "name_norm"
-            ]
-            .tolist()
-        )
-
-
-        # ---------------------------------------------
-        # GET SOURCE MAPPING
-        # ---------------------------------------------
-
-        source_mappings = (
-            existing_mapping_df[
-                existing_mapping_df[
-                    "normalized_scheme_name"
-                ].isin(
-                    target_name_list
-                )
-            ]
-            .copy()
-        )
-
-
-        # ---------------------------------------------
-        # GET ALL AMFI RECORDS
-        # ---------------------------------------------
-
-        duplicate_amfi_df = (
-            amfi_df[
-                amfi_df["name_norm"].isin(
-                    target_name_list
-                )
-            ]
-            .copy()
-        )
-
-
-        print(
-            "AMFI records to expand: "
-            f"{len(duplicate_amfi_df)}"
-        )
-
-
-        # ---------------------------------------------
-        # CREATE EXPANDED ROWS
-        # ---------------------------------------------
-
-        expanded_rows = []
-
-
-        for _, mapping in (
-            source_mappings.iterrows()
-        ):
-
-            matching_amfi = (
-                duplicate_amfi_df[
-                    duplicate_amfi_df[
-                        "name_norm"
-                    ]
-                    ==
-                    mapping[
-                        "normalized_scheme_name"
-                    ]
-                ]
-            )
-
-
-            for _, amfi in (
-                matching_amfi.iterrows()
-            ):
-
-                expanded_rows.append({
-
-                    "mapping_id": str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_DNS,
-                            (
-                                f"{mapping['rta']}|"
-                                f"{mapping['rta_scheme_code']}|"
-                                f"{amfi['amfi_scheme_code']}"
-                            )
-                        )
-                    ),
-
-                    "scheme_id": derive_scheme_id(
-                        amfi["amc_code"],
-                        amfi["amfi_scheme_code"],
-                    ),
-
-                    "rta": mapping["rta"],
-
-                    "rta_amc_code": (
-                        mapping[
-                            "rta_amc_code"
-                        ]
-                    ),
-
-                    "rta_scheme_code": (
-                        mapping[
-                            "rta_scheme_code"
-                        ]
-                    ),
-
-                    "rta_scheme_name": (
-                        mapping[
-                            "rta_scheme_name"
-                        ]
-                    ),
-
-                    "normalized_scheme_name": (
-                        mapping[
-                            "normalized_scheme_name"
-                        ]
-                    ),
-
-                    "amfi_scheme_code": (
-                        amfi[
-                            "amfi_scheme_code"
-                        ]
-                    ),
-
-                    "mapping_source": (
-                        "NAME_EXACT"
-                    ),
-
-                    # Ambiguous by name,
-                    # therefore no confidence.
-                    "mapping_confidence": 99
-                })
-
-
-        expanded_df = pd.DataFrame(
-            expanded_rows
-        )
-
-
-        # ---------------------------------------------
-        # INSERT EXPANDED MAPPINGS
-        # ---------------------------------------------
-
-        if not expanded_df.empty:
-
-            print(
-                "Duplicate mapping rows generated: "
-                f"{len(expanded_df)}"
-            )
-
-
-            expanded_df = (
-                expanded_df.where(
-                    pd.notna(
-                        expanded_df
-                    ),
-                    None
-                )
-            )
-
-
-            insert_duplicate_query = text("""
-                INSERT INTO bronze.scheme_mapping (
-                    mapping_id,
-                    scheme_id,
-                    rta,
-                    rta_amc_code,
-                    rta_scheme_code,
-                    rta_scheme_name,
-                    normalized_scheme_name,
-                    amfi_scheme_code,
-                    mapping_source,
-                    mapping_confidence
-                )
-                VALUES (
-                    :mapping_id,
-                    :scheme_id,
-                    :rta,
-                    :rta_amc_code,
-                    :rta_scheme_code,
-                    :rta_scheme_name,
-                    :normalized_scheme_name,
-                    :amfi_scheme_code,
-                    :mapping_source,
-                    :mapping_confidence
-                )
-                ON CONFLICT (
-                    rta,
-                    rta_scheme_code,
-                    amfi_scheme_code
-                )
-                DO UPDATE SET
-                    scheme_id = EXCLUDED.scheme_id,
-                    mapping_source =
-                        EXCLUDED.mapping_source,
-                    mapping_confidence =
-                        EXCLUDED.mapping_confidence;
-            """)
-
-
-            with engine.begin() as conn:
-
-                conn.execute(
-                    insert_duplicate_query,
-                    expanded_df.to_dict(
-                        orient="records"
-                    )
-                )
-
-
-            print(
-                "DONE: Duplicate AMFI "
-                "Name Expansion"
-            )
-
-
-        else:
-
-            print(
-                "No duplicate rows generated."
-            )
-
-
-    # =================================================
     # FINAL SUMMARY
     # =================================================
 
@@ -1417,10 +1076,6 @@ def load_scheme_mapping():
 
     print(
         "Normal matching rules completed."
-    )
-
-    print(
-        "Duplicate AMFI name expansion completed."
     )
 
 
