@@ -1,8 +1,30 @@
 import pandas as pd
+import traceback
 
 from datetime import datetime, timezone
 
 from utils.db import engine, master_engine
+
+
+# ============================================================
+# SAFE READ
+# ============================================================
+
+def safe_read(query, params=None):
+
+    try:
+
+        return pd.read_sql(
+            query,
+            engine,
+            params=params
+        )
+
+    except Exception as e:
+
+        print("SQL ERROR:", e)
+
+        return pd.DataFrame()
 
 
 # ============================================================
@@ -12,6 +34,7 @@ from utils.db import engine, master_engine
 def get_column(df, column, default=None):
 
     if column in df.columns:
+
         return df[column]
 
     return pd.Series(
@@ -66,12 +89,8 @@ def clean_folio(series):
 # CLEAN SCHEME CODE
 #
 # IMPORTANT:
-# DO NOT TRUNCATE
-# DO NOT SLICE
-# DO NOT USE .str[:N]
-# DO NOT CONVERT TO NUMERIC
-#
-# Only remove surrounding whitespace and normalize case.
+# Do not truncate.
+# Do not convert to numeric.
 # ============================================================
 
 def clean_scheme_code(series):
@@ -110,141 +129,407 @@ def first_valid_value(series):
     ]
 
     if series.empty:
+
         return pd.NA
 
     return series.iloc[0]
 
 
 # ============================================================
-# EXTRACT SIP DATA
+# GET LAST GOLD TIMESTAMP
+#
+# SAME LOGIC AS GOLD.TRANSACTIONS
+#
+# Gold created_at represents the time the previous Gold
+# records were loaded.
+#
+# Silver created_at represents the time Silver records
+# were loaded.
+#
+# Therefore:
+#
+#     Silver created_at > MAX(Gold created_at)
+#
+# is used for incremental processing.
+# ============================================================
+
+def get_last_gold_timestamp():
+
+    print("=" * 80)
+    print("CHECKING LAST GOLD SIP TIMESTAMP")
+    print("=" * 80)
+
+    query = """
+        SELECT
+            MAX(created_at) AS last_created_at
+        FROM gold.sip
+    """
+
+    result = safe_read(query)
+
+    if result.empty:
+
+        print(
+            "Gold SIP table returned no result."
+        )
+
+        return None
+
+    last_created_at = result.iloc[0]["last_created_at"]
+
+    if pd.isna(last_created_at):
+
+        print(
+            "Gold SIP table is empty."
+        )
+
+        return None
+
+    print(
+        "Last Gold SIP created_at:",
+        last_created_at
+    )
+
+    return last_created_at
+
+
+# ============================================================
+# EXTRACT SILVER SIP
+#
+# IMPORTANT:
+#
+# This follows the SAME incremental logic as
+# gold.transactions.
+#
+# FIRST RUN:
+#     Load all Silver SIP rows.
+#
+# SUBSEQUENT RUN:
+#     Load rows where:
+#
+#     silver.created_at > MAX(gold.sip.created_at)
+#
+# IMPORTANT:
+#
+# - No duplicate checking.
+# - No DISTINCT.
+# - No GROUP BY.
+# - No drop_duplicates().
+# - No natural-key comparison.
+# - No Gold/Silver row signature.
+# - NO FLAG UPDATE.
+# - Silver flag is NEVER modified.
 # ============================================================
 
 def extract_sip():
 
     print("=" * 80)
-    print("EXTRACTING DATA FOR GOLD SIP")
+    print("EXTRACTING SILVER SIP")
     print("=" * 80)
 
-    # --------------------------------------------------------
-    # FIND LATEST SILVER BATCH
-    # --------------------------------------------------------
+    # ========================================================
+    # GET LAST GOLD TIMESTAMP
+    # ========================================================
 
-    batch_query = """
-        SELECT
-            MAX(created_at) AS latest_batch
-        FROM silver.sip_master_new
-    """
+    last_gold_timestamp = get_last_gold_timestamp()
 
-    batch_df = pd.read_sql(
-        batch_query,
-        engine
-    )
+    # ========================================================
+    # FIRST RUN
+    #
+    # Gold SIP is empty.
+    # Take all Silver SIP rows.
+    # ========================================================
 
-    if batch_df.empty:
+    if last_gold_timestamp is None:
 
-        print("No Silver SIP data found.")
-
-        return pd.DataFrame()
-
-    latest_batch = batch_df.iloc[0]["latest_batch"]
-
-    if pd.isna(latest_batch):
-
+        print()
         print(
-            "No valid Silver SIP batch timestamp found."
+            "No previous Gold SIP timestamp found."
         )
 
-        return pd.DataFrame()
+        print(
+            "This is treated as the first Gold SIP load."
+        )
 
-    print(
-        "Latest Silver SIP batch:",
-        latest_batch
-    )
+        query = """
+            SELECT
 
-    # --------------------------------------------------------
-    # EXTRACT COMPLETE LATEST BATCH
-    # --------------------------------------------------------
+                source,
+                zone,
+                branch,
+                ter_location,
+                inv_name,
+                pan,
+                folio_no,
+                folio_old,
+                inv_iin,
+                inv_dp_id,
+                inv_client_id,
+                dp_inv_name,
 
-    query = """
-        SELECT
-            source,
-            zone,
-            branch,
-            ter_location,
-            inv_name,
-            pan,
-            folio_no,
-            folio_old,
-            inv_iin,
-            inv_dp_id,
-            inv_client_id,
-            dp_inv_name,
+                scheme_code,
 
-            -- IMPORTANT:
-            -- Keep scheme_code exactly as stored.
-            scheme_code,
+                product_code,
+                scheme_name,
+                plan,
+                sub_arn_code,
+                agent_name,
+                subbroker,
+                euin,
+                aut_trntyp,
+                payment_mode,
+                periodicity,
+                auto_amount,
+                no_of_installments,
+                period_day,
+                reg_date,
+                from_date,
+                to_date,
+                cease_date,
+                pause_from_date,
+                pause_to_date,
+                target_scheme,
+                target_scheme_code,
+                target_scheme_name,
+                target_plan,
+                bank,
+                ac_holder_name,
+                ecs_account_no,
+                ecsno,
+                instrm_no,
+                cheq_micr_no,
+                umrn_code,
+                ac_type,
+                amc_code,
+                user_code,
+                package_name,
+                special_product,
+                subtrxndesc,
+                remarks,
+                top_up_frq,
+                top_up_amt,
+                top_up_perc,
+                status,
+                modify_flag,
+                scheme_folio_number,
+                request_ref_no,
+                ft_sip_regno,
 
-            product_code,
-            scheme_name,
-            plan,
-            sub_arn_code,
-            agent_name,
-            subbroker,
-            euin,
-            aut_trntyp,
-            payment_mode,
-            periodicity,
-            auto_amount,
-            no_of_installments,
-            period_day,
-            reg_date,
-            from_date,
-            to_date,
-            cease_date,
-            pause_from_date,
-            pause_to_date,
-            target_scheme,
-            target_scheme_code,
-            target_scheme_name,
-            target_plan,
-            bank,
-            ac_holder_name,
-            ecs_account_no,
-            ecsno,
-            instrm_no,
-            cheq_micr_no,
-            umrn_code,
-            ac_type,
-            amc_code,
-            user_code,
-            package_name,
-            special_product,
-            subtrxndesc,
-            remarks,
-            top_up_frq,
-            top_up_amt,
-            top_up_perc,
-            status,
-            modify_flag,
-            scheme_folio_number,
-            request_ref_no,
-            ft_sip_regno,
-            created_at,
-            updated_at
-        FROM silver.sip_master_new
-        WHERE created_at = %s
-        ORDER BY created_at
-    """
+                -- IMPORTANT:
+                -- Take scheme_id directly from Silver.
+                scheme_id,
 
-    df = pd.read_sql(
-        query,
-        engine,
-        params=(latest_batch,)
-    )
+                created_at,
+                updated_at,
 
+                -- IMPORTANT:
+                -- Flag is only read.
+                -- It is NEVER updated by this ETL.
+                flag
+
+            FROM silver.sip_master_new
+
+            ORDER BY created_at
+        """
+
+        df = safe_read(query)
+
+    # ========================================================
+    # SUBSEQUENT RUN
+    #
+    # ONLY NEW SILVER ROWS ARE SELECTED.
+    #
+    # Silver flag is NOT involved in updating/processing.
+    #
+    # Silver flag remains exactly as assigned.
+    # ========================================================
+
+    else:
+
+        print()
+        print(
+            "Loading only Silver SIP rows newer than:"
+        )
+
+        print(
+            last_gold_timestamp
+        )
+
+        query = """
+            SELECT
+
+                source,
+                zone,
+                branch,
+                ter_location,
+                inv_name,
+                pan,
+                folio_no,
+                folio_old,
+                inv_iin,
+                inv_dp_id,
+                inv_client_id,
+                dp_inv_name,
+
+                scheme_code,
+
+                product_code,
+                scheme_name,
+                plan,
+                sub_arn_code,
+                agent_name,
+                subbroker,
+                euin,
+                aut_trntyp,
+                payment_mode,
+                periodicity,
+                auto_amount,
+                no_of_installments,
+                period_day,
+                reg_date,
+                from_date,
+                to_date,
+                cease_date,
+                pause_from_date,
+                pause_to_date,
+                target_scheme,
+                target_scheme_code,
+                target_scheme_name,
+                target_plan,
+                bank,
+                ac_holder_name,
+                ecs_account_no,
+                ecsno,
+                instrm_no,
+                cheq_micr_no,
+                umrn_code,
+                ac_type,
+                amc_code,
+                user_code,
+                package_name,
+                special_product,
+                subtrxndesc,
+                remarks,
+                top_up_frq,
+                top_up_amt,
+                top_up_perc,
+                status,
+                modify_flag,
+                scheme_folio_number,
+                request_ref_no,
+                ft_sip_regno,
+
+                -- IMPORTANT:
+                -- Take scheme_id directly from Silver.
+                scheme_id,
+
+                created_at,
+                updated_at,
+
+                -- IMPORTANT:
+                -- Flag is only read.
+                -- It is NEVER updated by this ETL.
+                flag
+
+            FROM silver.sip_master_new
+
+            WHERE created_at > %s
+
+            ORDER BY created_at
+        """
+
+        df = safe_read(
+            query,
+            params=(last_gold_timestamp,)
+        )
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    if df.empty:
+
+        print()
+        print(
+            "No new Silver SIP records found "
+            "after timestamp comparison."
+        )
+
+        return df
+
+    print()
     print(
         "Rows fetched:",
         len(df)
+    )
+
+    print(
+        "Minimum Silver created_at:",
+        df["created_at"].min()
+    )
+
+    print(
+        "Maximum Silver created_at:",
+        df["created_at"].max()
+    )
+
+    # ========================================================
+    # FLAG CHECK
+    #
+    # We only inspect the flag.
+    #
+    # NOTHING IS UPDATED.
+    # ========================================================
+
+    if "flag" in df.columns:
+
+        print()
+        print(
+            "Silver flag values in extracted rows:"
+        )
+
+        print(
+            df["flag"]
+            .value_counts(dropna=False)
+        )
+
+        print(
+            "IMPORTANT: Silver flag is NOT modified."
+        )
+
+    # ========================================================
+    # SCHEME ID CHECK
+    # ========================================================
+
+    print()
+    print("=" * 80)
+    print("SILVER SCHEME ID CHECK")
+    print("=" * 80)
+
+    print(
+        "Scheme ID datatype:",
+        df["scheme_id"].dtype
+    )
+
+    print(
+        "Scheme IDs present:",
+        df["scheme_id"].notna().sum()
+    )
+
+    print(
+        "Scheme IDs missing:",
+        df["scheme_id"].isna().sum()
+    )
+
+    print(
+        "Sample Silver scheme IDs:"
+    )
+
+    print(
+        df["scheme_id"]
+        .dropna()
+        .head(20)
+        .tolist()
     )
 
     return df
@@ -260,7 +545,10 @@ def transform_sip(df):
     print("TRANSFORMING GOLD SIP")
     print("=" * 80)
 
-    if not isinstance(df, pd.DataFrame):
+    if not isinstance(
+        df,
+        pd.DataFrame
+    ):
 
         raise TypeError(
             f"transform_sip expected DataFrame, "
@@ -314,20 +602,6 @@ def transform_sip(df):
 
     # ========================================================
     # CLEAN SCHEME CODE
-    #
-    # THIS IS THE ONLY SCHEME CODE USED FOR GOLD.SIP.
-    #
-    # Example:
-    #
-    # MCOD
-    # PRED
-    # HAARGR
-    # HACGPG
-    # HAFRDM
-    # HAFRDQ
-    # HBFD
-    #
-    # None of these values are truncated.
     # ========================================================
 
     df["scheme_code_clean"] = clean_scheme_code(
@@ -377,7 +651,7 @@ def transform_sip(df):
     gold_df["folio_number"] = df["folio_clean"]
 
     # ========================================================
-    # GOLD SCHEME CODE
+    # SCHEME CODE
     # ========================================================
 
     gold_df["scheme_code"] = (
@@ -397,7 +671,13 @@ def transform_sip(df):
         .str.strip()
     )
 
-    gold_df["amc_code"] = df["amc_code_clean"]
+    # ========================================================
+    # AMC CODE
+    # ========================================================
+
+    gold_df["amc_code"] = (
+        df["amc_code_clean"]
+    )
 
     # ========================================================
     # ISIN
@@ -546,271 +826,66 @@ def transform_sip(df):
     # ========================================================
     # SCHEME ID
     #
-    # REQUIRED LOGIC:
+    # IMPORTANT:
     #
-    # gold.sip.scheme_code
+    # Take scheme_id DIRECTLY from the Silver row.
     #
-    #       =
+    # There is NO:
     #
-    # silver.sip_master_new.scheme_code
-    #
-    #       ↓
+    # - scheme_code lookup
+    # - Gold scheme lookup
+    # - separate Silver scheme lookup
+    # - UUID generation
+    # - duplicate resolution
     #
     # silver.sip_master_new.scheme_id
-    #
-    # IMPORTANT:
-    # product_code IS NOT USED.
-    # gold.scheme IS NOT USED.
+    #              ↓
+    #       gold.sip.scheme_id
     # ========================================================
 
     print()
     print("=" * 80)
-    print("MAPPING SCHEME IDs")
+    print("MAPPING SCHEME ID FROM SILVER")
     print("=" * 80)
-
-    print(
-        "Gold SIP rows:",
-        len(gold_df)
-    )
-
-    print(
-        "Gold SIP scheme_code non-null:",
-        gold_df["scheme_code"].notna().sum()
-    )
-
-    # --------------------------------------------------------
-    # LOAD scheme_code + scheme_id FROM SILVER
-    # --------------------------------------------------------
-
-    silver_scheme = pd.read_sql(
-        """
-        SELECT
-            scheme_code,
-            scheme_id
-        FROM silver.sip_master_new
-        WHERE scheme_code IS NOT NULL
-        """,
-        engine
-    )
-
-    print(
-        "Silver rows with scheme_code:",
-        len(silver_scheme)
-    )
-
-    # --------------------------------------------------------
-    # CLEAN SILVER SCHEME CODE
-    #
-    # ONLY strip + uppercase.
-    # NO TRUNCATION.
-    # --------------------------------------------------------
-
-    silver_scheme["scheme_code_clean"] = (
-        clean_scheme_code(
-            silver_scheme["scheme_code"]
-        )
-    )
-
-    # --------------------------------------------------------
-    # KEEP scheme_id AS STRING
-    # --------------------------------------------------------
-
-    silver_scheme["scheme_id_clean"] = (
-        silver_scheme["scheme_id"]
-        .astype("string")
-        .str.strip()
-    )
-
-    # --------------------------------------------------------
-    # REMOVE ONLY INVALID MAPPING ENTRIES
-    #
-    # THIS DOES NOT REMOVE GOLD SIP ROWS.
-    # --------------------------------------------------------
-
-    silver_scheme = silver_scheme[
-        silver_scheme["scheme_code_clean"].notna()
-        &
-        silver_scheme["scheme_code_clean"].ne("")
-        &
-        silver_scheme["scheme_code_clean"].ne("<NA>")
-    ].copy()
-
-    # --------------------------------------------------------
-    # SHOW THE EXACT CODES USER MENTIONED
-    # --------------------------------------------------------
-
-    debug_codes = [
-        "MCOD",
-        "PRED",
-        "HAARGR",
-        "HACGPG",
-        "HAFRDM",
-        "HAFRDQ",
-        "HBFD"
-    ]
-
-    print()
-    print("Checking important scheme codes in Silver:")
-
-    for code in debug_codes:
-
-        matches = silver_scheme[
-            silver_scheme["scheme_code_clean"] == code
-        ]
-
-        if matches.empty:
-
-            print(
-                f"  {code} -> NOT FOUND"
-            )
-
-        else:
-
-            print(
-                f"  {code} -> "
-                f"{matches['scheme_id_clean'].tolist()}"
-            )
-
-    # --------------------------------------------------------
-    # HANDLE DUPLICATE SCHEME CODES
-    #
-    # Prefer a non-null scheme_id.
-    # --------------------------------------------------------
-
-    silver_scheme["_has_scheme_id"] = (
-        silver_scheme["scheme_id_clean"].notna()
-        &
-        silver_scheme["scheme_id_clean"].ne("")
-        &
-        silver_scheme["scheme_id_clean"].ne("<NA>")
-    )
-
-    silver_scheme = (
-        silver_scheme
-        .sort_values(
-            by=[
-                "scheme_code_clean",
-                "_has_scheme_id"
-            ],
-            ascending=[
-                True,
-                False
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "scheme_code_clean"
-            ],
-            keep="first"
-        )
-        .copy()
-    )
-
-    # --------------------------------------------------------
-    # CREATE LOOKUP
-    #
-    # scheme_code -> scheme_id
-    # --------------------------------------------------------
-
-    scheme_id_lookup = dict(
-        zip(
-            silver_scheme["scheme_code_clean"],
-            silver_scheme["scheme_id_clean"]
-        )
-    )
-
-    # --------------------------------------------------------
-    # MAP SCHEME ID
-    #
-    # IMPORTANT:
-    # .map() NEVER DROPS ROWS.
-    # If there is no match, scheme_id becomes NULL.
-    # --------------------------------------------------------
 
     gold_df["scheme_id"] = (
-        gold_df["scheme_code"]
-        .map(scheme_id_lookup)
+        get_column(
+            df,
+            "scheme_id"
+        )
         .astype("string")
+        .str.strip()
+        .replace(
+            "",
+            pd.NA
+        )
     )
 
-    # ========================================================
-    # SCHEME MAPPING VALIDATION
-    # ========================================================
+    print(
+        "Silver scheme_id rows:",
+        df["scheme_id"].notna().sum()
+    )
 
-    mapped_scheme_count = int(
+    print(
+        "Gold scheme_id rows:",
         gold_df["scheme_id"].notna().sum()
     )
 
-    missing_scheme_count = int(
+    print(
+        "Missing Gold scheme_id:",
         gold_df["scheme_id"].isna().sum()
     )
 
-    print()
     print(
-        "Mapped Scheme IDs:",
-        mapped_scheme_count
+        "Sample Gold scheme IDs:"
     )
 
     print(
-        "Missing Scheme IDs:",
-        missing_scheme_count
+        gold_df["scheme_id"]
+        .dropna()
+        .head(20)
+        .tolist()
     )
-
-    # --------------------------------------------------------
-    # VERIFY IMPORTANT CODES AFTER MAPPING
-    # --------------------------------------------------------
-
-    print()
-    print("Gold scheme_code -> scheme_id mapping:")
-
-    for code in debug_codes:
-
-        matched_rows = gold_df[
-            gold_df["scheme_code"] == code
-        ]
-
-        if matched_rows.empty:
-
-            print(
-                f"  {code} -> no Gold SIP row"
-            )
-
-        else:
-
-            print(
-                f"  {code} -> "
-                f"{matched_rows['scheme_id'].drop_duplicates().tolist()}"
-            )
-
-    # --------------------------------------------------------
-    # SHOW UNMATCHED CODES
-    #
-    # ONLY FOR DEBUGGING.
-    # NO ROWS ARE DROPPED.
-    # --------------------------------------------------------
-
-    if missing_scheme_count > 0:
-
-        unmatched_codes = (
-            gold_df.loc[
-                gold_df["scheme_id"].isna(),
-                "scheme_code"
-            ]
-            .dropna()
-            .astype("string")
-            .drop_duplicates()
-            .tolist()
-        )
-
-        print()
-        print(
-            "Unmatched scheme codes:",
-            len(unmatched_codes)
-        )
-
-        print(
-            unmatched_codes[:50]
-        )
 
     # ========================================================
     # AMC ID
@@ -821,49 +896,35 @@ def transform_sip(df):
         "Loading AMC mapping..."
     )
 
-    amc_master = pd.read_sql(
+    amc_master = safe_read(
         """
         SELECT
             id,
             amc_code
         FROM public.amc
         WHERE amc_code IS NOT NULL
-        """,
-        master_engine
+        """
     )
 
-    amc_master["amc_code_clean"] = (
-        amc_master["amc_code"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
+    if not amc_master.empty:
 
-    amc_master = (
-        amc_master[
-            [
-                "id",
-                "amc_code_clean"
-            ]
-        ]
-        .dropna(
-            subset=[
-                "amc_code_clean"
-            ]
+        amc_master["amc_code_clean"] = (
+            amc_master["amc_code"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
         )
-        .drop_duplicates(
-            subset=[
-                "amc_code_clean"
-            ]
-        )
-    )
 
-    amc_lookup = dict(
-        zip(
-            amc_master["amc_code_clean"],
-            amc_master["id"]
+        amc_lookup = dict(
+            zip(
+                amc_master["amc_code_clean"],
+                amc_master["id"]
+            )
         )
-    )
+
+    else:
+
+        amc_lookup = {}
 
     gold_df["amc_id"] = (
         df["amc_code_clean"]
@@ -878,46 +939,32 @@ def transform_sip(df):
         "Loading client mapping..."
     )
 
-    clients = pd.read_sql(
+    clients = safe_read(
         """
         SELECT
             user_id,
             pan
         FROM gold.clients
         WHERE pan IS NOT NULL
-        """,
-        engine
+        """
     )
 
-    clients["pan_clean"] = clean_pan(
-        clients["pan"]
-    )
+    if not clients.empty:
 
-    clients = (
-        clients[
-            [
-                "user_id",
-                "pan_clean"
-            ]
-        ]
-        .dropna(
-            subset=[
-                "pan_clean"
-            ]
+        clients["pan_clean"] = clean_pan(
+            clients["pan"]
         )
-        .drop_duplicates(
-            subset=[
-                "pan_clean"
-            ]
-        )
-    )
 
-    client_lookup = dict(
-        zip(
-            clients["pan_clean"],
-            clients["user_id"]
+        client_lookup = dict(
+            zip(
+                clients["pan_clean"],
+                clients["user_id"]
+            )
         )
-    )
+
+    else:
+
+        client_lookup = {}
 
     gold_df["client_id"] = (
         df["pan_clean"]
@@ -975,7 +1022,18 @@ def transform_sip(df):
     )
 
     # ========================================================
-    # TRANSACTIONS
+    # LOAD TRANSACTION DATA
+    #
+    # IMPORTANT:
+    #
+    # This is only used to derive:
+    #
+    # - ARN
+    # - Sub ARN
+    # - completed installments
+    # - bounced installments
+    #
+    # It does NOT affect SIP row selection.
     # ========================================================
 
     print()
@@ -983,7 +1041,7 @@ def transform_sip(df):
         "Loading transaction data..."
     )
 
-    transactions = pd.read_sql(
+    transactions = safe_read(
         """
         SELECT
             source,
@@ -1000,9 +1058,12 @@ def transform_sip(df):
             brokcode,
             src_brk_code
         FROM silver.transaction_master_new
-        """,
-        engine
+        """
     )
+
+    # ========================================================
+    # DEFAULT VALUES
+    # ========================================================
 
     gold_df["completed_installments"] = 0
 
@@ -1066,9 +1127,9 @@ def transform_sip(df):
             )
         )
 
-        # ----------------------------------------------------
-        # ARN / SUB ARN
-        # ----------------------------------------------------
+        # ====================================================
+        # ARN / SUB ARN MAPPING
+        # ====================================================
 
         arn_mapping = (
             transactions
@@ -1109,6 +1170,7 @@ def transform_sip(df):
         )
 
         gold_df["arn"] = [
+
             arn_lookup.loc[
                 (
                     df.loc[idx, "rta_clean"],
@@ -1116,15 +1178,19 @@ def transform_sip(df):
                 ),
                 "arn"
             ]
+
             if (
                 df.loc[idx, "rta_clean"],
                 df.loc[idx, "folio_clean"]
             ) in arn_lookup.index
+
             else pd.NA
+
             for idx in df.index
         ]
 
         gold_df["sub_arn"] = [
+
             arn_lookup.loc[
                 (
                     df.loc[idx, "rta_clean"],
@@ -1132,11 +1198,14 @@ def transform_sip(df):
                 ),
                 "sub_arn"
             ]
+
             if (
                 df.loc[idx, "rta_clean"],
                 df.loc[idx, "folio_clean"]
             ) in arn_lookup.index
+
             else pd.NA
+
             for idx in df.index
         ]
 
@@ -1164,50 +1233,55 @@ def transform_sip(df):
             gold_df["sub_arn"].notna().sum()
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # TRANSACTION TEXT
-        # ----------------------------------------------------
+        # ====================================================
 
         transaction_text = (
             transactions["trxntype"]
             .fillna("")
             .astype("string")
             .str.upper()
+
             + " "
-            +
-            transactions["trxnstat"]
+
+            + transactions["trxnstat"]
             .fillna("")
             .astype("string")
             .str.upper()
+
             + " "
-            +
-            transactions["trxnmode"]
+
+            + transactions["trxnmode"]
             .fillna("")
             .astype("string")
             .str.upper()
+
             + " "
-            +
-            transactions["trxnsubtyp"]
+
+            + transactions["trxnsubtyp"]
             .fillna("")
             .astype("string")
             .str.upper()
+
             + " "
-            +
-            transactions["trxn_nature"]
+
+            + transactions["trxn_nature"]
             .fillna("")
             .astype("string")
             .str.upper()
+
             + " "
-            +
-            transactions["remarks"]
+
+            + transactions["remarks"]
             .fillna("")
             .astype("string")
             .str.upper()
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # SIP TRANSACTION IDENTIFICATION
-        # ----------------------------------------------------
+        # ====================================================
 
         sip_number_mask = (
             transactions["siptrxnno"]
@@ -1246,9 +1320,9 @@ def transform_sip(df):
             sip_text_mask
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # BOUNCED / FAILED / REJECTED
-        # ----------------------------------------------------
+        # ====================================================
 
         bounced_mask = (
             transaction_text
@@ -1259,9 +1333,9 @@ def transform_sip(df):
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # COMPLETED
-        # ----------------------------------------------------
+        # ====================================================
 
         completed_mask = (
             sip_mask
@@ -1269,9 +1343,9 @@ def transform_sip(df):
             ~bounced_mask
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # COMPLETED LOOKUP
-        # ----------------------------------------------------
+        # ====================================================
 
         completed = (
             transactions.loc[
@@ -1299,12 +1373,14 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )["completed_installments"]
+            )[
+                "completed_installments"
+            ]
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # BOUNCED LOOKUP
-        # ----------------------------------------------------
+        # ====================================================
 
         bounced = (
             transactions.loc[
@@ -1332,14 +1408,17 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )["bounced_installments"]
+            )[
+                "bounced_installments"
+            ]
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # APPLY COMPLETED COUNTS
-        # ----------------------------------------------------
+        # ====================================================
 
         gold_df["completed_installments"] = [
+
             completed_lookup.get(
                 (
                     df.loc[idx, "rta_clean"],
@@ -1348,14 +1427,16 @@ def transform_sip(df):
                 ),
                 0
             )
+
             for idx in df.index
         ]
 
-        # ----------------------------------------------------
+        # ====================================================
         # APPLY BOUNCED COUNTS
-        # ----------------------------------------------------
+        # ====================================================
 
         gold_df["bounced_installments"] = [
+
             bounced_lookup.get(
                 (
                     df.loc[idx, "rta_clean"],
@@ -1364,6 +1445,7 @@ def transform_sip(df):
                 ),
                 0
             )
+
             for idx in df.index
         ]
 
@@ -1431,49 +1513,35 @@ def transform_sip(df):
         "Loading ARN mapping..."
     )
 
-    arn_master = pd.read_sql(
+    arn_master = safe_read(
         """
         SELECT
             id,
             arn_code
         FROM public.arn
         WHERE arn_code IS NOT NULL
-        """,
-        master_engine
+        """
     )
 
-    arn_master["arn_code_clean"] = (
-        arn_master["arn_code"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
+    if not arn_master.empty:
 
-    arn_master = (
-        arn_master[
-            [
-                "id",
-                "arn_code_clean"
-            ]
-        ]
-        .dropna(
-            subset=[
-                "arn_code_clean"
-            ]
+        arn_master["arn_code_clean"] = (
+            arn_master["arn_code"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
         )
-        .drop_duplicates(
-            subset=[
-                "arn_code_clean"
-            ]
-        )
-    )
 
-    arn_lookup = dict(
-        zip(
-            arn_master["arn_code_clean"],
-            arn_master["id"]
+        arn_lookup = dict(
+            zip(
+                arn_master["arn_code_clean"],
+                arn_master["id"]
+            )
         )
-    )
+
+    else:
+
+        arn_lookup = {}
 
     gold_df["arn_id"] = (
         df["arn_code_clean"]
@@ -1551,13 +1619,21 @@ def transform_sip(df):
 
     # ========================================================
     # GOLD CREATED AT
+    #
+    # IMPORTANT:
+    #
+    # This is the Gold LOAD timestamp.
+    #
+    # It is NOT copied from Silver.
     # ========================================================
 
     gold_load_timestamp = datetime.now(
         timezone.utc
     )
 
-    gold_df["created_at"] = gold_load_timestamp
+    gold_df["created_at"] = (
+        gold_load_timestamp
+    )
 
     # ========================================================
     # FINAL COLUMN ORDER
@@ -1603,6 +1679,8 @@ def transform_sip(df):
 
     # ========================================================
     # CRITICAL ROW COUNT CHECK
+    #
+    # No transformation is allowed to remove rows.
     # ========================================================
 
     final_row_count = len(gold_df)
@@ -1709,10 +1787,7 @@ def get_gold_sip_column_limits():
         ORDER BY ordinal_position
     """
 
-    return pd.read_sql(
-        query,
-        engine
-    )
+    return safe_read(query)
 
 
 # ============================================================
@@ -1728,6 +1803,16 @@ def validate_string_lengths(gold_df):
 
     schema_df = get_gold_sip_column_limits()
 
+    if schema_df.empty:
+
+        print(
+            "Could not read Gold SIP schema."
+        )
+
+        raise ValueError(
+            "Unable to validate Gold SIP column lengths."
+        )
+
     varchar_columns = schema_df[
         schema_df["character_maximum_length"].notna()
     ].copy()
@@ -1739,6 +1824,7 @@ def validate_string_lengths(gold_df):
         column = row["column_name"]
 
         if column not in gold_df.columns:
+
             continue
 
         limit = int(
@@ -1825,6 +1911,15 @@ def validate_string_lengths(gold_df):
 
 # ============================================================
 # LOAD GOLD.SIP
+#
+# IMPORTANT:
+#
+# NO DUPLICATE COMPARISON.
+# NO EXISTING GOLD QUERY.
+# NO DROP DUPLICATES.
+#
+# Every row received from transform_sip()
+# is inserted.
 # ============================================================
 
 def load_sip(gold_df):
@@ -1917,10 +2012,15 @@ def load_sip(gold_df):
     ].copy()
 
     # ========================================================
-    # KEEP ROW COUNT
+    # ROW COUNT BEFORE LOAD
     # ========================================================
 
-    rows_before_load_processing = len(gold_df)
+    rows_to_insert = len(gold_df)
+
+    print(
+        "Rows to insert:",
+        rows_to_insert
+    )
 
     # ========================================================
     # VALIDATE STRING LENGTHS
@@ -1931,223 +2031,31 @@ def load_sip(gold_df):
     )
 
     # ========================================================
-    # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
+    # DUPLICATE LOGIC
     #
-    # NOTE:
-    # This removes only exact duplicate records.
-    # It does NOT remove rows because scheme_id is NULL.
+    # DISABLED COMPLETELY.
     # ========================================================
 
-    compare_columns = [
-        col
-        for col in gold_columns
-        if col != "created_at"
-    ]
-
-    before_batch_dedup = len(gold_df)
-
-    gold_df = (
-        gold_df
-        .drop_duplicates(
-            subset=compare_columns,
-            keep="first"
-        )
-        .copy()
-    )
-
-    removed_batch_duplicates = (
-        before_batch_dedup
-        - len(gold_df)
+    print()
+    print(
+        "Duplicate filtering: DISABLED"
     )
 
     print(
-        "Exact duplicate rows inside current batch removed:",
-        removed_batch_duplicates
+        "Existing Gold comparison: DISABLED"
     )
 
     print(
-        "Rows after batch deduplication:",
-        len(gold_df)
-    )
-
-    # ========================================================
-    # IMPORTANT ROW LOSS CHECK
-    # ========================================================
-    #
-    # If your source has duplicate rows, exact duplicate
-    # removal can reduce the count. This is intentional.
-    #
-    # But scheme mapping itself must NEVER reduce the count.
-    # ========================================================
-
-    # ========================================================
-    # LOAD EXISTING GOLD SIP DATA
-    # ========================================================
-
-    print(
-        "Checking existing Gold SIP records..."
-    )
-
-    existing_query = """
-
-        SELECT
-
-            rta,
-            sip_reg_no,
-            folio_number,
-            scheme_code,
-            scheme_name,
-            amc_code,
-            isin,
-            amount,
-            frequency,
-            start_date,
-            end_date,
-            next_due_date,
-            sip_day,
-            mandate_id,
-            status,
-            registered_date,
-            ceased_date,
-            scheme_id,
-            amc_id,
-            client_id,
-            sip_type,
-            registered_installments,
-            completed_installments,
-            bounced_installments,
-            ceased_reason,
-            arn_id,
-            arn,
-            sub_arn
-
-        FROM gold.sip
-
-    """
-
-    existing = pd.read_sql(
-        existing_query,
-        engine
+        "Row signature comparison: DISABLED"
     )
 
     print(
-        "Existing Gold SIP rows:",
-        len(existing)
+        "Timestamp-based incremental loading: ENABLED"
     )
-
-    # ========================================================
-    # NORMALIZE VALUES FOR COMPARISON
-    # ========================================================
-
-    def normalize_for_compare(dataframe):
-
-        result = dataframe.copy()
-
-        for column in result.columns:
-
-            if (
-                pd.api.types.is_object_dtype(
-                    result[column]
-                )
-                or
-                pd.api.types.is_string_dtype(
-                    result[column]
-                )
-            ):
-
-                result[column] = (
-                    result[column]
-                    .astype("string")
-                    .str.strip()
-                    .str.upper()
-                )
-
-        return result
-
-    new_compare = normalize_for_compare(
-        gold_df[compare_columns]
-    )
-
-    if not existing.empty:
-
-        existing_compare = normalize_for_compare(
-            existing[compare_columns]
-        )
-
-        # ----------------------------------------------------
-        # CREATE ROW SIGNATURE
-        # ----------------------------------------------------
-
-        new_signature = (
-            new_compare
-            .fillna("<NULL>")
-            .astype("string")
-            .agg(
-                "||".join,
-                axis=1
-            )
-        )
-
-        existing_signature = (
-            existing_compare
-            .fillna("<NULL>")
-            .astype("string")
-            .agg(
-                "||".join,
-                axis=1
-            )
-        )
-
-        existing_signatures = set(
-            existing_signature
-        )
-
-        already_exists_mask = (
-            new_signature.isin(
-                existing_signatures
-            )
-        )
-
-        already_exists_count = int(
-            already_exists_mask.sum()
-        )
-
-        print(
-            "Rows already present in Gold:",
-            already_exists_count
-        )
-
-        gold_df = gold_df.loc[
-            ~already_exists_mask
-        ].copy()
-
-    else:
-
-        print(
-            "Gold SIP is currently empty."
-        )
-
-    # ========================================================
-    # FINAL ROWS TO INSERT
-    # ========================================================
 
     print(
-        "Rows to insert:",
-        len(gold_df)
+        "Silver flag update: DISABLED"
     )
-
-    if gold_df.empty:
-
-        print()
-        print(
-            "No new SIP records to insert."
-        )
-
-        print(
-            "Gold SIP is already up to date."
-        )
-
-        return True
 
     # ========================================================
     # CONVERT PANDAS NULLS TO DATABASE NULL
@@ -2182,23 +2090,28 @@ def load_sip(gold_df):
         # VERIFY
         # ====================================================
 
-        verification = pd.read_sql(
+        verification = safe_read(
             """
             SELECT
                 COUNT(*) AS total_rows
             FROM gold.sip
-            """,
-            engine
+            """
         )
 
-        total_rows = int(
-            verification.iloc[0]["total_rows"]
-        )
+        if not verification.empty:
+
+            total_rows = int(
+                verification.iloc[0]["total_rows"]
+            )
+
+        else:
+
+            total_rows = -1
 
         print()
         print(
             "Inserted rows:",
-            len(gold_df)
+            rows_to_insert
         )
 
         print(
@@ -2213,21 +2126,15 @@ def load_sip(gold_df):
 
         return True
 
-    except Exception as e:
+    except Exception:
 
         print()
         print("=" * 80)
         print("GOLD SIP LOAD FAILED")
         print("=" * 80)
 
-        print(
-            "Error type:",
-            type(e).__name__
-        )
-
-        print(
-            "Error:",
-            str(e).splitlines()[0]
+        traceback.print_exc(
+            limit=10
         )
 
         return False
@@ -2266,11 +2173,12 @@ if __name__ == "__main__":
 
             print()
             print(
-                "No Silver SIP batch available."
+                "No new SIP records found."
             )
 
             print(
-                "GOLD SIP ETL STOPPED"
+                "GOLD SIP ETL COMPLETED - "
+                "NOTHING NEW TO LOAD"
             )
 
         else:
@@ -2294,6 +2202,28 @@ if __name__ == "__main__":
                 )
 
             # =================================================
+            # GOLD DATA SAMPLE
+            # =================================================
+
+            print()
+            print("=" * 80)
+            print("GOLD SIP DATA SAMPLE")
+            print("=" * 80)
+
+            print(
+                gold_df[
+                    [
+                        "rta",
+                        "sip_reg_no",
+                        "folio_number",
+                        "scheme_id",
+                        "scheme_code",
+                        "created_at"
+                    ]
+                ].head(20)
+            )
+
+            # =================================================
             # LOAD
             # =================================================
 
@@ -2309,31 +2239,23 @@ if __name__ == "__main__":
 
             if success:
 
-                print(
-                    "=" * 80
-                )
+                print("=" * 80)
 
                 print(
                     "GOLD SIP ETL COMPLETED SUCCESSFULLY"
                 )
 
-                print(
-                    "=" * 80
-                )
+                print("=" * 80)
 
             else:
 
-                print(
-                    "=" * 80
-                )
+                print("=" * 80)
 
                 print(
                     "GOLD SIP ETL FAILED"
                 )
 
-                print(
-                    "=" * 80
-                )
+                print("=" * 80)
 
     except Exception as e:
 
@@ -2355,3 +2277,5 @@ if __name__ == "__main__":
         print(
             "No success message will be printed."
         )
+
+        print("=" * 80)

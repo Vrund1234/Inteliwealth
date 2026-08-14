@@ -8,12 +8,14 @@ from utils.db import engine
 # SAFE READ
 # =====================================================
 
-def safe_read(query):
+def safe_read(query, params=None):
 
     try:
+
         return pd.read_sql(
             query,
-            engine
+            engine,
+            params=params
         )
 
     except Exception as e:
@@ -24,64 +26,60 @@ def safe_read(query):
 
 
 # =====================================================
-# NORMALIZE DATA FOR DUPLICATE CHECK
+# GET LAST GOLD TIMESTAMP
 # =====================================================
 
-def normalize_for_compare(df):
+def get_last_gold_timestamp():
 
-    df = df.copy()
+    print("=" * 80)
+    print("CHECKING LAST GOLD TRANSACTION TIMESTAMP")
+    print("=" * 80)
 
-    df = df.drop(
-        columns=["created_at"],
-        errors="ignore"
+    query = """
+        SELECT
+            MAX(created_at) AS last_created_at
+        FROM gold.transactions
+    """
+
+    result = safe_read(query)
+
+    if result.empty:
+
+        print(
+            "Gold transactions table returned no result."
+        )
+
+        return None
+
+    last_created_at = result.iloc[0]["last_created_at"]
+
+    if pd.isna(last_created_at):
+
+        print(
+            "Gold transactions is empty."
+        )
+
+        return None
+
+    print(
+        "Last Gold created_at:",
+        last_created_at
     )
 
-    for col in df.columns:
-
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce"
-                )
-                .dt.strftime("%Y-%m-%d")
-            )
-
-        else:
-
-            df[col] = (
-                df[col]
-                .astype("string")
-                .str.strip()
-            )
-
-    return df
-
-
-# =====================================================
-# CREATE NATURAL KEY
-# =====================================================
-
-def create_row_key(df):
-
-    df = normalize_for_compare(df)
-
-    return (
-        df[
-            [
-                "rta",
-                "rta_txn_no"
-            ]
-        ]
-        .fillna("")
-        .astype(str)
-        .agg("|".join, axis=1)
-    )
+    return last_created_at
 
 
 # =====================================================
 # EXTRACT SILVER TRANSACTIONS
+#
+# IMPORTANT:
+#
+# ONLY TIMESTAMP COMPARISON IS USED.
+#
+# NO DUPLICATE CHECKING.
+# NO ROW SIGNATURE.
+# NO DROP DUPLICATES.
+# NO NATURAL KEY COMPARISON.
 # =====================================================
 
 def extract_transactions():
@@ -90,65 +88,171 @@ def extract_transactions():
     print("EXTRACTING SILVER TRANSACTIONS")
     print("=" * 80)
 
-    query = """
-        SELECT
-            source,
-            folio_no,
-            prodcode,
+    # -------------------------------------------------
+    # GET LAST GOLD TIMESTAMP
+    # -------------------------------------------------
 
-            -- IMPORTANT:
-            -- Take scheme_id directly from Silver
-            scheme_id,
+    last_gold_timestamp = get_last_gold_timestamp()
 
-            trxntype,
-            trxnno,
-            trxnstat,
-            trxnsubtyp,
-            traddate,
-            postdate,
-            purprice,
-            units,
-            amount,
-            brokcode,
-            src_brk_code,
-            trxn_nature,
-            load,
-            pan,
-            stt,
-            siptrxnno,
-            euin,
-            igst_amount,
-            cgst_amount,
-            sgst_amount,
-            stamp_duty,
-            td_purred,
-            created_at,
-            flag
+    # -------------------------------------------------
+    # FIRST RUN
+    #
+    # If Gold is empty, take all Silver rows.
+    # -------------------------------------------------
 
-        FROM silver.transaction_master_new
+    if last_gold_timestamp is None:
 
-        WHERE flag = 0
-    """
+        print()
+        print(
+            "No previous Gold timestamp found."
+        )
 
-    df = safe_read(query)
+        print(
+            "This is treated as the first Gold load."
+        )
+
+        query = """
+            SELECT
+                source,
+                folio_no,
+                prodcode,
+
+                -- IMPORTANT:
+                -- Take scheme_id directly from Silver.
+                scheme_id,
+
+                trxntype,
+                trxnno,
+                trxnstat,
+                trxnsubtyp,
+                traddate,
+                postdate,
+                purprice,
+                units,
+                amount,
+                brokcode,
+                src_brk_code,
+                trxn_nature,
+                load,
+                pan,
+                stt,
+                siptrxnno,
+                euin,
+                igst_amount,
+                cgst_amount,
+                sgst_amount,
+                stamp_duty,
+                td_purred,
+                created_at,
+                flag
+
+            FROM silver.transaction_master_new
+
+            ORDER BY created_at
+        """
+
+        df = safe_read(query)
+
+    # -------------------------------------------------
+    # SUBSEQUENT RUN
+    #
+    # Only Silver rows newer than the latest Gold
+    # created_at are loaded.
+    # -------------------------------------------------
+
+    else:
+
+        print()
+        print(
+            "Loading only Silver rows newer than:"
+        )
+
+        print(
+            last_gold_timestamp
+        )
+
+        query = """
+            SELECT
+                source,
+                folio_no,
+                prodcode,
+
+                -- IMPORTANT:
+                -- Take scheme_id directly from Silver.
+                scheme_id,
+
+                trxntype,
+                trxnno,
+                trxnstat,
+                trxnsubtyp,
+                traddate,
+                postdate,
+                purprice,
+                units,
+                amount,
+                brokcode,
+                src_brk_code,
+                trxn_nature,
+                load,
+                pan,
+                stt,
+                siptrxnno,
+                euin,
+                igst_amount,
+                cgst_amount,
+                sgst_amount,
+                stamp_duty,
+                td_purred,
+                created_at,
+                flag
+
+            FROM silver.transaction_master_new
+
+            WHERE created_at > %s
+
+            ORDER BY created_at
+        """
+
+        df = safe_read(
+            query,
+            params=(last_gold_timestamp,)
+        )
+
+    # -------------------------------------------------
+    # RESULT
+    # -------------------------------------------------
 
     if df.empty:
 
+        print()
         print(
-            "No unprocessed Silver transactions found."
+            "No new Silver transactions found "
+            "after timestamp comparison."
         )
 
         return df
 
+    print()
     print(
         "Rows fetched:",
         len(df)
     )
 
+    print(
+        "Minimum Silver created_at:",
+        df["created_at"].min()
+    )
+
+    print(
+        "Maximum Silver created_at:",
+        df["created_at"].max()
+    )
+
     # =================================================
-    # CHECK SCHEME ID
+    # SCHEME ID CHECK
     # =================================================
 
+    print()
     print("=" * 80)
     print("SILVER SCHEME ID CHECK")
     print("=" * 80)
@@ -175,7 +279,6 @@ def extract_transactions():
     print(
         df["scheme_id"]
         .dropna()
-        .drop_duplicates()
         .head(20)
         .tolist()
     )
@@ -348,9 +451,14 @@ def transform_transactions(df):
     print("=" * 80)
 
     if df.empty:
+
         return pd.DataFrame()
 
-    gold_df = pd.DataFrame()
+    original_row_count = len(df)
+
+    gold_df = pd.DataFrame(
+        index=df.index
+    )
 
     # =================================================
     # RTA
@@ -455,8 +563,7 @@ def transform_transactions(df):
     gold_df["txn_date"] = (
         pd.to_datetime(
             df["traddate"],
-            errors="coerce",
-            dayfirst=True
+            errors="coerce"
         )
         .dt.date
     )
@@ -464,8 +571,7 @@ def transform_transactions(df):
     gold_df["post_date"] = (
         pd.to_datetime(
             df["postdate"],
-            errors="coerce",
-            dayfirst=True
+            errors="coerce"
         )
         .dt.date
     )
@@ -572,7 +678,7 @@ def transform_transactions(df):
     gold_df["status"] = df["trxnstat"]
 
     # =================================================
-    # CLEAN SOURCE
+    # SOURCE
     # =================================================
 
     source = (
@@ -583,8 +689,10 @@ def transform_transactions(df):
         .str.upper()
     )
 
+    gold_df["source"] = source
+
     # =================================================
-    # CLEAN PRODUCT CODE
+    # SCHEME CODE
     # =================================================
 
     prodcode = (
@@ -600,31 +708,15 @@ def transform_transactions(df):
         .str.upper()
     )
 
-    # =================================================
-    # SCHEME CODE
-    # =================================================
-
     gold_df["scheme_code"] = prodcode
 
     # =================================================
     # SCHEME ID
     #
-    # IMPORTANT:
+    # DIRECTLY FROM SILVER
     #
-    # DO NOT GENERATE UUID
-    # DO NOT LOOK UP AMFI UUID
-    # DO NOT CREATE scheme_code -> UUID mapping
-    #
-    # Directly copy the numeric scheme_id from:
-    #
-    # silver.transaction_master_new.scheme_id
-    #
-    # Example:
-    #
-    # Silver scheme_id = 128114564
-    #
-    # Gold scheme_id = 128114564
-    #
+    # NO LOOKUP
+    # NO UUID GENERATION
     # =================================================
 
     print("=" * 80)
@@ -633,16 +725,13 @@ def transform_transactions(df):
 
     gold_df["scheme_id"] = (
         df["scheme_id"]
-        .fillna("")
-        .astype(str)
+        .astype("string")
         .str.strip()
-        .str.replace(".0", "", regex=False)
+        .replace(
+            "",
+            pd.NA
+        )
     )
-
-    gold_df.loc[
-        gold_df["scheme_id"] == "",
-        "scheme_id"
-    ] = None
 
     print(
         "Silver scheme_id rows:",
@@ -666,7 +755,6 @@ def transform_transactions(df):
     print(
         gold_df["scheme_id"]
         .dropna()
-        .drop_duplicates()
         .head(20)
         .tolist()
     )
@@ -692,12 +780,13 @@ def transform_transactions(df):
 
     gold_df["sip_id"] = None
 
-    gold_df["source"] = source
-
     gold_df["source_file_id"] = None
 
     # =================================================
     # CREATED AT
+    #
+    # IMPORTANT:
+    # Gold created_at represents the load timestamp.
     # =================================================
 
     gold_df["created_at"] = pd.Timestamp.utcnow()
@@ -745,6 +834,10 @@ def transform_transactions(df):
 
     # =================================================
     # REMOVE INVALID
+    #
+    # This is NOT duplicate removal.
+    # Only rows without required transaction identity
+    # are excluded.
     # =================================================
 
     gold_df = gold_df.dropna(
@@ -755,19 +848,7 @@ def transform_transactions(df):
     )
 
     # =================================================
-    # REMOVE BATCH DUPLICATES
-    # =================================================
-
-    gold_df = gold_df.drop_duplicates(
-        subset=[
-            "rta",
-            "rta_txn_no"
-        ],
-        keep="last"
-    )
-
-    # =================================================
-    # STRING LENGTH VALIDATION
+    # STRING LENGTHS
     # =================================================
 
     gold_df["rta"] = (
@@ -842,9 +923,18 @@ def transform_transactions(df):
         .str[:10]
     )
 
+    # =================================================
+    # ROW COUNT
+    # =================================================
+
     print("=" * 80)
     print("TRANSFORM COMPLETE")
     print("=" * 80)
+
+    print(
+        "Input rows:",
+        original_row_count
+    )
 
     print(
         "Rows ready:",
@@ -866,6 +956,12 @@ def transform_transactions(df):
 
 # =====================================================
 # LOAD GOLD TRANSACTIONS
+#
+# IMPORTANT:
+# NO DUPLICATE COMPARISON HERE.
+#
+# Timestamp comparison already happened during
+# extraction from Silver.
 # =====================================================
 
 def load_transactions(gold_df):
@@ -892,7 +988,7 @@ def load_transactions(gold_df):
     )
 
     print(
-        "Sample scheme_id before INSERT:"
+        "Scheme IDs before INSERT:"
     )
 
     print(
@@ -903,70 +999,32 @@ def load_transactions(gold_df):
     )
 
     # =================================================
-    # EXISTING GOLD RECORDS
+    # NO EXISTING GOLD QUERY
+    #
+    # NO DUPLICATE CHECK.
+    # NO NATURAL KEY CHECK.
+    # NO ROW SIGNATURE.
+    # NO DROP DUPLICATES.
+    #
+    # The only incremental logic is:
+    #
+    # silver.created_at > MAX(gold.created_at)
+    #
     # =================================================
 
-    existing = safe_read(
-        """
-        SELECT
-            rta,
-            rta_txn_no,
-            pan,
-            folio_number,
-            txn_type,
-            txn_type_raw,
-            txn_desc,
-            txn_date,
-            post_date,
-            amount,
-            units,
-            nav,
-            load_amount,
-            stt,
-            stamp_duty,
-            gst,
-            arn,
-            sub_arn,
-            euin,
-            sip_ref,
-            status,
-            client_id,
-            amc_id,
-            scheme_id,
-            scheme_code,
-            txn_sub_type,
-            rta_txn_id,
-            arn_id,
-            sip_id,
-            source,
-            source_file_id
-        FROM gold.transactions
-        """
+    print()
+    print(
+        "Duplicate filtering: DISABLED"
     )
 
-    # =================================================
-    # REMOVE EXISTING RECORDS
-    # =================================================
+    print(
+        "Timestamp-based incremental loading: ENABLED"
+    )
 
-    if not existing.empty:
-
-        old_keys = set(
-            create_row_key(existing)
-        )
-
-        new_keys = create_row_key(gold_df)
-
-        gold_df = gold_df.loc[
-            ~new_keys.isin(old_keys)
-        ]
-
-    if gold_df.empty:
-
-        print(
-            "Duplicate transaction records skipped."
-        )
-
-        return True
+    print(
+        "Rows to insert:",
+        len(gold_df)
+    )
 
     # =================================================
     # INSERT
@@ -1018,67 +1076,98 @@ if __name__ == "__main__":
     print("STARTING GOLD TRANSACTION ETL")
     print("=" * 80)
 
-    # =================================================
-    # EXTRACT
-    # =================================================
-
-    df = extract_transactions()
-
-    if df.empty:
-
-        print(
-            "No transaction records found."
-        )
-
-    else:
+    try:
 
         # =================================================
-        # TRANSFORM
+        # EXTRACT
         # =================================================
 
-        gold_df = transform_transactions(
-            df
-        )
+        df = extract_transactions()
 
-        print("=" * 80)
-        print("GOLD DATA SAMPLE")
-        print("=" * 80)
+        if df.empty:
 
-        print(
-            gold_df[
-                [
-                    "rta",
-                    "rta_txn_no",
-                    "scheme_id",
-                    "scheme_code"
-                ]
-            ].head(20)
-        )
-
-        # =================================================
-        # LOAD
-        # =================================================
-
-        status = load_transactions(
-            gold_df
-        )
-
-        # =================================================
-        # FINAL STATUS
-        # =================================================
-
-        print("=" * 80)
-
-        if status:
+            print()
+            print(
+                "No new transaction records found."
+            )
 
             print(
-                "GOLD TRANSACTION ETL COMPLETED SUCCESSFULLY"
+                "GOLD TRANSACTION ETL COMPLETED - "
+                "NOTHING NEW TO LOAD"
             )
 
         else:
 
-            print(
-                "GOLD TRANSACTION ETL FAILED"
+            # =================================================
+            # TRANSFORM
+            # =================================================
+
+            gold_df = transform_transactions(
+                df
             )
+
+            print("=" * 80)
+            print("GOLD DATA SAMPLE")
+            print("=" * 80)
+
+            print(
+                gold_df[
+                    [
+                        "rta",
+                        "rta_txn_no",
+                        "scheme_id",
+                        "scheme_code",
+                        "created_at"
+                    ]
+                ].head(20)
+            )
+
+            # =================================================
+            # LOAD
+            # =================================================
+
+            status = load_transactions(
+                gold_df
+            )
+
+            # =================================================
+            # FINAL STATUS
+            # =================================================
+
+            print("=" * 80)
+
+            if status:
+
+                print(
+                    "GOLD TRANSACTION ETL COMPLETED SUCCESSFULLY"
+                )
+
+            else:
+
+                print(
+                    "GOLD TRANSACTION ETL FAILED"
+                )
+
+            print("=" * 80)
+
+    except Exception as e:
+
+        print("=" * 80)
+        print("GOLD TRANSACTION ETL FAILED")
+        print("=" * 80)
+
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
+            str(e).splitlines()[0]
+        )
+
+        traceback.print_exc(
+            limit=10
+        )
 
         print("=" * 80)
