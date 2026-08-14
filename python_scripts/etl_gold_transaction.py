@@ -98,9 +98,12 @@ def normalize_for_compare(df):
 
 def create_row_key(df):
 
-    df = normalize_for_compare(df)
+    # Only the two key columns are normalized. Normalizing the whole frame first
+    # copied all 29 columns and cast every one to string dtype — on the ~118k
+    # rows of gold.transactions that is what pushed this stage into the OOM
+    # killer, and the other 27 columns were then thrown away.
 
-    return (
+    key_df = normalize_for_compare(
 
         df[
             [
@@ -108,9 +111,17 @@ def create_row_key(df):
                 "rta_txn_no"
             ]
         ]
-        .fillna("")
-        .astype(str)
-        .agg("|".join, axis=1)
+
+    )
+
+    # Vectorized concat, not .agg("|".join, axis=1), which builds a Python
+    # Series per row.
+
+    return (
+
+        key_df["rta"].fillna("").astype(str)
+        + "|"
+        + key_df["rta_txn_no"].fillna("").astype(str)
 
     )
 
@@ -1033,39 +1044,16 @@ def load_transactions(gold_df):
 
     try:
 
+        # Only the natural key is needed here — the duplicate test below is on
+        # (rta, rta_txn_no). Reading all 29 columns of the full table pulled
+        # hundreds of MB of gold.transactions into pandas for nothing.
+
         existing = safe_read(
             """
             SELECT
 
                 rta,
-                rta_txn_no,
-                pan,
-                folio_number,
-                txn_type,
-                txn_type_raw,
-                txn_desc,
-                txn_date,
-                post_date,
-                amount,
-                units,
-                nav,
-                load_amount,
-                stt,
-                stamp_duty,
-                gst,
-                arn,
-                euin,
-                sip_ref,
-                status,
-                client_id,
-                amc_id,
-                scheme_id,
-                txn_sub_type,
-                rta_txn_id,
-                arn_id,
-                sip_id,
-                source,
-                source_file_id
+                rta_txn_no
 
             FROM gold.transactions
             """

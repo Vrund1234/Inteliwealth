@@ -2,6 +2,10 @@ streamlit
 pandas
 numpy
 openpyxl
+# Not needed by the pipeline itself — the inputs are CSV. tests/test_wbr.py reads
+# the provider's own WBR reports in files/gold/ to check the derived output
+# against them, and those are legacy BIFF .xls, which openpyxl cannot open.
+xlrd>=2.0
 sqlalchemy
 psycopg2-binary
 tzdata

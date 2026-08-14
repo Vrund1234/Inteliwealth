@@ -311,6 +311,13 @@ def load_gold():
             )
 
 
+            # The raw silver frame is ~258k rows wide; it is not needed once the
+            # gold frame exists, and holding both through the load is part of
+            # why this stage ran out of memory.
+
+            del transaction_df
+
+
             if not transaction_gold_df.empty:
 
 
@@ -324,6 +331,9 @@ def load_gold():
                 print(
                     "Transactions loaded successfully"
                 )
+
+
+            del transaction_gold_df
 
 
         else:
@@ -370,6 +380,13 @@ def load_gold():
             )
 
 
+            # Same reason as the transactions stage above: this function runs
+            # every gold stage in one scope, so a frame that is not deleted stays
+            # alive until the whole load finishes.
+
+            del holdings_df
+
+
             if not holdings_gold_df.empty:
 
 
@@ -383,6 +400,9 @@ def load_gold():
                 print(
                     "Holdings loaded successfully"
                 )
+
+
+            del holdings_gold_df
 
 
         else:

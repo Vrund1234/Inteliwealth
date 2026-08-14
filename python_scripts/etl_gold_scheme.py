@@ -946,53 +946,53 @@ def load_scheme(gold_df):
         )
 
 
-        compare_df = gold_df.merge(
+        # (rta, scheme_code) is the natural key — the same pair the row's uuid5
+        # id is built from — so a scheme already in gold is skipped rather than
+        # inserted again.
+        #
+        # created_at is deliberately not part of this test. It is stamped with
+        # datetime.now() on every run, so comparing a new created_at against the
+        # stored one is always true, which let every existing scheme through and
+        # into the append-only to_sql below, where it would collide with
+        # scheme_pkey.
 
-            existing_scheme,
+        existing_keys = set(
 
-            on=[
+            zip(
 
-                "rta",
+                existing_scheme["rta"],
 
-                "scheme_code"
-
-            ],
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
+                existing_scheme["scheme_code"]
 
             )
 
         )
 
 
-        compare_df = compare_df[
+        already_loaded = pd.Series(
 
-            compare_df["created_at_old"].isna()
+            [
 
-            |
+                key in existing_keys
 
-            (
+                for key in zip(
 
-                compare_df["created_at_new"]
+                    gold_df["rta"],
 
-                >
+                    gold_df["scheme_code"]
 
-                compare_df["created_at_old"]
+                )
 
-            )
+            ],
 
-        ]
+            index=gold_df.index
+
+        )
 
 
-        gold_df = compare_df[
+        gold_df = gold_df.loc[
 
-            gold_df.columns
+            ~already_loaded
 
         ]
 

@@ -4,10 +4,10 @@ import pandas as pd
 HOST = "localhost"
 PORT = "5432"
 USER = "postgres"
-PASSWORD = "vrund"
+PASSWORD = "postgres"
 
-PROJECT_DATABASE = "inteliwealth_db"
-MASTER_DATABASE = "master_tables_db"
+PROJECT_DATABASE = "master_tables_db"
+MASTER_DATABASE = "inteliwealth_db"
 
 # Project Database
 engine = create_engine(

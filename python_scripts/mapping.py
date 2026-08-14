@@ -732,3 +732,124 @@ SIP_MASTER_MAPPING = {
 #     "demat_flag": "demat_flag",
 #     "kyc_status": "ckyc_no"
 # }
+
+
+# =====================================================
+# CAMS WBR OUTPUT LAYOUTS
+# =====================================================
+#
+# The four reports regenerated out of gold, by export_wbr.py. The gold tables
+# are the source of truth and these files are a projection of them, so the
+# column order here is the contract with whoever consumes the reports: it must
+# match the provider's own file column-for-column, in order.
+#
+# There are four layouts over three tables. WBR36 and WBR36H read the same
+# table and are separated by the report_variant filter, because the two files
+# carry identical columns and share 10 of their 11 product codes.
+#
+#   file_stem     output filename without extension
+#   source_table  table under the gold schema
+#   filter        equality conditions, ANDed. Empty means the whole table
+#   columns       exact output columns, in the provider's order
+
+WBR_OUTPUT_LAYOUTS = {
+
+    "WBR36": {
+        "file_stem": "WBR36-Brokerage summary by scheme",
+        "source_table": "brokerage_by_scheme",
+        "filter": {"report_variant": "STD"},
+        "columns": [
+            "product_code",
+            "product_name",
+            "upfront",
+            "afe",
+            "trailer_fee",
+            "trxn_charges",
+            "clawback",
+            "incentives"
+        ]
+    },
+
+    "WBR36H": {
+        "file_stem": "WBR36H-Brokerage summary by scheme",
+        "source_table": "brokerage_by_scheme",
+        "filter": {"report_variant": "H"},
+        "columns": [
+            "product_code",
+            "product_name",
+            "upfront",
+            "afe",
+            "trailer_fee",
+            "trxn_charges",
+            "clawback",
+            "incentives"
+        ]
+    },
+
+    "WBR56": {
+        "file_stem": "WBR56-KYC status of Investor",
+        "source_table": "investor_kyc_status",
+        "filter": {},
+        "columns": [
+            "brok_dlr_code", "folio", "inv_name", "tax_no", "jname1",
+            "jointpan1", "jname2", "jointpan2", "guardian", "guardian_panno",
+            "address1", "address2", "address3", "city", "pincode",
+            "phone_res", "phone_off", "mobile_no", "email", "location",
+            "state", "fax_res", "fax_off", "fh_kyc", "gu_kyc",
+            "jh1_kyc", "jh2_kyc", "brok_name", "rep_from_date", "rep_to_date",
+            "rep_date", "amc_code", "fh_kyc_desc", "gu_kyc_desc",
+            "jh1_kyc_desc", "jh2_kyc_desc", "fh_g_aadharlink",
+            "jh1_aadharlink", "jh2_aadharlink", "country"
+        ]
+    },
+
+    "WBR68": {
+        "file_stem": "WBR68-Invalid EUIN Report",
+        "source_table": "invalid_euin",
+
+        # No filter. gold.invalid_euin already IS the invalid-EUIN ledger —
+        # etl_gold_wbr.py applies the euin_valid test when deriving it, so
+        # filtering again here would be a second, drifting copy of the same rule.
+        "filter": {},
+
+        "columns": [
+            "amc_code", "arn_code", "appln_no", "folio_no", "inv_name",
+            "inv_pan", "trade_date", "sch_code", "sch_name", "trxn_no",
+            "trxn_type", "trxn_desc", "amount", "subbrokcod", "location",
+            "euin", "euin_valid", "email", "posted_date", "cons_code",
+            "usertxn_no", "alt_folio", "folio", "subbrok_arn", "sys_reg_dt",
+            "reason", "user_code", "sip_regn_date", "auto_trxn_no",
+            "folio_old", "scheme_folio_number"
+        ]
+    }
+}
+
+
+# =====================================================
+# CAMS WBR OUTPUT DATE FORMATS
+# =====================================================
+#
+# How each date column is rendered back into the file. The provider is not
+# consistent: WBR56 delivers rep_from_date and rep_to_date as 01-Jan-2025 but
+# rep_date as 1/1/2025, in the same row. Any column not listed here is written
+# as a number or as text, never date-formatted.
+#
+# "%-m/%-d/%Y" means unpadded month and day. That form is a glibc extension and
+# is not portable, so export_wbr.py renders the padded form and strips the
+# padding rather than relying on strftime to honour it.
+
+WBR_OUTPUT_DATE_FORMATS = {
+
+    "WBR56": {
+        "rep_from_date": "%d-%b-%Y",
+        "rep_to_date": "%d-%b-%Y",
+        "rep_date": "%-m/%-d/%Y"
+    },
+
+    "WBR68": {
+        "trade_date": "%-m/%-d/%Y",
+        "posted_date": "%-m/%-d/%Y",
+        "sys_reg_dt": "%-m/%-d/%Y",
+        "sip_regn_date": "%-m/%-d/%Y"
+    }
+}
