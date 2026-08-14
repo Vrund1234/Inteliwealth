@@ -16,7 +16,13 @@ from scheme_matching.reference import (
     write_audit,
     write_review,
 )
-from scheme_matching.rules import NOT_IN_AMFI, MatchContext, arbitrate, run_all
+from scheme_matching.rules import (
+    AUTHORITATIVE_RULES,
+    NOT_IN_AMFI,
+    MatchContext,
+    arbitrate,
+    run_all,
+)
 from scheme_matching.scheme_key import parse_scheme_key
 
 
@@ -77,6 +83,68 @@ def build_scheme_id_column(df):
         index=df.index,
         dtype=object,
     )
+
+
+def update_best_match(df, idx, amfi_code, source, confidence, force=False):
+    """Record a rule's answer, if it beats whatever is already there.
+
+    The single write-path for every rule, inline and registry alike. Because
+    the guard compares confidence rather than arrival order, a rule that runs
+    later can only displace an earlier one by being strictly more confident.
+
+    `force` exists because a curator's OVERRIDE is authority, not a score.
+    ISIN_MATCH and PRODUCT_MATCH run inline and write 100 before the engine
+    ever proposes OVERRIDE — also 100 — so the strict `>` guard would drop it,
+    silently disabling the one mechanism for correcting a confident-but-wrong
+    automatic match. Raising OVERRIDE's confidence past 100 instead would leak
+    an off-scale number into the stored mapping_confidence.
+    """
+
+    if (
+        amfi_code is None
+        or pd.isna(amfi_code)
+    ):
+        return
+
+    current_confidence = df.at[
+        idx,
+        "best_mapping_confidence"
+    ]
+
+    if (
+        force
+        or pd.isna(current_confidence)
+        or confidence > current_confidence
+    ):
+
+        df.at[
+            idx,
+            "best_amfi_scheme_code"
+        ] = amfi_code
+
+        df.at[
+            idx,
+            "best_mapping_source"
+        ] = source
+
+        df.at[
+            idx,
+            "best_mapping_confidence"
+        ] = confidence
+
+
+def clear_best_match(df, idx):
+    """Drop any match already recorded for a row.
+
+    Used when an override asserts the scheme has no AMFI counterpart at all.
+    Without it a row that an inline rule matched earlier keeps that code and is
+    written with mapping_status='NOT_IN_AMFI' alongside a populated
+    amfi_scheme_code — a contradiction no downstream consumer can resolve.
+    """
+
+    df.at[idx, "best_amfi_scheme_code"] = None
+    df.at[idx, "best_mapping_source"] = None
+    df.at[idx, "best_mapping_confidence"] = None
 
 
 def build_context(df, amfi_df, alias_fn, overrides):
@@ -387,50 +455,6 @@ def load_scheme_mapping():
 
 
     # =================================================
-    # HELPER: UPDATE BEST MATCH
-    # =================================================
-
-    def update_best_match(
-        df,
-        idx,
-        amfi_code,
-        source,
-        confidence
-    ):
-
-        if (
-            amfi_code is None
-            or pd.isna(amfi_code)
-        ):
-            return
-
-        current_confidence = df.at[
-            idx,
-            "best_mapping_confidence"
-        ]
-
-        if (
-            pd.isna(current_confidence)
-            or confidence > current_confidence
-        ):
-
-            df.at[
-                idx,
-                "best_amfi_scheme_code"
-            ] = amfi_code
-
-            df.at[
-                idx,
-                "best_mapping_source"
-            ] = source
-
-            df.at[
-                idx,
-                "best_mapping_confidence"
-            ] = confidence
-
-
-    # =================================================
     # RULE 0 : ISIN MATCH (100)
     # =================================================
 
@@ -528,27 +552,42 @@ def load_scheme_mapping():
     if not unmatched_nav_df.empty:
         rta_codes = tuple(unmatched_nav_df["rta_scheme_code"].dropna().unique())
         if rta_codes:
-            rta_codes_str = (
-                f"('{rta_codes[0]}')" if len(rta_codes) == 1
-                else str(rta_codes)
-            )
-
             # Pull NAV (purprice) from bronze.transaction_master_new.
             # purprice > 0 filters out zero-NAV rows (dividend payouts /
             # placeholders) that would create false fingerprint matches.
-            txn_nav_query = f"""
+            #
+            # Codes are bound, not interpolated: the previous f-string relied on
+            # a Python tuple's repr happening to emit single quotes, needed a
+            # special case for the 1-element tuple repr, and would break on a
+            # prodcode containing an apostrophe. nav_verify.py binds the same
+            # way.
+            # Dividend-reinvestment rows are excluded because they do not price
+            # at the published NAV. Measured over 24,545 observations on
+            # name-exact mappings: purprice equals AMFI's NAV for the same date
+            # 98.3% of the time on reinvest_flag='Z' and 97.5% on NULL, but only
+            # 30.4% on 'Y'; by type, DRED 0.0%, DRY1 0.0%, PSNIL 3.7%, DR1 7.6%.
+            #
+            # Those prices are also stale — CAMS/B44N carries 152 distinct
+            # purprices across 297 dates — so they repeat, and a repeated wrong
+            # price is exactly what can coincide with another fund's NAV and
+            # forge a three-date fingerprint. Redemption types (R1 81.9%, FUL
+            # 89.7%) are left in: they are noisy rather than systematically
+            # wrong, so they cost a match rather than inventing one.
+            txn_nav_query = text("""
                 SELECT source AS rta,
                        prodcode AS rta_scheme_code,
                        traddate::date AS nav_date,
                        purprice::numeric AS nav
                 FROM bronze.transaction_master_new
-                WHERE prodcode IN {rta_codes_str}
+                WHERE prodcode = ANY(:codes)
                   AND purprice IS NOT NULL
                   AND TRIM(purprice) != ''
                   AND purprice::numeric > 0
                   AND traddate IS NOT NULL
-            """
-            rta_nav_df = pd.read_sql(txn_nav_query, engine)
+            """)
+            rta_nav_df = pd.read_sql(
+                txn_nav_query, engine, params={"codes": list(rta_codes)}
+            )
 
             print(
                 f"  RTA NAV rows from bronze.transaction_master_new: "
@@ -602,23 +641,25 @@ def load_scheme_mapping():
                         .loc[valid_rta]
                         .reset_index()
                     )
-                    required_dates = tuple(
-                        top3_navs['nav_date'].astype(str).unique()
-                    )
-                    req_dates_str = (
-                        f"('{required_dates[0]}')" if len(required_dates) == 1
-                        else str(required_dates)
+                    # Real date objects, bound rather than interpolated.
+                    # nav_master.nav_date is a `date` column: comparing it
+                    # against text raises UndefinedFunction, and casting the
+                    # column instead of the parameter would defeat its index.
+                    required_dates = list(
+                        pd.to_datetime(top3_navs['nav_date']).dt.date.unique()
                     )
 
-                    nav_master_query = f"""
+                    nav_master_query = text("""
                         SELECT nm.scheme_code,
                                nm.nav_date,
                                ROUND(nm.nav, 4) as nav_round
                         FROM public.nav_master nm
-                        WHERE nm.nav_date IN {req_dates_str}
-                    """
+                        WHERE nm.nav_date = ANY(:dates)
+                    """)
                     amfi_nav_df = pd.read_sql(
-                        nav_master_query, master_engine
+                        nav_master_query,
+                        master_engine,
+                        params={"dates": required_dates},
                     )
 
                     for idx, row in unmatched_nav_df.iterrows():
@@ -750,6 +791,7 @@ def load_scheme_mapping():
                     winner.amfi_scheme_code,
                     winner.rule_name,
                     winner.confidence,
+                    force=winner.rule_name in AUTHORITATIVE_RULES,
                 )
 
         # mapping_status is DERIVED from the row's final state after every
@@ -758,6 +800,12 @@ def load_scheme_mapping():
         # unconditionally from the engine's own outcome alone, so an inline
         # rule's earlier, higher-confidence code can never be clobbered by a
         # status that contradicts it.
+        if not_in_amfi:
+            # An override asserting absence outranks whatever an inline rule
+            # matched earlier; leaving that code in place would contradict the
+            # status about to be written.
+            clear_best_match(df, idx)
+
         final_code = df.at[idx, "best_amfi_scheme_code"]
         has_code = not (final_code is None or pd.isna(final_code))
 
