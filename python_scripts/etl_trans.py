@@ -193,7 +193,6 @@ def format_dates(df):
                 pd.to_datetime(
                     df[col],
                     errors="coerce",
-                    dayfirst=False
                 )
                 .dt.date
             )
@@ -239,11 +238,30 @@ def apply_transaction_mapping(raw_df, mapping, source):
 
         mapped_df[target_col] = None
 
+        # -------------------------------------------------
+        # FIND FIRST SOURCE COLUMN THAT ACTUALLY HAS DATA
+        # -------------------------------------------------
+
         for src in source_cols:
+
             src = src.lower().strip()
 
-            if src in raw_df.columns:
-                mapped_df[target_col] = raw_df[src]
+            if src not in raw_df.columns:
+                continue
+
+            candidate = raw_df[src]
+
+            # Check whether this source column actually contains data
+            valid = (
+                candidate.notna()
+                & candidate.astype(str).str.strip().ne("")
+                & candidate.astype(str).str.lower().ne("nan")
+                & candidate.astype(str).str.lower().ne("none")
+            )
+
+            if valid.any():
+
+                mapped_df[target_col] = candidate
                 break
 
     return mapped_df
