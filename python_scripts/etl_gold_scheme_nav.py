@@ -4,9 +4,9 @@ import traceback
 from utils.db import engine
 
 
-# =====================================================
+# ============================================================
 # SAFE READ
-# =====================================================
+# ============================================================
 
 def safe_read(query):
 
@@ -24,9 +24,9 @@ def safe_read(query):
         return pd.DataFrame()
 
 
-# =====================================================
+# ============================================================
 # GET LAST PROCESSED TIME
-# =====================================================
+# ============================================================
 
 def get_last_processed_time():
 
@@ -60,9 +60,9 @@ def get_last_processed_time():
         )
 
 
-# =====================================================
+# ============================================================
 # NORMALIZE DATA FOR COMPARISON
-# =====================================================
+# ============================================================
 
 def normalize_for_compare(df):
 
@@ -77,7 +77,9 @@ def normalize_for_compare(df):
 
     for col in df.columns:
 
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
+        if pd.api.types.is_datetime64_any_dtype(
+            df[col]
+        ):
 
             df[col] = (
                 pd.to_datetime(
@@ -98,16 +100,17 @@ def normalize_for_compare(df):
     return df
 
 
-# =====================================================
+# ============================================================
 # CREATE NATURAL KEY
-# =====================================================
+# ============================================================
 
 def create_row_key(df):
 
-    df = normalize_for_compare(df)
+    df = normalize_for_compare(
+        df
+    )
 
     return (
-
         df[
             [
                 "scheme_id",
@@ -116,22 +119,43 @@ def create_row_key(df):
         ]
         .fillna("")
         .astype(str)
-        .agg("|".join, axis=1)
-
+        .agg(
+            "|".join,
+            axis=1
+        )
     )
 
 
-# =====================================================
+# ============================================================
 # EXTRACT GOLD SCHEME NAV
-# =====================================================
+# ============================================================
 
 def extract_scheme_nav():
 
     print("=" * 80)
-    print("Extracting Gold Scheme NAV")
+    print("EXTRACTING GOLD SCHEME NAV")
     print("=" * 80)
 
+    # ========================================================
+    # GET LAST PROCESSED TIME
+    # ========================================================
+
     last_time = get_last_processed_time()
+
+    print(
+        "Last processed time:",
+        last_time
+    )
+
+    # ========================================================
+    # EXTRACT FROM SILVER TRANSACTION MASTER
+    #
+    # ARN:
+    # brokcode
+    #
+    # SUB ARN:
+    # src_brk_code
+    # ========================================================
 
     df = safe_read(
         """
@@ -145,6 +169,10 @@ def extract_scheme_nav():
 
             purprice,
 
+            brokcode AS arn,
+
+            src_brk_code AS sub_arn,
+
             created_at
 
         FROM silver.transaction_master_new
@@ -155,18 +183,34 @@ def extract_scheme_nav():
 
     if df.empty:
 
-        print("No data found.")
+        print(
+            "No data found."
+        )
 
         return df
+
+    # ========================================================
+    # CLEAN CREATED AT
+    # ========================================================
 
     df["created_at"] = pd.to_datetime(
         df["created_at"],
         errors="coerce"
     )
 
-    last_time = pd.Timestamp(last_time)
+    last_time = pd.Timestamp(
+        last_time
+    )
 
-    if getattr(df["created_at"].dt, "tz", None) is not None:
+    # ========================================================
+    # REMOVE TIMEZONE DIFFERENCE
+    # ========================================================
+
+    if getattr(
+        df["created_at"].dt,
+        "tz",
+        None
+    ) is not None:
 
         df["created_at"] = (
             df["created_at"]
@@ -175,57 +219,79 @@ def extract_scheme_nav():
 
     if last_time.tzinfo is not None:
 
-        last_time = last_time.tz_localize(None)
+        last_time = (
+            last_time
+            .tz_localize(None)
+        )
 
-    # =====================================================
+    # ========================================================
     # TIMESTAMP FILTER
-    # =====================================================
+    # ========================================================
 
     df = df[
         df["created_at"] > last_time
     ]
 
-    print("Rows fetched :", len(df))
+    print(
+        "Rows fetched:",
+        len(df)
+    )
 
     return df
 
-# =====================================================
+
+# ============================================================
 # TRANSFORM GOLD SCHEME NAV
-# =====================================================
+# ============================================================
 
 def transform_scheme_nav(df):
 
     print("=" * 80)
-    print("Transforming Gold Scheme NAV")
+    print("TRANSFORMING GOLD SCHEME NAV")
     print("=" * 80)
 
     if df.empty:
 
         return pd.DataFrame()
 
-    # =====================================================
+    # ========================================================
     # LOAD GOLD SCHEME
-    # =====================================================
+    # ========================================================
+
+    print(
+        "Loading gold.scheme..."
+    )
 
     gold_scheme = safe_read(
         """
         SELECT
+
             id,
+
             rta,
+
             scheme_code
+
         FROM gold.scheme
         """
     )
 
     if gold_scheme.empty:
 
-        print("Gold Scheme table is empty.")
+        print(
+            "Gold Scheme table is empty."
+        )
 
         return pd.DataFrame()
 
-    # =====================================================
-    # CLEAN JOIN KEYS
-    # =====================================================
+    print(
+        "Gold Scheme rows:",
+        len(gold_scheme)
+    )
+
+    # ========================================================
+    # CLEAN SOURCE
+    # ========================================================
 
     df["source"] = (
         df["source"]
@@ -235,6 +301,10 @@ def transform_scheme_nav(df):
         .str.upper()
     )
 
+    # ========================================================
+    # CLEAN SCHEME CODE
+    # ========================================================
+
     df["scheme_code"] = (
         df["scheme_code"]
         .fillna("")
@@ -242,6 +312,10 @@ def transform_scheme_nav(df):
         .str.strip()
         .str.upper()
     )
+
+    # ========================================================
+    # CLEAN GOLD SCHEME RTA
+    # ========================================================
 
     gold_scheme["rta"] = (
         gold_scheme["rta"]
@@ -251,6 +325,10 @@ def transform_scheme_nav(df):
         .str.upper()
     )
 
+    # ========================================================
+    # CLEAN GOLD SCHEME CODE
+    # ========================================================
+
     gold_scheme["scheme_code"] = (
         gold_scheme["scheme_code"]
         .fillna("")
@@ -259,9 +337,52 @@ def transform_scheme_nav(df):
         .str.upper()
     )
 
-    # =====================================================
+    # ========================================================
+    # CLEAN ARN
+    #
+    # SOURCE:
+    # silver.transaction_master_new.brokcode
+    # ========================================================
+
+    df["arn"] = (
+        df["arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["arn"] == "",
+        "arn"
+    ] = None
+
+    # ========================================================
+    # CLEAN SUB ARN
+    #
+    # SOURCE:
+    # silver.transaction_master_new.src_brk_code
+    # ========================================================
+
+    df["sub_arn"] = (
+        df["sub_arn"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    df.loc[
+        df["sub_arn"] == "",
+        "sub_arn"
+    ] = None
+
+    # ========================================================
     # MAP SCHEME ID
-    # =====================================================
+    #
+    # source + scheme_code
+    #
+    # source       -> gold.scheme.rta
+    # scheme_code  -> gold.scheme.scheme_code
+    # ========================================================
 
     df = df.merge(
 
@@ -288,94 +409,374 @@ def transform_scheme_nav(df):
     )
 
     df.rename(
-
         columns={
             "id": "scheme_id"
         },
-
         inplace=True
-
     )
 
-    print("Matched Scheme IDs :", df["scheme_id"].notna().sum())
-    print("Missing Scheme IDs :", df["scheme_id"].isna().sum())
+    # ========================================================
+    # SCHEME VALIDATION
+    # ========================================================
 
-    # =====================================================
+    print("=" * 80)
+    print("SCHEME ID VALIDATION")
+    print("=" * 80)
+
+    print(
+        "Total rows:",
+        len(df)
+    )
+
+    print(
+        "Matched Scheme IDs:",
+        df["scheme_id"].notna().sum()
+    )
+
+    print(
+        "Missing Scheme IDs:",
+        df["scheme_id"].isna().sum()
+    )
+
+    # ========================================================
+    # MISSING SCHEME SAMPLE
+    # ========================================================
+
+    missing_scheme = df[
+        df["scheme_id"].isna()
+    ]
+
+    if not missing_scheme.empty:
+
+        print()
+        print(
+            "Missing Scheme Samples:"
+        )
+
+        print(
+            missing_scheme[
+                [
+                    "source",
+                    "scheme_code"
+                ]
+            ]
+            .drop_duplicates()
+            .head(20)
+            .to_string(
+                index=False
+            )
+        )
+
+    # ========================================================
     # BUILD GOLD DATAFRAME
-    # =====================================================
+    # ========================================================
 
-    gold_df = pd.DataFrame({
+    gold_df = pd.DataFrame(
+        index=df.index
+    )
 
-        "scheme_id": df["scheme_id"],
+    # ========================================================
+    # SCHEME ID
+    # ========================================================
 
-        "nav_date": pd.to_datetime(
+    gold_df["scheme_id"] = (
+        df["scheme_id"]
+    )
+
+    # ========================================================
+    # NAV DATE
+    # ========================================================
+
+    gold_df["nav_date"] = (
+        pd.to_datetime(
             df["traddate"],
             errors="coerce"
-        ).dt.date,
+        )
+        .dt.date
+    )
 
-        "nav": pd.to_numeric(
-            df["purprice"],
-            errors="coerce"
-        ),
+    # ========================================================
+    # NAV
+    #
+    # purprice -> nav
+    # ========================================================
 
-        "repurchase_nav": None,
+    gold_df["nav"] = pd.to_numeric(
+        df["purprice"],
+        errors="coerce"
+    )
 
-        "source": df["source"]
+    # ========================================================
+    # REPURCHASE NAV
+    # ========================================================
 
-    })
+    gold_df["repurchase_nav"] = None
 
-    # =====================================================
+    # ========================================================
+    # SOURCE
+    # ========================================================
+
+    gold_df["source"] = (
+        df["source"]
+    )
+
+    # ========================================================
+    # ARN
+    #
+    # brokcode -> arn
+    # ========================================================
+
+    gold_df["arn"] = (
+        df["arn"]
+    )
+
+    # ========================================================
+    # SUB ARN
+    #
+    # src_brk_code -> sub_arn
+    # ========================================================
+
+    gold_df["sub_arn"] = (
+        df["sub_arn"]
+    )
+
+    # ========================================================
     # REMOVE INVALID ROWS
-    # =====================================================
+    # ========================================================
+
+    before = len(
+        gold_df
+    )
 
     gold_df = gold_df[
-
         gold_df["scheme_id"].notna()
         &
         gold_df["nav_date"].notna()
         &
         gold_df["nav"].notna()
+    ].copy()
 
-    ]
-
-    # =====================================================
-    # REMOVE DUPLICATES IN CURRENT BATCH
-    # =====================================================
-
-    gold_df = gold_df.drop_duplicates(
-
-        subset=[
-            "scheme_id",
-            "nav_date"
-        ],
-
-        keep="last"
-
+    removed = (
+        before
+        -
+        len(gold_df)
     )
 
-    # =====================================================
+    print(
+        "Invalid rows removed:",
+        removed
+    )
+
+    # ========================================================
+    # REMOVE DUPLICATES IN CURRENT BATCH
+    #
+    # Natural key:
+    # scheme_id + nav_date
+    # ========================================================
+
+    before_dedup = len(
+        gold_df
+    )
+
+    gold_df = (
+        gold_df
+        .drop_duplicates(
+            subset=[
+                "scheme_id",
+                "nav_date"
+            ],
+            keep="last"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    print(
+        "Current batch duplicates removed:",
+        before_dedup - len(gold_df)
+    )
+
+    # ========================================================
+    # CHECK EXISTING GOLD SCHEME NAV
+    #
+    # Prevent duplicate scheme_id + nav_date
+    # ========================================================
+
+    print()
+    print(
+        "Checking existing gold.scheme_nav..."
+    )
+
+    existing_nav = safe_read(
+        """
+        SELECT
+
+            scheme_id,
+
+            nav_date
+
+        FROM gold.scheme_nav
+        """
+    )
+
+    if not existing_nav.empty:
+
+        existing_nav["nav_date"] = (
+            pd.to_datetime(
+                existing_nav["nav_date"],
+                errors="coerce"
+            )
+            .dt.date
+        )
+
+        existing_nav = (
+            existing_nav[
+                [
+                    "scheme_id",
+                    "nav_date"
+                ]
+            ]
+            .drop_duplicates()
+        )
+
+        # ====================================================
+        # REMOVE EXISTING NATURAL KEYS
+        # ====================================================
+
+        gold_df = gold_df.merge(
+
+            existing_nav.assign(
+                _exists=True
+            ),
+
+            on=[
+                "scheme_id",
+                "nav_date"
+            ],
+
+            how="left"
+
+        )
+
+        existing_count = (
+            gold_df["_exists"]
+            .notna()
+            .sum()
+        )
+
+        print(
+            "Existing rows skipped:",
+            existing_count
+        )
+
+        gold_df = (
+            gold_df[
+                gold_df["_exists"].isna()
+            ]
+            .drop(
+                columns=[
+                    "_exists"
+                ]
+            )
+        )
+
+    # ========================================================
     # AUDIT TIMESTAMP
-    # =====================================================
+    # ========================================================
 
-    gold_df["created_at"] = pd.Timestamp.now()
+    gold_df["created_at"] = (
+        pd.Timestamp.now()
+    )
 
-    print("Rows Ready :", len(gold_df))
+    # ========================================================
+    # FINAL COLUMN ORDER
+    # ========================================================
+
+    gold_df = gold_df[
+        [
+            "scheme_id",
+            "nav_date",
+            "nav",
+            "repurchase_nav",
+            "source",
+            "arn",
+            "sub_arn",
+            "created_at"
+        ]
+    ].copy()
+
+    # ========================================================
+    # FINAL VALIDATION
+    # ========================================================
+
+    print("=" * 80)
+    print("GOLD SCHEME NAV VALIDATION")
+    print("=" * 80)
+
+    print(
+        "Rows ready:",
+        len(gold_df)
+    )
+
+    print(
+        "Missing scheme_id:",
+        gold_df["scheme_id"].isna().sum()
+    )
+
+    print(
+        "Missing nav_date:",
+        gold_df["nav_date"].isna().sum()
+    )
+
+    print(
+        "Missing nav:",
+        gold_df["nav"].isna().sum()
+    )
+
+    print(
+        "Missing ARN:",
+        gold_df["arn"].isna().sum()
+    )
+
+    print(
+        "Missing Sub ARN:",
+        gold_df["sub_arn"].isna().sum()
+    )
+
+    if not gold_df.empty:
+
+        print()
+        print(
+            "Gold Scheme NAV Preview:"
+        )
+
+        print(
+            gold_df.head(
+                10
+            ).to_string(
+                index=False
+            )
+        )
 
     return gold_df
 
-# =====================================================
+
+# ============================================================
 # LOAD GOLD SCHEME NAV
-# =====================================================
+# ============================================================
 
 def load_scheme_nav(gold_df):
 
     print("=" * 80)
-    print("Loading Gold Scheme NAV")
+    print("LOADING DATA INTO GOLD.SCHEME_NAV")
     print("=" * 80)
 
     if gold_df.empty:
 
-        print("No new records found.")
+        print(
+            "No new records found."
+        )
 
         return True
 
@@ -399,49 +800,106 @@ def load_scheme_nav(gold_df):
 
         )
 
-        print(f"{len(gold_df)} rows inserted into Gold Scheme NAV.")
+        print(
+            f"{len(gold_df):,} rows inserted "
+            "into gold.scheme_nav."
+        )
 
         return True
 
     except Exception:
 
-        print("FAILED LOADING GOLD SCHEME NAV")
+        print(
+            "FAILED LOADING GOLD SCHEME NAV"
+        )
 
-        traceback.print_exc(limit=5)
+        traceback.print_exc(
+            limit=5
+        )
 
         return False
 
 
-# =====================================================
+# ============================================================
 # MAIN
-# =====================================================
+# ============================================================
 
 if __name__ == "__main__":
 
+    print()
     print("=" * 80)
     print("STARTING GOLD SCHEME NAV ETL")
     print("=" * 80)
 
-    df = extract_scheme_nav()
+    try:
 
-    if not df.empty:
+        # ====================================================
+        # EXTRACT
+        # ====================================================
 
-        gold_df = transform_scheme_nav(df)
+        df = extract_scheme_nav()
 
-        status = load_scheme_nav(gold_df)
+        # ====================================================
+        # TRANSFORM
+        # ====================================================
 
-        if status:
+        if not df.empty:
 
-            print("=" * 80)
-            print("GOLD SCHEME NAV ETL COMPLETED SUCCESSFULLY")
-            print("=" * 80)
+            gold_df = transform_scheme_nav(
+                df
+            )
 
         else:
 
-            print("=" * 80)
-            print("GOLD SCHEME NAV ETL FAILED")
-            print("=" * 80)
+            gold_df = pd.DataFrame()
 
-    else:
+        # ====================================================
+        # LOAD
+        # ====================================================
 
-        print("No new NAV records to process.")
+        status = load_scheme_nav(
+            gold_df
+        )
+
+        # ====================================================
+        # FINAL STATUS
+        # ====================================================
+
+        print()
+        print("=" * 80)
+
+        if status:
+
+            print(
+                "GOLD SCHEME NAV ETL "
+                "COMPLETED SUCCESSFULLY"
+            )
+
+        else:
+
+            print(
+                "GOLD SCHEME NAV ETL FAILED"
+            )
+
+        print("=" * 80)
+
+    except Exception as e:
+
+        print()
+        print("=" * 80)
+        print(
+            "GOLD SCHEME NAV ETL ERROR"
+        )
+        print("=" * 80)
+
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
+            e
+        )
+
+        traceback.print_exc()

@@ -67,6 +67,11 @@ IDENTIFIER_COLUMNS = [
     "ac_no",
 
     "dp_id",
+    "client_id",                # NEW
+    "common_account_number",    # NEW
+    "ft_accno",                 # NEW
+    "rejtrnoor2",               # NEW
+    "to_product_code",  
 
     "ticob_trno",
     "siptrxnno",
@@ -225,36 +230,23 @@ def apply_transaction_mapping(raw_df, mapping, source):
 
     for target_col, source_cols in mapping.items():
 
-        if target_col in [
-            "flag",
-            "created_at",
-            "updated_at"
-        ]:
+        if target_col in ("flag", "created_at", "updated_at"):
             continue
 
         if target_col == "source":
             mapped_df[target_col] = source
             continue
 
-        for target_col, source_cols in mapping.items():
+        mapped_df[target_col] = None
 
-            if target_col in ("flag", "created_at", "updated_at"):
-                continue
+        for src in source_cols:
+            src = src.lower().strip()
 
-            if target_col == "source":
-                mapped_df[target_col] = source
-                continue
+            if src in raw_df.columns:
+                mapped_df[target_col] = raw_df[src]
+                break
 
-            mapped_df[target_col] = None
-
-            for src in source_cols:
-                src = src.lower().strip()
-
-                if src in raw_df.columns:
-                    mapped_df[target_col] = raw_df[src]
-                    break
-
-        return mapped_df
+    return mapped_df
     
 
 # =====================================================
@@ -390,14 +382,14 @@ def process_transactions(cams=None, kfin=None):
         old_df = existing[compare_cols].copy()
 
         # =====================================================
-        # CLEAN IDENTIFIER COLUMNS
+        # CLEAN IDENTIFIER COLUMNS BEFORE COMPARISON
         # =====================================================
 
         new_df = clean_identifier_columns(new_df)
 
         old_df = clean_identifier_columns(old_df)
 
-                # =====================================================
+        # =====================================================
         # NORMALIZE VALUES
         # =====================================================
 
@@ -443,14 +435,21 @@ def process_transactions(cams=None, kfin=None):
         # COMPARE COMPLETE ROW
         # =====================================================
 
-        new_keys = new_df.agg("|".join, axis=1)
+        new_keys = (
+            new_df
+            .astype(str)
+            .agg("|".join, axis=1)
+        )
 
         old_keys = set(
-            old_df.agg("|".join, axis=1)
+            old_df
+            .astype(str)
+            .agg("|".join, axis=1)
         )
 
         df["flag"] = (
-            new_keys.isin(old_keys)
+            new_keys
+            .isin(old_keys)
             .astype(int)
         )
 
@@ -458,7 +457,7 @@ def process_transactions(cams=None, kfin=None):
     # CLEAN IDENTIFIER COLUMNS AGAIN
     # =====================================================
 
-    df = clean_identifier_columns(df)
+    #df = clean_identifier_columns(df)
 
     # =====================================================
     # GET DATABASE COLUMN ORDER
@@ -535,7 +534,7 @@ def process_transactions(cams=None, kfin=None):
     # FINAL CLEAN IDENTIFIER COLUMNS
     # =====================================================
 
-    df = clean_identifier_columns(df)
+    #df = clean_identifier_columns(df)
 
     # =====================================================
     # DEBUG DATE COLUMNS
@@ -628,7 +627,7 @@ def process_transactions(cams=None, kfin=None):
         if_exists="append",
         index=False,
         method="multi",
-        chunksize=20000
+        chunksize=50000
     )
 
     print("=" * 80)

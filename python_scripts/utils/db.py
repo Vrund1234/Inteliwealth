@@ -4,10 +4,11 @@ import pandas as pd
 HOST = "localhost"
 PORT = "5432"
 USER = "postgres"
-PASSWORD = "vrund"
+PASSWORD = "postgres123"
 
-PROJECT_DATABASE = "inteliwealth_db"
-MASTER_DATABASE = "master_tables_db"
+PROJECT_DATABASE = "tr_project"
+MASTER_DATABASE = "latest_dump"
+#RESTORE_DATABASE = "Intelliwealth_dump"
 
 # Project Database
 engine = create_engine(
@@ -19,6 +20,11 @@ engine = create_engine(
 master_engine = create_engine(
     f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
 )
+
+# Restore Database
+#restore_engine = create_engine(
+#    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{RESTORE_DATABASE}"
+#)
 
 
 def read_table(schema, table, limit=100):

@@ -96,7 +96,7 @@ def extract_folio_nominees():
 
         "source",
         "folio_no",
-        "product_code",
+        "pan_no",
 
         "nominee1_name",
         "nominee1_relation",
@@ -160,52 +160,48 @@ def transform_folio_nominees(df):
         return pd.DataFrame()
 
     # =================================================
-    # LOAD HOLDINGS + SCHEME
+    # LOAD HOLDINGS
     #
-    # product_code comes from:
+    # IMPORTANT:
     #
-    # gold.scheme.rta_scheme_code
+    # We DO NOT use scheme_id.
+    # We DO NOT use product_code.
+    # We DO NOT join gold.scheme.
     #
-    # Mapping:
+    # Holding mapping is based on:
     #
-    # source
-    # folio_no
-    # product_code
+    # silver.source     -> gold.rta
+    # silver.folio_no   -> gold.folio_number
+    # silver.pan_no     -> gold.pan
     #
-    #        ↓
-    #
-    # rta
-    # folio_number
-    # rta_scheme_code
-    #
-    #        ↓
-    #
-    # holding_id
     # =================================================
 
     holdings = safe_read(
         """
         SELECT
-            h.id AS holding_id,
-            h.rta,
-            h.folio_number,
-            s.rta_scheme_code AS product_code
-        FROM gold.holdings h
-        JOIN gold.scheme s
-            ON h.scheme_id = s.id
+            id AS holding_id,
+            rta,
+            folio_number,
+            pan
+        FROM gold.holdings
         """
     )
 
     if holdings.empty:
 
         print(
-            "Gold holdings + scheme mapping is empty."
+            "Gold holdings data is empty."
         )
 
         return pd.DataFrame()
 
+    print(
+        "Gold holdings rows fetched :",
+        len(holdings)
+    )
+
     # =================================================
-    # CLEAN SOURCE KEYS
+    # CLEAN SILVER KEYS
     # =================================================
 
     df = df.copy()
@@ -218,8 +214,8 @@ def transform_folio_nominees(df):
         df["folio_no"]
     )
 
-    df["product_code"] = clean_key(
-        df["product_code"]
+    df["pan_no"] = clean_key(
+        df["pan_no"]
     )
 
     # =================================================
@@ -234,115 +230,80 @@ def transform_folio_nominees(df):
         holdings["folio_number"]
     )
 
-    holdings["product_code"] = clean_key(
-        holdings["product_code"]
+    holdings["pan"] = clean_key(
+        holdings["pan"]
     )
 
     # =================================================
-    # REMOVE INVALID HOLDING KEYS
+    # DEBUG COUNTS
     # =================================================
 
-    holdings = holdings[
-        (holdings["rta"] != "")
-        &
-        (holdings["folio_number"] != "")
-        &
-        (holdings["product_code"] != "")
-    ]
-
-    # =================================================
-    # CHECK DUPLICATE HOLDING MAPPING
-    #
-    # RTA + FOLIO + PRODUCT CODE
-    #
-    # must point to exactly ONE holding.
-    # =================================================
-
-    holding_counts = (
-
-        holdings
-
-        .groupby(
-            [
-                "rta",
-                "folio_number",
-                "product_code"
-            ]
-        )["holding_id"]
-
-        .nunique()
-
-        .reset_index(
-            name="holding_count"
-        )
-
-    )
-
-    duplicate_holding_keys = holding_counts[
-        holding_counts["holding_count"] > 1
-    ]
+    print("=" * 80)
+    print("HOLDING MAPPING")
+    print("=" * 80)
 
     print(
-        "Duplicate holding keys :",
-        len(duplicate_holding_keys)
+        "Silver investor rows :",
+        len(df)
     )
 
-    if not duplicate_holding_keys.empty:
-
-        print(
-            "WARNING: Some RTA + FOLIO + PRODUCT CODE "
-            "keys map to multiple holdings."
-        )
-
-    # =================================================
-    # KEEP ONLY UNIQUE HOLDING MAPPINGS
-    # =================================================
-
-    unique_holding_keys = holding_counts[
-        holding_counts["holding_count"] == 1
-    ]
-
-    unique_holdings = holdings.merge(
-
-        unique_holding_keys,
-
-        on=[
-            "rta",
-            "folio_number",
-            "product_code"
-        ],
-
-        how="inner"
-
+    print(
+        "Gold holdings rows :",
+        len(holdings)
     )
 
-    unique_holdings = unique_holdings[
-        [
-            "rta",
-            "folio_number",
-            "product_code",
-            "holding_id"
-        ]
-    ]
+    print(
+        "Silver PAN available :",
+        (df["pan_no"] != "").sum()
+    )
+
+    print(
+        "Silver PAN missing :",
+        (df["pan_no"] == "").sum()
+    )
+
+    print(
+        "Gold PAN available :",
+        (holdings["pan"] != "").sum()
+    )
+
+    print(
+        "Gold PAN missing :",
+        (holdings["pan"] == "").sum()
+    )
 
     # =================================================
-    # MAP INVESTOR ROW TO HOLDING
+    # DIRECT LEFT JOIN
+    #
+    # source     -> rta
+    # folio_no   -> folio_number
+    # pan_no     -> pan
+    #
+    # NO SCHEME MATCHING
+    # NO PRODUCT CODE MATCHING
     # =================================================
 
     df = df.merge(
 
-        unique_holdings,
+        holdings[
+            [
+                "holding_id",
+                "rta",
+                "folio_number",
+                "pan"
+            ]
+        ],
 
         left_on=[
             "source",
             "folio_no",
-            "product_code"
+            "pan_no"
         ],
 
         right_on=[
             "rta",
             "folio_number",
-            "product_code"
+            "pan"
         ],
 
         how="left"
@@ -353,8 +314,12 @@ def transform_folio_nominees(df):
     # MAPPING VALIDATION
     # =================================================
 
+    print("=" * 80)
+    print("HOLDING MAPPING RESULT")
+    print("=" * 80)
+
     print(
-        "Total silver investor rows :",
+        "Total Silver investor rows :",
         len(df)
     )
 
@@ -369,26 +334,84 @@ def transform_folio_nominees(df):
     )
 
     # =================================================
+    # MATCHED SAMPLE
+    # =================================================
+
+    matched = df[
+        df["holding_id"].notna()
+    ]
+
+    if not matched.empty:
+
+        print(
+            "\nMatched Holding Examples:"
+        )
+
+        print(
+            matched[
+                [
+                    "source",
+                    "folio_no",
+                    "pan_no",
+                    "holding_id"
+                ]
+            ]
+            .head(20)
+            .to_string(index=False)
+        )
+
+    # =================================================
+    # UNMATCHED SAMPLE
+    # =================================================
+
+    unmatched = df[
+        df["holding_id"].isna()
+    ]
+
+    if not unmatched.empty:
+
+        print(
+            "\nUnmatched Investor Examples:"
+        )
+
+        print(
+            unmatched[
+                [
+                    "source",
+                    "folio_no",
+                    "pan_no"
+                ]
+            ]
+            .head(20)
+            .to_string(index=False)
+        )
+
+    # =================================================
     # NOMINEE CONFIGURATION
     # =================================================
 
     nominee_configs = [
+
         (
             "nominee1_name",
             "nominee1_relation",
             "nominee1_percentage"
         ),
+
         (
             "nominee2_name",
             "nominee2_relation",
             "nominee2_percentage"
         ),
+
         (
             "nominee3_name",
             "nominee3_relation",
             "nominee3_percentage"
         )
+
     ]
+
     # =================================================
     # BUILD GOLD ROWS
     # =================================================
@@ -399,6 +422,10 @@ def transform_folio_nominees(df):
 
         # =================================================
         # HOLDING MUST EXIST
+        #
+        # The investor row itself was NOT dropped.
+        # We simply cannot create a folio_nominee row
+        # without a holding_id.
         # =================================================
 
         if pd.isna(
@@ -509,10 +536,11 @@ def transform_folio_nominees(df):
                     percentage
 
             })
+
         # =================================================
         # ZERO NOMINEES
         #
-        # Do NOT create any gold row.
+        # Do NOT create a gold row.
         # =================================================
 
         if not available_nominees:
@@ -621,6 +649,10 @@ def transform_folio_nominees(df):
 
                 is_minor = True
 
+        # =================================================
+        # CREATE NOMINEE ROWS
+        # =================================================
+
         for seq, nominee in enumerate(
             available_nominees,
             start=1
@@ -703,6 +735,10 @@ def transform_folio_nominees(df):
 
     # =================================================
     # REMOVE DUPLICATES
+    #
+    # Natural key:
+    #
+    # holding_id + seq
     # =================================================
 
     gold_df = gold_df.drop_duplicates(
@@ -811,8 +847,7 @@ def transform_folio_nominees(df):
     ):
 
         actual = sorted(
-            group["seq"]
-            .tolist()
+            group["seq"].tolist()
         )
 
         expected = list(
@@ -939,16 +974,12 @@ def load_folio_nominees(gold_df):
     duplicate_count = (
 
         gold_df
-
         .duplicated(
-
             subset=[
                 "holding_id",
                 "seq"
             ]
-
         )
-
         .sum()
 
     )
@@ -1092,16 +1123,12 @@ def main():
     duplicate_count = (
 
         gold_df
-
         .duplicated(
-
             subset=[
                 "holding_id",
                 "seq"
             ]
-
         )
-
         .sum()
 
     )

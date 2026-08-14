@@ -45,53 +45,39 @@ def get_last_processed_time():
 
         if pd.isna(last_time):
 
-            return pd.Timestamp(
-                "1900-01-01"
-            )
+            return pd.Timestamp("1900-01-01")
 
-        return pd.to_datetime(
-            last_time
-        )
+        return pd.to_datetime(last_time)
 
     except Exception:
 
-        return pd.Timestamp(
-            "1900-01-01"
-        )
-
-
-# =====================================================
-# EXTRACT GOLD AMC
-# =====================================================
+        return pd.Timestamp("1900-01-01")
 
 def extract_amc():
 
     print("=" * 80)
-    print("Extracting Gold AMC")
+    print("EXTRACTING GOLD AMC")
     print("=" * 80)
 
-    last_time = get_last_processed_time()
-
     df = safe_read(
-        f"""
+        """
         SELECT
-
             source,
             amc_code,
             td_fund,
             scheme,
+            folio_no,
+            brokcode,
+            src_brk_code,
             created_at
-
         FROM silver.transaction_master_new
-
-        WHERE created_at > '{last_time}'
+        WHERE flag = 0
         """
     )
 
     if df.empty:
 
-        print("No new records found.")
-
+        print("No Silver records found with flag = 0")
         return df
 
     df["created_at"] = pd.to_datetime(
@@ -106,9 +92,10 @@ def extract_amc():
             .dt.tz_localize(None)
         )
 
-    print("Rows fetched :", len(df))
+    print("Silver flag = 0 rows fetched :", len(df))
 
     return df
+
 
 # =====================================================
 # TRANSFORM GOLD AMC
@@ -117,16 +104,17 @@ def extract_amc():
 def transform_amc(df):
 
     print("=" * 80)
-    print("Transforming Gold AMC")
+    print("TRANSFORMING GOLD AMC")
     print("=" * 80)
 
     if df.empty:
 
         return pd.DataFrame()
 
-    # =====================================================
+
+    # =================================================
     # CLEAN SOURCE
-    # =====================================================
+    # =================================================
 
     df["source"] = (
         df["source"]
@@ -136,9 +124,10 @@ def transform_amc(df):
         .str.upper()
     )
 
-    # =====================================================
+
+    # =================================================
     # AMC CODE
-    # =====================================================
+    # =================================================
 
     df["amc_code"] = (
         df["amc_code"]
@@ -148,9 +137,57 @@ def transform_amc(df):
         .str.upper()
     )
 
-    # =====================================================
+
+    # =================================================
+    # ARN
+    #
+    # Gold AMC ARN comes from:
+    #
+    # silver.transaction_master_new.brokcode
+    # =================================================
+
+    df["arn"] = (
+        df["brokcode"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+
+    # =================================================
+    # SUB ARN
+    #
+    # Gold AMC sub_arn comes from:
+    #
+    # silver.transaction_master_new.src_brk_code
+    # =================================================
+
+    df["sub_arn"] = (
+        df["src_brk_code"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+
+    # Empty values → NULL
+
+    df["arn"] = (
+        df["arn"]
+        .replace("", None)
+    )
+
+    df["sub_arn"] = (
+        df["sub_arn"]
+        .replace("", None)
+    )
+
+
+    # =================================================
     # AMC NAME LOOKUP
-    # =====================================================
+    # =================================================
 
     amc_lookup = safe_read(
         """
@@ -160,6 +197,7 @@ def transform_amc(df):
         FROM bronze.amc_master
         """
     )
+
 
     if not amc_lookup.empty:
 
@@ -171,23 +209,40 @@ def transform_amc(df):
             .str.upper()
         )
 
+        # Prevent duplicate lookup rows
+
+        amc_lookup = (
+            amc_lookup
+            .drop_duplicates(
+                subset=["amc_code"],
+                keep="first"
+            )
+        )
+
         df = df.merge(
-
             amc_lookup,
-
             on="amc_code",
-
             how="left"
-
         )
 
     else:
 
         df["amc_name"] = None
 
-    # =====================================================
+
+    # =================================================
     # BUILD GOLD DATAFRAME
-    # =====================================================
+    #
+    # IMPORTANT:
+    #
+    # flag is NOT included.
+    #
+    # flag is used only in Silver extraction:
+    #
+    #     WHERE flag = 0
+    #
+    # Gold AMC has NO flag column.
+    # =================================================
 
     gold_df = pd.DataFrame({
 
@@ -201,40 +256,48 @@ def transform_amc(df):
 
         "logo_url": None,
 
-        "status": None
+        "status": None,
+
+        "arn": df["arn"],
+
+        "sub_arn": df["sub_arn"],
+
+        "created_at": df["created_at"]
 
     })
 
-    # =====================================================
-    # REMOVE INVALID ROWS
-    # =====================================================
+
+    # =================================================
+    # REMOVE INVALID AMC CODE
+    # =================================================
 
     gold_df = gold_df[
-
         gold_df["amc_code"] != ""
-
     ]
 
-        # =====================================================
-    # REMOVE DUPLICATES
-    # =====================================================
 
-    gold_df = gold_df.drop_duplicates(
+    # =================================================
+    # REMOVE DUPLICATES IN CURRENT BATCH
+    #
+    # AMC natural key = amc_code
+    # =================================================
 
-        subset=[
-            "amc_code"
-        ],
-
-        keep="first"
-
+    gold_df = (
+        gold_df
+        .drop_duplicates(
+            subset=["amc_code"],
+            keep="first"
+        )
     )
 
-    # =====================================================
+
+    # =================================================
     # COLUMN LENGTH VALIDATION
-    # =====================================================
+    # =================================================
 
     gold_df["amc_code"] = (
         gold_df["amc_code"]
+        .astype("string")
         .str[:20]
     )
 
@@ -268,9 +331,55 @@ def transform_amc(df):
         .str[:20]
     )
 
-    print("Rows Ready :", len(gold_df))
+    gold_df["arn"] = (
+        gold_df["arn"]
+        .astype("string")
+        .str[:50]
+    )
+
+    gold_df["sub_arn"] = (
+        gold_df["sub_arn"]
+        .astype("string")
+        .str[:50]
+    )
+
+
+    # =================================================
+    # CREATED AT
+    # =================================================
+
+    gold_df["created_at"] = pd.to_datetime(
+        gold_df["created_at"],
+        errors="coerce"
+    )
+
+
+    # =================================================
+    # FINAL SAFETY CHECK
+    #
+    # flag must NEVER exist in Gold.
+    # =================================================
+
+    if "flag" in gold_df.columns:
+
+        gold_df = gold_df.drop(
+            columns=["flag"]
+        )
+
+
+    print(
+        "Rows Ready :",
+        len(gold_df)
+    )
+
+    print()
+    print("Gold AMC Columns:")
+    print(
+        list(gold_df.columns)
+    )
 
     return gold_df
+
 
 # =====================================================
 # LOAD GOLD AMC
@@ -285,161 +394,148 @@ def load_amc(gold_df):
 
     if gold_df.empty:
 
-        print("No new AMC records found.")
+        print(
+            "No new AMC records found."
+        )
 
         return True
 
 
-
-    # =====================================================
-    # CHECK EXISTING AMC
-    # Natural Key:
-    # amc_code
-    # =====================================================
-
+    # =================================================
+    # CHECK EXISTING GOLD AMC
+    #
+    # Natural key = amc_code
+    # =================================================
 
     print()
-
-    print("Checking existing gold AMC records")
-
-
-
-    existing_amc = pd.read_sql(
-
-        """
-
-        SELECT
-
-            amc_code,
-
-            created_at
-
-        FROM gold.amc
-
-        """,
-
-        engine
-
+    print(
+        "Checking existing gold AMC records"
     )
 
+
+    existing_amc = safe_read(
+        """
+        SELECT
+            amc_code
+        FROM gold.amc
+        """
+    )
 
 
     print(
-
-        "Existing AMC records:",
-
+        "Existing AMC records :",
         len(existing_amc)
-
     )
 
 
-
-    if len(existing_amc) > 0:
-
+    if not existing_amc.empty:
 
         existing_amc["amc_code"] = (
-
             existing_amc["amc_code"]
-
             .fillna("")
-
             .astype(str)
-
             .str.strip()
-
             .str.upper()
-
         )
-
 
 
         gold_df["amc_code"] = (
-
             gold_df["amc_code"]
-
             .fillna("")
-
             .astype(str)
-
             .str.strip()
-
             .str.upper()
-
         )
 
 
-
-        gold_df = gold_df.merge(
-
-            existing_amc,
-
-            on="amc_code",
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
-
-            )
-
-        )
-
-
+        # =================================================
+        # REMOVE AMC CODES ALREADY IN GOLD
+        # =================================================
 
         gold_df = gold_df[
-
-            gold_df["created_at_old"].isna()
-
+            ~gold_df["amc_code"].isin(
+                existing_amc["amc_code"]
+            )
         ]
 
 
-
-        gold_df = gold_df.drop(
-
-            columns=[
-
-                "created_at_old"
-
-            ]
-
-        )
-
-
-
     print(
-
-        "Rows after duplicate check:",
-
+        "Rows after duplicate check :",
         len(gold_df)
-
     )
 
 
-
-    if len(gold_df) == 0:
-
+    if gold_df.empty:
 
         print(
-
-            "No new AMC records to insert"
-
+            "No new AMC records to insert."
         )
-
 
         return True
 
 
+    # =================================================
+    # FINAL GOLD COLUMNS
+    #
+    # flag intentionally NOT included.
+    # =================================================
 
-    # =====================================================
+    gold_columns = [
+
+        "amc_code",
+        "name",
+        "short_name",
+        "rta",
+        "logo_url",
+        "status",
+        "arn",
+        "sub_arn",
+        "created_at"
+
+    ]
+
+
+    gold_df = gold_df[
+        gold_columns
+    ]
+
+
+    print()
+    print(
+        "Rows to insert :",
+        len(gold_df)
+    )
+
+    print()
+    print(
+        "Columns being inserted:"
+    )
+
+    print(
+        list(gold_df.columns)
+    )
+
+
+    # =================================================
+    # FINAL FLAG SAFETY CHECK
+    # =================================================
+
+    if "flag" in gold_df.columns:
+
+        print(
+            "ERROR: flag found in Gold dataframe."
+        )
+
+        gold_df = gold_df.drop(
+            columns=["flag"]
+        )
+
+
+    # =================================================
     # INSERT
-    # =====================================================
-
+    # =================================================
 
     try:
-
 
         gold_df.to_sql(
 
@@ -459,15 +555,35 @@ def load_amc(gold_df):
 
         )
 
+
         print()
-        print(f"Inserted Rows : {len(gold_df)}")
+        print(
+            f"Inserted Rows : {len(gold_df)}"
+        )
+
+        print(
+            "Silver flag = 0 filter : YES"
+        )
+
+        print(
+            "Flag inserted into Gold : NO"
+        )
 
         return True
 
+
     except Exception:
-        print("FAILED LOADING GOLD AMC")
-        traceback.print_exc(limit=5)
+
+        print(
+            "FAILED LOADING GOLD AMC"
+        )
+
+        traceback.print_exc(
+            limit=5
+        )
+
         return False
+
 
 # =====================================================
 # MAIN
@@ -479,26 +595,52 @@ if __name__ == "__main__":
     print("STARTING GOLD AMC ETL")
     print("=" * 80)
 
+
+    # =================================================
+    # EXTRACT
+    # =================================================
+
     df = extract_amc()
+
 
     if not df.empty:
 
+
+        # =================================================
+        # TRANSFORM
+        # =================================================
+
         gold_df = transform_amc(df)
 
-        status = load_amc(gold_df)
+
+        # =================================================
+        # LOAD
+        # =================================================
+
+        status = load_amc(
+            gold_df
+        )
+
 
         if status:
 
             print("=" * 80)
-            print("GOLD AMC ETL COMPLETED SUCCESSFULLY")
+            print(
+                "GOLD AMC ETL COMPLETED SUCCESSFULLY"
+            )
             print("=" * 80)
 
         else:
 
             print("=" * 80)
-            print("GOLD AMC ETL FAILED")
+            print(
+                "GOLD AMC ETL FAILED"
+            )
             print("=" * 80)
+
 
     else:
 
-        print("No new AMC records to process.")
+        print(
+            "No new AMC records to process."
+        )
