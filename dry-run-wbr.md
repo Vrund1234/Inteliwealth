@@ -132,17 +132,25 @@ the period stamped on WBR36, `WBR_SOFFICE` picks the LibreOffice binary.
 
 ## 4. What to expect
 
-Against the current six input files:
+Against the current six input files, measured 2026-08-14:
 
 | | Rows | Source |
 |---|---|---|
-| `gold.brokerage_by_scheme` | 515 | schemes transacted, from `silver.transaction_master_new` |
+| `gold.brokerage_by_scheme` | 709 | schemes transacted, from `silver.transaction_master_new` |
 | `gold.investor_kyc_status` | 1,190 | folios, from `silver.investor_master` |
 | `gold.invalid_euin` | 406 | transactions with an EUIN explicitly not valid |
-| WBR36 file | 515 | `report_variant = 'STD'` |
+| WBR36 file | 709 | `report_variant = 'STD'` |
 | WBR36H file | 0 | header only — see below |
 | WBR56 file | 1,190 | |
 | WBR68 file | 406 | |
+
+`brokerage_by_scheme` was 515 in an earlier version of this document, when silver
+held the CAMS feed only. The 194 additional schemes come from the KFIN files —
+`brokerage_by_scheme` is one row per scheme transacted, so adding a second RTA's
+transactions adds its schemes. `investor_kyc_status` and `invalid_euin` did not
+move: the KFIN feed leaves `amc_code` blank, which is half the natural key of the
+first (see the skip line below), and carries no explicitly-invalid EUIN rows for
+the second.
 
 Grain ratio must be 1.00 on all three tables. Two lines in the log are worth
 reading every run:
@@ -214,7 +222,13 @@ The suite asserts that all 9 of the provider's transactions appear in the derive
 that two runs produce byte-identical files, and that the filter, the scheme-code
 prefix, the `"0"`-means-absent rule and the email finding all still hold.
 
-On the shared rows, **19 of 30 columns agree exactly**. The 11 that differ:
+On the 9 shared rows, **20 of the 31 columns agree exactly**. Compare the four date
+columns as dates, not as strings: `read_excel` types the provider's date cells as
+datetimes (`2025-01-07 00:00:00`) while the derived file holds the provider's own
+display format (`1/7/2025`), so a raw string comparison reports `trade_date` and
+`sys_reg_dt` as differing when the dates are identical.
+
+The 11 that genuinely differ:
 
 | Column | Provider | Derived | Why |
 |---|---|---|---|
@@ -230,18 +244,20 @@ On the shared rows, **19 of 30 columns agree exactly**. The 11 that differ:
 | `usertxn_no` | `9966684` | `9966692` | 2 rows; provider uses a different sequence |
 | `sip_regn_date` | a date | empty | no clean key |
 
-Full suite: `venv/bin/python -m pytest tests/ -q` → 145 passed, 5 failed, 7
-errors. Those failures are pre-existing scheme_mapping ones
-(`bronze.scheme_name_alias` missing in this database, plus baseline mapping
-drift), unrelated to WBR.
+Full suite: `venv/bin/python -m pytest tests/ -q` → 145 passed, 5 failed, 1
+skipped, 7 errors. Those failures are pre-existing scheme_mapping ones
+(`bronze.scheme_name_alias` missing in this database, plus baseline mapping drift
+and a coverage gate at 134 against a floor of 370), unrelated to WBR. All 7 errors
+are `tests/test_aliases.py` failing to set up for the same missing table.
 
 ---
 
 ## 7. Idempotency
 
-Run step 3 twice. Gold stays at 515 / 1,190 / 406 and the exported files come out
-byte-identical — the exporter's `ORDER BY source_row` is what guarantees that,
-since a bare `SELECT *` returns heap order which changes after an `UPDATE`.
+Run step 3 twice. Gold stays at 709 / 1,190 / 406, the grain ratio stays 1.00 on all
+three tables, and all four exported CSVs come out byte-identical — the exporter's
+`ORDER BY source_row` is what guarantees that, since a bare `SELECT *` returns heap
+order which changes after an `UPDATE`. Verified on two consecutive runs 2026-08-14.
 
 Row ids are `uuid5` over the natural key, so the same business row keeps the same
 id across runs.
@@ -259,10 +275,10 @@ id across runs.
 | `python_scripts/app.py` | upload, run, preview, download |
 | `python_scripts/tests/test_wbr.py` | 30 tests over the derivation and the export |
 
-`new_pipeline/` is a separate implementation that treats the WBR files as an input
-feed. It is not part of this flow. Its
-`new_pipeline/docs/cams-wbr-profile.md` remains the best column-by-column
-description of what the provider's reports contain.
+`python_scripts/docs/cams-wbr-profile.md` is the column-by-column description of what
+the provider's reports contain, and the reference `WBR_OUTPUT_LAYOUTS` was built from.
+It was profiled for a separate implementation that treated the WBR files as an input
+feed; that implementation has been removed, but the profile still describes the files.
 
 ---
 

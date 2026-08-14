@@ -1,8 +1,14 @@
 # CAMS WBR Report Profile
 
-Step 0 output. Every entry in `config/mapping_cams_wbr.py` must trace to a line in this document.
+A column-by-column description of the four WBR report files as CAMS delivers them. This is
+the reference `WBR_OUTPUT_LAYOUTS` and `WBR_OUTPUT_DATE_FORMATS` in `python_scripts/mapping.py`
+were built from: the column order and date formats there must trace to a line in this document.
 
 Profiled 2026-08-13 against the four sample files in `/home/user/Inteliwealth-pipeline/files/gold/`.
+
+Originally written for an abandoned implementation that read these files as an input feed.
+That code is gone; the profile of the files themselves is unaffected by its removal, since the
+pipeline now writes these layouts rather than reading them.
 
 ---
 
@@ -19,8 +25,9 @@ Consequences:
 
 - `openpyxl` cannot read them. `xlrd` is required, and only `xlrd >= 2.0` on `.xls`
   (xlrd 2.x dropped `.xlsx` support and kept `.xls`, which is exactly what is needed here).
-- `xlrd` is **not** installed in `python_scripts/venv`. This pipeline uses its own venv so the
-  existing environment is untouched.
+- `xlrd >= 2.0` is in `python_scripts/requirements.txt` for this reason. The pipeline itself
+  never reads these files — its inputs are CSV — but `tests/test_wbr.py` opens them to check
+  the derived output against the provider's, and `openpyxl` cannot do it.
 - LibreOffice is available at `/usr/bin/soffice` and is used only as an optional export path for
   writing `.xls` output. It is never required for reading.
 
