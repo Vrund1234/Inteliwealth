@@ -76,14 +76,29 @@ def write_audit(engine, audit_rows):
         )
 
 
+# Rules that write to bronze.scheme_mapping_review from outside this engine, on
+# their own schedule. write_review() replaces the engine's own pending rows on
+# every run; without this exclusion it would also discard a queue of rows it
+# never produced and cannot regenerate, leaving no error and no trace, since
+# both writers legitimately produce reviewer_decision IS NULL rows.
+FOREIGN_REVIEW_RULES = frozenset({"NAV_NAME_MATCH", "NAME_KEY_MATCH",
+                                  "NAV_FUZZY_MATCH"})
+
+
 def write_review(engine, review_rows):
-    """Replace pending review candidates, preserving rows already decided."""
+    """Replace this engine's pending candidates.
+
+    Rows already decided are preserved, as are pending rows belonging to
+    another writer (see FOREIGN_REVIEW_RULES).
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
                 "DELETE FROM bronze.scheme_mapping_review "
-                "WHERE reviewer_decision IS NULL"
-            )
+                "WHERE reviewer_decision IS NULL "
+                "  AND NOT (rule_name = ANY(:foreign_rules))"
+            ),
+            {"foreign_rules": sorted(FOREIGN_REVIEW_RULES)},
         )
         if not review_rows:
             return

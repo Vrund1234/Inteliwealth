@@ -24,6 +24,10 @@ from scheme_matching.rules import (
     arbitrate,
     run_all,
 )
+from scheme_matching.scheme_id import (
+    build_scheme_id_column,
+    derive_scheme_id,
+)
 from scheme_matching.scheme_key import parse_scheme_key
 
 
@@ -52,39 +56,6 @@ def normalize_scheme_name(name):
 # =====================================================
 # BUILD STRUCTURED MATCH CONTEXT
 # =====================================================
-
-def derive_scheme_id(amc_code, amfi_scheme_code):
-    """Identifier for the AMFI scheme a mapping resolved to, or None.
-
-    An unmapped row resolved to nothing, so it has no scheme_id. Concatenating
-    two blanks gave every unmapped row the same "" — indistinguishable from a
-    real shared identifier. None says "unknown", which is what it is.
-    """
-    amc = "" if amc_code is None or pd.isna(amc_code) else str(amc_code).strip()
-    code = (
-        ""
-        if amfi_scheme_code is None or pd.isna(amfi_scheme_code)
-        else str(amfi_scheme_code).strip()
-    )
-    if not amc or not code:
-        return None
-    return amc + code
-
-
-def build_scheme_id_column(df):
-    """scheme_id for every row, as an object-dtype Series.
-
-    dtype=object is required, not cosmetic: pandas coerces None to nan in a
-    plain list assignment, the pipeline's later df.where(pd.notna(df), None)
-    does not restore it, and psycopg2 then sends a float nan that Postgres
-    stores as the literal string 'NaN' in this varchar column.
-    """
-    return pd.Series(
-        [derive_scheme_id(r.amc_code, r.amfi_scheme_code) for r in df.itertuples()],
-        index=df.index,
-        dtype=object,
-    )
-
 
 def update_best_match(df, idx, amfi_code, source, confidence, force=False):
     """Record a rule's answer, if it beats whatever is already there.
@@ -216,6 +187,80 @@ def build_context(df, amfi_df, alias_fn, overrides):
         amfi_names=amfi_names,
         overrides=overrides,
     )
+
+
+# =====================================================
+# MAPPING UPSERT
+# =====================================================
+
+# amfi_scheme_code is normally overwritten on every run, so a scheme left
+# unmatched last time picks up a code a later rule now finds.
+#
+# The exception is a mapping a reviewer approved out of
+# bronze.scheme_mapping_review. Those schemes reach the queue precisely BECAUSE
+# the engine cannot resolve them, so it contributes NULL for them on every
+# later run; overwriting unconditionally erased the approval silently, leaving
+# no error and nothing in the log. verified_at marks such a row.
+#
+# A verified mapping yields only to a STRICTLY more confident engine result.
+# The first version of this guard yielded to any result at all, on the
+# assumption that every rule producing one outranks the fallbacks. CORE_FUZZY
+# does not: it sits at 90, below NAV_NAME_MATCH's 96. Live, that let
+# CORE_FUZZY re-point RMF7GGP from Series 11 to Series 22 -- a different fund --
+# over a mapping a reviewer had approved. Ties go to the reviewer, who looked
+# at the scheme.
+UPSERT_MAPPING_SQL = text("""
+    INSERT INTO bronze.scheme_mapping (
+        mapping_id, scheme_id, rta, rta_amc_code, rta_scheme_code,
+        rta_scheme_name, normalized_scheme_name, amfi_scheme_code,
+        mapping_source, mapping_confidence, mapping_status
+    )
+    VALUES (
+        :mapping_id, :scheme_id, :rta, :rta_amc_code, :rta_scheme_code,
+        :rta_scheme_name, :normalized_scheme_name, :amfi_scheme_code,
+        :mapping_source, :mapping_confidence, :mapping_status
+    )
+    ON CONFLICT (rta, rta_scheme_code)
+    DO UPDATE SET
+        rta_amc_code           = EXCLUDED.rta_amc_code,
+        rta_scheme_name        = EXCLUDED.rta_scheme_name,
+        normalized_scheme_name = EXCLUDED.normalized_scheme_name,
+        scheme_id = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.scheme_id
+            ELSE EXCLUDED.scheme_id END,
+        amfi_scheme_code = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.amfi_scheme_code
+            ELSE EXCLUDED.amfi_scheme_code END,
+        mapping_source = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_source
+            ELSE EXCLUDED.mapping_source END,
+        mapping_confidence = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_confidence
+            ELSE EXCLUDED.mapping_confidence END,
+        mapping_status = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_status
+            ELSE EXCLUDED.mapping_status END;
+""")
 
 
 # =====================================================
@@ -1078,49 +1123,7 @@ def load_scheme_mapping():
     # INSERT NORMAL MAPPINGS
     # =================================================
 
-    insert_query = text("""
-        INSERT INTO bronze.scheme_mapping (
-            mapping_id,
-            scheme_id,
-            rta,
-            rta_amc_code,
-            rta_scheme_code,
-            rta_scheme_name,
-            normalized_scheme_name,
-            amfi_scheme_code,
-            mapping_source,
-            mapping_confidence,
-            mapping_status
-        )
-        VALUES (
-            :mapping_id,
-            :scheme_id,
-            :rta,
-            :rta_amc_code,
-            :rta_scheme_code,
-            :rta_scheme_name,
-            :normalized_scheme_name,
-            :amfi_scheme_code,
-            :mapping_source,
-            :mapping_confidence,
-            :mapping_status
-        )
-        ON CONFLICT (
-            rta,
-            rta_scheme_code
-        )
-        DO UPDATE SET
-            scheme_id = EXCLUDED.scheme_id,
-            rta_amc_code = EXCLUDED.rta_amc_code,
-            rta_scheme_name = EXCLUDED.rta_scheme_name,
-            normalized_scheme_name = EXCLUDED.normalized_scheme_name,
-            -- Fix 1: always overwrite amfi_scheme_code on re-runs so that
-            -- a previously-unmatched row gets the code found by later rules.
-            amfi_scheme_code = EXCLUDED.amfi_scheme_code,
-            mapping_source = EXCLUDED.mapping_source,
-            mapping_confidence = EXCLUDED.mapping_confidence,
-            mapping_status = EXCLUDED.mapping_status;
-    """)
+    insert_query = UPSERT_MAPPING_SQL
 
 
     with engine.begin() as conn:
@@ -1200,6 +1203,78 @@ def load_scheme_mapping():
     print(
         "Normal matching rules completed."
     )
+
+    return apply_review_decisions()
+
+
+# =====================================================
+# REVIEW DECISIONS
+# =====================================================
+
+def apply_review_decisions():
+    """Apply approvals, then queue whatever is still unresolved.
+
+    Runs at the end of every pipeline run so that nothing a reviewer approved
+    is ever left sitting unapplied. Approvals are made directly in
+    bronze.scheme_mapping_review and picked up here on the next run, which is
+    what keeps silver.scheme_id from going stale: transform.py reads
+    bronze.scheme_mapping, so a mapping that exists only as an unapplied
+    approval would leave those transactions with a NULL scheme_id.
+
+    Order matters. Approvals are applied BEFORE the fallback matcher looks for
+    gaps, so a scheme that was approved but not yet mapped is resolved rather
+    than re-queued as though it were still an open question. Both steps come
+    after the engine has written its own results, and promotion only fills
+    rows where amfi_scheme_code IS NULL, so a rule that resolves a scheme
+    itself always outranks a stale approval.
+
+    Imported here rather than at module scope: promote_approved_mappings reads
+    scheme_matching.scheme_id, and a module-level import in both directions
+    would still be a cycle through this module's own name.
+    """
+    from map_unmatched_nav_name import run_fallback_mapping
+    from promote_approved_mappings import promote_approved
+
+    print("=" * 80)
+    print("APPLYING REVIEW DECISIONS")
+    print("=" * 80)
+
+    promoted = promote_approved(engine)
+    print(f"Approved rows found      : {promoted['approved']}")
+    print(f"Newly mapped             : {promoted['promoted']}")
+    print(f"Skipped (already mapped) : {promoted['skipped_already_mapped']}")
+
+    print("-" * 80)
+    queued = run_fallback_mapping(verbose=False)
+    print(f"Still unmatched          : {queued['unmatched']}")
+    print(f"Newly queued for review  : {queued['queued']} "
+          f"(NAV+name {queued['tier1']}, name-only {queued['tier2']}, "
+          f"NAV+fuzzy {queued['tier3']})")
+    if queued["ambiguous"]:
+        print(f"Ambiguous, left unmapped : {queued['ambiguous']}")
+    print(f"No candidate found       : {queued['unresolved']}")
+
+    if queued["queued"]:
+        print()
+        print("To map these, approve them and re-run the pipeline:")
+        print("  UPDATE bronze.scheme_mapping_review")
+        print("     SET reviewer_decision='APPROVED', reviewed_by='<you>', "
+              "reviewed_at=now()")
+        print("   WHERE reviewer_decision IS NULL;")
+
+    print("=" * 80)
+
+    return {
+        "approved_found": promoted["approved"],
+        "newly_mapped": promoted["promoted"],
+        "already_mapped": promoted["skipped_already_mapped"],
+        "still_unmatched": queued["unmatched"],
+        "newly_queued": queued["queued"],
+        "queued_tier1": queued["tier1"],
+        "queued_tier2": queued["tier2"],
+        "ambiguous": queued["ambiguous"],
+        "no_candidate": queued["unresolved"],
+    }
 
 
 # =====================================================

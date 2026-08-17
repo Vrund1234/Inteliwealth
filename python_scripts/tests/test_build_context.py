@@ -47,3 +47,67 @@ class TestNormalizedNavNameIsIndexedSafely:
         amfi = _amfi([("333", "H", "HDFC Flexi Cap Fund - Growth", None)])
         ctx = build_context(pd.DataFrame(), amfi, None, {})
         assert len(ctx.amfi_by_key) == 1
+
+
+def _amfi_raw(rows):
+    """As the pipeline supplies it: name_raw is scheme_nav_name verbatim,
+    name_norm is that same name after normalize_scheme_name()."""
+    return pd.DataFrame(
+        rows, columns=["amfi_scheme_code", "amc_code", "name_raw", "name_norm",
+                       "normalized_nav_name"],
+    )
+
+
+class TestIndexingUsesTheUnflattenedName:
+    """scheme_mapping.py normalizes name_norm before calling build_context, so
+    by the time the parser sees it the parentheses are already gone. That makes
+    strip_parentheticals() a no-op and hands the name to the bare
+    "FORMERLY KNOWN AS ...$" rule, which deletes the plan and option with it.
+    222 of the 237 FORMERLY names collapse onto 27 shared keys that way."""
+
+    def test_formerly_clause_does_not_take_the_plan_with_it(self):
+        amfi = _amfi_raw([(
+            "444", "176",
+            "Sundaram Low Duration Fund (Formerly Known as Principal Low "
+            "Duration Fund) - Direct Plan - Growth Option",
+            "SUNDARAM LOW DURATION FUND FORMERLY KNOWN AS PRINCIPAL LOW "
+            "DURATION FUND DIRECT PLAN GROWTH OPTION",
+            None,
+        )])
+        ctx = build_context(pd.DataFrame(), amfi, None, {})
+        assert {k.plan for k in ctx.amfi_by_key} == {"DIRECT"}
+
+    def test_growth_and_idcw_siblings_keep_separate_keys(self):
+        amfi = _amfi_raw([
+            ("445", "176",
+             "Sundaram Low Duration Fund (Formerly Known as Principal Low "
+             "Duration Fund)- Growth Option",
+             "SUNDARAM LOW DURATION FUND FORMERLY KNOWN AS PRINCIPAL LOW "
+             "DURATION FUND GROWTH OPTION", None),
+            ("446", "176",
+             "Sundaram Low Duration Fund (Formerly Known as Principal Low "
+             "Duration Fund) Regular Plan IDCW",
+             "SUNDARAM LOW DURATION FUND FORMERLY KNOWN AS PRINCIPAL LOW "
+             "DURATION FUND REGULAR PLAN IDCW", None),
+        ])
+        ctx = build_context(pd.DataFrame(), amfi, None, {})
+        for codes in ctx.amfi_by_key.values():
+            assert len(codes) == 1, "the two share classes must not share a key"
+
+    def test_ampersand_is_read_from_the_raw_name(self):
+        """normalize_scheme_name() turns "&" into a space, so the flattened
+        name yields LARGE MIDCAP where the RTA name yields LARGE AND MIDCAP."""
+        amfi = _amfi_raw([(
+            "447", "RMF",
+            "Nippon India Vision Large & Midcap Fund-GROWTH PLAN-Growth Option",
+            "NIPPON INDIA VISION LARGE MIDCAP FUND GROWTH PLAN GROWTH OPTION",
+            None,
+        )])
+        ctx = build_context(pd.DataFrame(), amfi, None, {})
+        cores = {k.core_name for k in ctx.amfi_by_key}
+        assert "NIPPON INDIA VISION LARGE AND MIDCAP" in cores
+
+    def test_falls_back_to_name_norm_when_no_raw_name_is_supplied(self):
+        amfi = _amfi([("448", "H", "HDFC Flexi Cap Fund - Growth", None)])
+        ctx = build_context(pd.DataFrame(), amfi, None, {})
+        assert {k.core_name for k in ctx.amfi_by_key} == {"HDFC FLEXI CAP"}

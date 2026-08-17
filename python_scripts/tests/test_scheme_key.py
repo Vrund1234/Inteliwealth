@@ -1,7 +1,9 @@
 import pytest
 
+from scheme_matching.aliases import build_alias_fn
 from scheme_matching.scheme_key import (
     SchemeKey,
+    roman_to_arabic,
     extract_attributes,
     parse_scheme_key,
     strip_parentheticals,
@@ -219,3 +221,154 @@ class TestParseSchemeKey:
         k = parse_scheme_key("HDFC Flexi Cap Fund - Growth", amc_code="H")
         assert isinstance(hash(k), int)
         assert len({k, k}) == 1
+
+
+class TestSegregatedPortfolioPercentage:
+    """CAMS states the segregated portion as a percentage; AMFI does not.
+
+    "(Segregated Portfolio - 1 with 3.69%)" against the master's
+    "Segregated Portfolio 1". The percentage is a property of one AMC's
+    reporting, not of the share class -- it is the same fund either way, and
+    it varies between distributor files for a single scheme. Left in, it lands
+    in the core name as "WITH 3 69" and blocks a match the NAV fingerprint had
+    already pinpointed.
+    """
+
+    def test_the_percentage_suffix_does_not_block_a_match(self):
+        """The live CAMS/AMFI pair for BSCRB.
+
+        The alias is supplied because the pipeline supplies it: this name also
+        abbreviates the option as "Gr.", and GR -> GROWTH is a seeded row. The
+        test would otherwise fail on the abbreviation rather than on the
+        percentage it is meant to cover.
+        """
+        alias_fn = build_alias_fn([
+            {"raw_term": "GR", "normalized_term": "GROWTH",
+             "alias_type": "TOKEN", "amc_code": None},
+        ])
+        rta = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund Gr. REGULAR "
+            "(Segregated Portfolio - 1 with 3.69%)",
+            alias_fn=alias_fn,
+        )
+        amfi = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund- Segregated Portfolio 1-"
+            "Regular Plan- Growth",
+            alias_fn=alias_fn,
+        )
+        assert rta == amfi
+
+    def test_a_whole_number_percentage_is_handled_too(self):
+        rta = parse_scheme_key(
+            "Aditya Birla Sun Life Medium Term Plan Growth Regular Plan "
+            "(Segregated Portfolio - 1 with 7%)"
+        )
+        amfi = parse_scheme_key(
+            "Aditya Birla Sun Life Medium term Plan- Segregated Portfolio 1- "
+            "Growth- Regular Plan"
+        )
+        assert rta == amfi
+
+    def test_the_portfolio_number_is_still_significant(self):
+        """Portfolio 1 and Portfolio 2 are different pools of assets."""
+        one = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund Gr. REGULAR "
+            "(Segregated Portfolio - 1 with 3.69%)"
+        )
+        two = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund Gr. REGULAR "
+            "(Segregated Portfolio - 2 with 3.69%)"
+        )
+        assert one != two
+
+    def test_the_segregated_qualifier_survives(self):
+        """A segregated share class must never merge with the main scheme."""
+        seg = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund Gr. REGULAR "
+            "(Segregated Portfolio - 1 with 3.69%)"
+        )
+        main = parse_scheme_key(
+            "Aditya Birla Sun Life Credit Risk Fund - Regular Plan - Growth"
+        )
+        assert "SEGREGATED" in seg.qualifiers
+        assert seg != main
+
+    def test_the_word_with_is_untouched_elsewhere(self):
+        """Only a percentage is stripped, not every occurrence of "with"."""
+        k = parse_scheme_key("Some Fund With Growth Advantage - Regular Plan - Growth")
+        assert "WITH" in k.core_name
+
+
+class TestRomanNumeralHelper:
+    """roman_to_arabic is a utility, NOT applied when building core names.
+
+    It lives here because it parses names, but scheme_key deliberately does not
+    call it: rules.numbers_conflict keeps roman series markers in a namespace
+    of their own, and collapsing them into digits made "XXII - Series 11" and
+    "XXII - Series 22" both carry 22, so the subset test stopped seeing a
+    contradiction and CORE_FUZZY mapped one onto the other. Only
+    nav_name_match.match_nav_anchored uses it, where the comparison is confined
+    to one scheme's own NAV candidates.
+    """
+
+    @pytest.mark.parametrize("roman,arabic", [
+        ("II", "2"), ("III", "3"), ("IV", "4"), ("VI", "6"), ("VII", "7"),
+        ("VIII", "8"), ("IX", "9"), ("XI", "11"), ("XIV", "14"), ("XVII", "17"),
+        ("XIX", "19"), ("XXII", "22"), ("XXVIII", "28"), ("XXX", "30"),
+        ("XL", "40"), ("XLII", "42"), ("XLVI", "46"), ("XLIX", "49"),
+    ])
+    def test_the_full_range_of_real_series_numerals(self, roman, arabic):
+        assert roman_to_arabic(roman) == arabic
+
+    @pytest.mark.parametrize("letter", ["C", "D", "L", "M", "V", "X", "I"])
+    def test_a_single_letter_is_never_a_numeral(self, letter):
+        """Series C is the letter C, not 100. The master holds Series C x170,
+        V x134, X x116, D x20, M x15 and L x7."""
+        assert roman_to_arabic(letter) is None
+
+    @pytest.mark.parametrize("code", ["LI", "LV", "LX", "CC", "CD", "CI", "CL",
+                                      "CM", "CV", "CX", "DC", "DI", "DL", "DV",
+                                      "DX", "MD", "MX"])
+    def test_two_letter_series_labels_above_the_cap_are_refused(self, code):
+        """Every one is a real ABSL fixed term plan label, and every one parses
+        as 51 or more. Genuine series numerals in the master stop at XLVI."""
+        assert roman_to_arabic(code) is None
+
+    @pytest.mark.parametrize("code", ["ED", "FF", "JJ", "CH", "CK", "CP", "DD"])
+    def test_series_labels_outside_the_roman_alphabet_are_refused(self, code):
+        assert roman_to_arabic(code) is None
+
+    def test_a_word_that_parses_as_a_large_numeral_is_refused(self):
+        """MIX is technically M+IX = 1009."""
+        assert roman_to_arabic("MIX") is None
+
+    def test_malformed_numerals_are_refused(self):
+        for bad in ("IIII", "VV", "IC", "", None):
+            assert roman_to_arabic(bad) is None
+
+
+class TestCoreNamesLeaveRomansAlone:
+    """The safety property the revert restored."""
+
+    def test_a_roman_series_marker_survives_in_the_core_name(self):
+        k = parse_scheme_key(
+            "Reliance Fixed Horizon Fund - XXII - Series 11 - Growth Option")
+        assert "XXII" in k.core_name.split()
+        assert "22" not in k.core_name.split()
+
+    def test_series_11_and_series_22_of_one_group_stay_distinct(self):
+        eleven = parse_scheme_key(
+            "Reliance Fixed Horizon Fund - XXII - Series 11 - Growth Option")
+        twentytwo = parse_scheme_key(
+            "Reliance Fixed Horizon Fund - XXII - Series 22 - Growth Option")
+        assert eleven != twentytwo
+
+    @pytest.mark.parametrize("letter", ["C", "D", "L", "M", "V", "X"])
+    def test_a_single_letter_series_survives(self, letter):
+        k = parse_scheme_key(
+            f"Sundaram Hybrid Fund Series {letter} Regular Plan Growth")
+        assert letter in k.core_name.split()
+
+    def test_certificate_of_deposit_is_not_four_hundred(self):
+        k = parse_scheme_key("Principal Bank CD Fund - Growth Option")
+        assert "CD" in k.core_name.split()
