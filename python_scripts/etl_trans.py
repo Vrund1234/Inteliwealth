@@ -179,6 +179,17 @@ def clean_value(value):
 # =====================================================
 
 def format_dates(df):
+    """
+    Normalizes every column in DATE_COLUMNS to a python `date` object.
+
+    IMPORTANT: `postdate` is already converted to a proper datetime64
+    column upstream in apply_transaction_mapping() for BOTH CAMS and
+    KFIN. If a column is already datetime64, we must NOT stringify it
+    and re-parse with a strict format - doing so turns values like
+    the Timestamp for 2019-03-20 into the string "2019-03-20 00:00:00",
+    which does not match "%m/%d/%Y" and silently becomes NaT. That was
+    wiping out postdate on every run, for every source.
+    """
 
     if df is None:
         return df
@@ -187,21 +198,56 @@ def format_dates(df):
 
     for col in DATE_COLUMNS:
 
-        if col in df.columns:
+        if col not in df.columns:
+            continue
 
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
+        # -------------------------------------------------
+        # Already a real datetime column (e.g. postdate,
+        # which apply_transaction_mapping() already parsed)
+        # -> use it as-is, do not stringify/re-parse it.
+        # -------------------------------------------------
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+
+            values = df[col]
+
+        else:
+
+            # Clean whitespace including non-breaking space (\xa0)
+            # and stray quote characters before parsing.
+            values = (
+                df[col]
+                .astype("string")
+                .str.replace("\xa0", " ", regex=False)
+                .str.replace("'", "", regex=False)
+                .str.replace('"', "", regex=False)
+                .str.strip()
+            )
+
+            # -------------------------------------------------
+            # POSTDATE
+            # -------------------------------------------------
+            if col == "postdate":
+
+                # CAMS format: M/D/YYYY
+                values = pd.to_datetime(
+                    values,
                     errors="coerce",
-                    dayfirst=False
+                    format="%m/%d/%Y"
                 )
-                .dt.date
-            )
 
-            df[col] = df[col].where(
-                pd.notnull(df[col]),
-                None
-            )
+            else:
+
+                values = pd.to_datetime(
+                    values,
+                    errors="coerce"
+                )
+
+        df[col] = values.dt.date
+
+        df[col] = df[col].where(
+            pd.notnull(df[col]),
+            None
+        )
 
     return df
 
@@ -239,12 +285,95 @@ def apply_transaction_mapping(raw_df, mapping, source):
 
         mapped_df[target_col] = None
 
+        if target_col == "postdate":
+
+            # =====================================================
+            # KFIN: the RTA sends the date only in td_prdt (KFIN
+            # files do NOT have a "postdate" column at all - that
+            # name only exists on the CAMS side). td_prdt values can
+            # still arrive quoted / with \xa0 / with a trailing
+            # time-of-day suffix (e.g. "6/6/2023  12:00:00 AM"), so
+            # clean them the same way before parsing. td_prdt is in
+            # D/M/Y order.
+            # =====================================================
+            if source == "KFIN":
+
+                if "td_prdt" in raw_df.columns:
+
+                    cleaned = (
+                        raw_df["td_prdt"]
+                        .astype("string")
+                        .str.replace("\xa0", " ", regex=False)
+                        .str.replace("'", "", regex=False)
+                        .str.replace('"', "", regex=False)
+                        .str.strip()
+                    )
+
+                    # Keep only the D/M/YYYY (or D/M/YY) portion,
+                    # drop any trailing " 12:00:00 AM" style text.
+                    cleaned = cleaned.str.extract(
+                        r"(\d{1,2}/\d{1,2}/\d{2,4})"
+                    )[0]
+
+                    mapped_df["postdate"] = pd.to_datetime(
+                        cleaned,
+                        errors="coerce",
+                        format="%d/%m/%Y"
+                    )
+
+                continue
+
+            # =====================================================
+            # CAMS: postdate arrives the same way KFIN's does, e.g.
+            #   '3/20/2019  12:00:00 AM'
+            # quoted, with \xa0/whitespace, and a trailing time-of-day
+            # component. Stripping quotes alone is NOT enough because
+            # the leftover "  12:00:00 AM" still fails to match the
+            # strict format "%m/%d/%Y" and silently becomes NaT.
+            # Extract just the M/D/YYYY portion before parsing.
+            # =====================================================
+            if source == "CAMS" and "postdate" in raw_df.columns:
+
+                cleaned = (
+                    raw_df["postdate"]
+                    .astype("string")
+                    .str.replace("\xa0", " ", regex=False)
+                    .str.replace("'", "", regex=False)
+                    .str.replace('"', "", regex=False)
+                    .str.strip()
+                )
+
+                # Keep only the M/D/YYYY portion, drop any trailing
+                # " 12:00:00 AM" style time text.
+                cleaned = cleaned.str.extract(
+                    r"(\d{1,2}/\d{1,2}/\d{4})"
+                )[0]
+
+                mapped_df["postdate"] = pd.to_datetime(
+                    cleaned,
+                    errors="coerce",
+                    format="%m/%d/%Y"
+                )
+
+                continue
+
         for src in source_cols:
             src = src.lower().strip()
 
             if src in raw_df.columns:
-                mapped_df[target_col] = raw_df[src]
-                break
+
+                source_values = raw_df[src].copy()
+
+                # Treat blank values as missing
+                source_values = source_values.replace(
+                    ["", "nan", "None", "<NA>", "NaT"],
+                    np.nan
+                )
+
+                # Fill only rows where target is still missing
+                mapped_df[target_col] = mapped_df[target_col].fillna(
+                    source_values
+                )
 
     return mapped_df
     
@@ -269,11 +398,49 @@ def process_transactions(cams=None, kfin=None):
             "CAMS"
         )
 
+        print("=" * 80)
+        print("CAMS POSTDATE AFTER MAPPING")
+
+        print(cams_df["postdate"].head(20))
+
+        print(
+            "CAMS POSTDATE NON-NULL:",
+            cams_df["postdate"].notna().sum(),
+            "/",
+            len(cams_df)
+        )
+
+        print(
+            "CAMS POSTDATE NULL:",
+            cams_df["postdate"].isna().sum()
+        )
+
+        print("=" * 80)
+
         cams_df = normalize(cams_df)
 
         cams_df = clean_identifier_columns(cams_df)
 
         cams_df = format_dates(cams_df)
+
+        print("=" * 80)
+        print("CAMS POSTDATE AFTER FORMAT_DATES")
+
+        print(cams_df["postdate"].head(20))
+
+        print(
+            "CAMS POSTDATE NON-NULL:",
+            cams_df["postdate"].notna().sum(),
+            "/",
+            len(cams_df)
+        )
+
+        print(
+            "CAMS POSTDATE NULL:",
+            cams_df["postdate"].isna().sum()
+        )
+
+        print("=" * 80)
 
         dfs.append(cams_df)
         print(cams_df.head())
@@ -289,6 +456,25 @@ def process_transactions(cams=None, kfin=None):
             TRANSACTION_MASTER_MAPPING,
             "KFIN"
         )
+
+        print("=" * 80)
+        print("KFIN POSTDATE AFTER MAPPING")
+
+        print(kfin_df["postdate"].head(20))
+
+        print(
+            "KFIN POSTDATE NON-NULL:",
+            kfin_df["postdate"].notna().sum(),
+            "/",
+            len(kfin_df)
+        )
+
+        print(
+            "KFIN POSTDATE NULL:",
+            kfin_df["postdate"].isna().sum()
+        )
+
+        print("=" * 80)
 
         kfin_df = normalize(kfin_df)
 

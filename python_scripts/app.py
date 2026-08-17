@@ -1,11 +1,16 @@
 import streamlit as st
 import pandas as pd
 import traceback
+
 from utils.triggers import create_triggers
 from raw_ingestion import extract_and_push
 from transformations.transform import load_silver
 from utils.db import read_table
 from gold_loader import load_gold
+
+# Scheme Mapping
+from scheme_mapping import load_scheme_mapping
+
 
 st.set_page_config(
     page_title="Mutual Fund",
@@ -13,9 +18,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# ==============================
+
+# =========================================================
 # HEADER
-# ==============================
+# =========================================================
 
 st.markdown(
     "<h1 style='text-align:center;'>📊 Mutual Funds Dashboard</h1>",
@@ -24,9 +30,10 @@ st.markdown(
 
 st.divider()
 
-# ==============================
+
+# =========================================================
 # SESSION STATE
-# ==============================
+# =========================================================
 
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
@@ -57,9 +64,9 @@ if "uploaded_types" not in st.session_state:
     }
 
 
-# ==============================
+# =========================================================
 # HELPERS
-# ==============================
+# =========================================================
 
 def is_valid(df):
     return (
@@ -69,13 +76,21 @@ def is_valid(df):
     )
 
 
-# ==============================
+# =========================================================
 # FILE UPLOAD UI
-# ==============================
+# =========================================================
 
 st.subheader("📂 Upload CAMS / KFintech Excel Files")
 
-col1, col2 = st.columns([10, 2], vertical_alignment="top")
+col1, col2 = st.columns(
+    [10, 2],
+    vertical_alignment="top"
+)
+
+
+# =========================================================
+# FILE UPLOADER
+# =========================================================
 
 with col1:
 
@@ -85,6 +100,11 @@ with col1:
         accept_multiple_files=True,
         key=f"uploader_{st.session_state.uploader_key}"
     )
+
+
+# =========================================================
+# CLEAR BUTTON
+# =========================================================
 
 with col2:
 
@@ -117,11 +137,13 @@ with col2:
 
         st.rerun()
 
+
 st.divider()
 
-# ==============================
+
+# =========================================================
 # BUTTONS
-# ==============================
+# =========================================================
 
 col1, col2 = st.columns(2)
 
@@ -138,26 +160,40 @@ transform_btn = col2.button(
 st.divider()
 
 
-# ==============================
+# =========================================================
 # EXTRACT LOGIC
-# ==============================
+# =========================================================
 
 if extract_btn:
 
     st.session_state.transformed = False
     st.session_state.current_layer = "bronze"
     st.session_state.silver_data = {}
+    st.session_state.gold_data = {}
 
     try:
 
+        # =================================================
+        # CHECK FILE UPLOAD
+        # =================================================
+
         if not uploaded_files:
 
-            st.warning("⚠ Please upload one or more files.")
+            st.warning(
+                "⚠ Please upload one or more files."
+            )
+
             st.stop()
 
-        st.info("Reading uploaded files...")
 
-        # Detect uploaded file types
+        # =================================================
+        # STEP 1 : DETECT UPLOADED FILE TYPES
+        # =================================================
+
+        st.info(
+            "Reading uploaded files..."
+        )
+
         uploaded_types = {
             "investor": False,
             "transaction": False,
@@ -168,219 +204,468 @@ if extract_btn:
 
             name = file.name.lower()
 
-            uploaded_types = {
-                "investor": False,
-                "transaction": False,
-                "sip": False
-            }
+            # ---------- CAMS ----------
 
-            for file in uploaded_files:
+            if name.endswith("r9.csv"):
 
-                name = file.name.lower()
+                uploaded_types["investor"] = True
 
-                # ---------- CAMS ----------
-                if name.endswith("r9.csv"):
-                    uploaded_types["investor"] = True
+            elif name.endswith("r2.csv"):
 
-                elif name.endswith("r2.csv"):
-                    uploaded_types["transaction"] = True
+                uploaded_types["transaction"] = True
 
-                elif name.endswith("r49.csv"):
-                    uploaded_types["sip"] = True
+            elif name.endswith("r49.csv"):
 
-                # ---------- KFIN ----------
-                elif "mfsd211" in name:
-                    uploaded_types["investor"] = True
+                uploaded_types["sip"] = True
 
-                elif "mfsd201" in name:
-                    uploaded_types["transaction"] = True
+            # ---------- KFIN ----------
 
-                elif "mfsd243" in name:
-                    uploaded_types["sip"] = True
+            elif "mfsd211" in name:
+
+                uploaded_types["investor"] = True
+
+            elif "mfsd201" in name:
+
+                uploaded_types["transaction"] = True
+
+            elif "mfsd243" in name:
+
+                uploaded_types["sip"] = True
+
 
         st.session_state.uploaded_types = uploaded_types
 
-        # Run Raw Ingestion
-        transaction_count, investor_count, sip_count, sip_preview = extract_and_push(
+
+        # =================================================
+        # STEP 2 : BRONZE EXTRACTION
+        # =================================================
+
+        st.info(
+            "1️⃣ Loading raw data into Bronze..."
+        )
+
+        (
+            transaction_count,
+            investor_count,
+            sip_count,
+            sip_preview
+        ) = extract_and_push(
             uploaded_files
         )
+
         create_triggers()
 
+
         st.success(
-            f"✔ Extraction Complete "
+            f"✔ Bronze Extraction Complete "
             f"(Transactions: {transaction_count}, "
             f"Investor: {investor_count}, "
             f"SIP: {sip_count})"
         )
 
-        # Bronze Preview
+
+        # =================================================
+        # STEP 3 : SCHEME MAPPING
+        # =================================================
+        #
+        # IMPORTANT:
+        # scheme_mapping.py now reads directly from:
+        #
+        # bronze.transaction_master_new
+        #
+        # Therefore NO Silver refresh is required here.
+        #
+        # Flow:
+        #
+        # Uploaded File
+        #       ↓
+        # Bronze transaction_master_new
+        #       ↓
+        # scheme_mapping.py
+        #       ↓
+        # bronze.scheme_mapping
+        #
+        # =================================================
+
+        if uploaded_types["transaction"]:
+
+            st.info(
+                "2️⃣ Running Scheme Mapping from Bronze..."
+            )
+
+            load_scheme_mapping()
+
+            st.success(
+                "✔ Scheme Mapping Completed"
+            )
+
+        else:
+
+            st.info(
+                "ℹ No transaction file uploaded. "
+                "Scheme Mapping skipped."
+            )
+
+
+        # =================================================
+        # STEP 4 : BRONZE PREVIEW
+        # =================================================
+
+        st.info(
+            "3️⃣ Preparing Bronze preview..."
+        )
+
         bronze_data = {}
 
+
+        # ---------- INVESTOR ----------
+
         if uploaded_types["investor"]:
+
             bronze_data["Investor Master"] = read_table(
                 "bronze",
                 "investor_master"
             )
 
+
+        # ---------- TRANSACTION ----------
+
         if uploaded_types["transaction"]:
+
             bronze_data["Transactions"] = read_table(
                 "bronze",
                 "transaction_master_new"
             )
 
+
+        # ---------- SIP ----------
+
         if uploaded_types["sip"]:
+
             bronze_data["SIP"] = read_table(
                 "bronze",
                 "sip_master_new"
             )
 
+
+        # ---------- SCHEME MAPPING ----------
+
+        try:
+
+            scheme_mapping_data = read_table(
+                "bronze",
+                "scheme_mapping"
+            )
+
+            if is_valid(scheme_mapping_data):
+
+                bronze_data["Scheme Mapping"] = (
+                    scheme_mapping_data
+                )
+
+        except Exception:
+
+            # Scheme mapping preview should not
+            # fail the entire extraction.
+            pass
+
+
+        # =================================================
+        # SAVE SESSION STATE
+        # =================================================
+
         st.session_state.bronze_data = bronze_data
+
         st.session_state.extracted = True
+
         st.session_state.current_layer = "bronze"
 
-        st.success("✔ Extraction Completed + DB Load Done")
+
+        st.success(
+            "✔ Extraction Completed + "
+            "Bronze + Scheme Mapping Updated"
+        )
+
 
     except Exception:
 
-        st.error("Extraction Failed")
-        st.code(traceback.format_exc())
+        st.error(
+            "❌ Extraction Failed"
+        )
 
-# ==============================
+        st.code(
+            traceback.format_exc()
+        )
+
+
+# =========================================================
 # TRANSFORM LOGIC
-# ==============================
+# =========================================================
 
 if transform_btn:
 
     if not st.session_state.extracted:
 
-        st.warning("⚠ Run Extract First")
+        st.warning(
+            "⚠ Run Extract First"
+        )
 
     else:
 
         try:
 
-            st.info("Running transformation layer...")
+            st.info(
+                "Running transformation layer..."
+            )
 
-            # Bronze → Silver
+
+            # =================================================
+            # STEP 1 : BRONZE → SILVER
+            # =================================================
+
+            st.info(
+                "1️⃣ Loading Silver Layer..."
+            )
+
             load_silver()
+
             create_triggers()
+
+
+            st.success(
+                "✔ Silver Layer Loaded"
+            )
+
+
+            # =================================================
+            # STEP 2 : SILVER → GOLD
+            # =================================================
+
+            st.info(
+                "2️⃣ Loading Gold Layer..."
+            )
 
             load_gold()
+
             create_triggers()
 
-            # Silver → Gold
-            st.info("Loading Gold Layer...")
 
-            uploaded = st.session_state.uploaded_types
+            st.success(
+                "✔ Gold Layer Loaded"
+            )
+
+
+            uploaded = (
+                st.session_state.uploaded_types
+            )
+
+
+            # =================================================
+            # SILVER PREVIEW
+            # =================================================
 
             silver_data = {}
 
+
+            # ---------- INVESTOR ----------
+
             if uploaded["investor"]:
 
-                silver_data["Investor Master"] = read_table(
-                    "silver",
-                    "investor_master"
+                silver_data["Investor Master"] = (
+                    read_table(
+                        "silver",
+                        "investor_master"
+                    )
                 )
+
+
+            # ---------- TRANSACTION ----------
 
             if uploaded["transaction"]:
 
-                silver_data["Transactions"] = read_table(
-                    "silver",
-                    "transaction_master_new"
+                silver_data["Transactions"] = (
+                    read_table(
+                        "silver",
+                        "transaction_master_new"
+                    )
                 )
+
+
+            # ---------- SIP ----------
 
             if uploaded["sip"]:
 
-                silver_data["SIP"] = read_table(
-                    "silver",
-                    "sip_master_new"
+                silver_data["SIP"] = (
+                    read_table(
+                        "silver",
+                        "sip_master_new"
+                    )
                 )
 
 
+            # =================================================
+            # GOLD PREVIEW
+            # =================================================
+
             gold_data = {}
+
+
+            # ---------- AMC ----------
 
             gold_data["AMC"] = read_table(
                 "gold",
                 "amc"
             )
 
+
+            # ---------- SCHEME ----------
+
             gold_data["Scheme"] = read_table(
                 "gold",
                 "scheme"
             )
+
+
+            # ---------- SCHEME NAV ----------
 
             gold_data["Scheme NAV"] = read_table(
                 "gold",
                 "scheme_nav"
             )
 
+
+            # ---------- CLIENTS ----------
+
             gold_data["Clients"] = read_table(
                 "gold",
                 "clients"
             )
+
+
+            # ---------- TRANSACTIONS ----------
 
             gold_data["Transactions"] = read_table(
                 "gold",
                 "transactions"
             )
 
+
+            # ---------- HOLDINGS ----------
+
             gold_data["Holdings"] = read_table(
                 "gold",
                 "holdings"
             )
+
+
+            # ---------- FOLIO NOMINEES ----------
 
             gold_data["Folio Nominees"] = read_table(
                 "gold",
                 "folio_nominees"
             )
 
+
+            # ---------- SIP ----------
+
             gold_data["SIP"] = read_table(
                 "gold",
                 "sip"
             )
 
-            st.session_state.gold_data = gold_data
+
+            # =================================================
+            # SAVE SESSION STATE
+            # =================================================
 
             st.session_state.silver_data = silver_data
-            st.session_state.transformed = True
-            st.session_state.current_layer = "silver_gold"
 
-            st.success("✔ Transformation Completed + Silver Loaded to DB")
+            st.session_state.gold_data = gold_data
+
+            st.session_state.transformed = True
+
+            st.session_state.current_layer = (
+                "silver_gold"
+            )
+
+
+            st.success(
+                "✔ Transformation Completed + "
+                "Silver + Gold Loaded to DB"
+            )
+
 
         except Exception:
 
-            st.error("Transformation Failed")
-            st.code(traceback.format_exc())
+            st.error(
+                "❌ Transformation Failed"
+            )
 
-# ==============================
-# PREVIEW
-# ==============================
+            st.code(
+                traceback.format_exc()
+            )
+
+
+# =========================================================
+# PRETTY NAMES
+# =========================================================
 
 pretty_names = {
-    "Investor Master": "📘 Master Table (Investor)",
-    "Transactions": "📊 Transaction Table",
-    "SIP": "📈 SIP Table"
+
+    "Investor Master":
+        "📘 Master Table (Investor)",
+
+    "Transactions":
+        "📊 Transaction Table",
+
+    "SIP":
+        "📈 SIP Table",
+
+    "Scheme Mapping":
+        "🔗 Scheme Mapping Table"
 }
 
 
+# =========================================================
+# BRONZE PREVIEW
+# =========================================================
+
 if st.session_state.current_layer == "bronze":
 
-    st.markdown("## 📄 Bronze Layer Preview")
+    st.markdown(
+        "## 📄 Bronze Layer Preview"
+    )
 
-    for name, df in st.session_state.bronze_data.items():
+
+    for name, df in (
+        st.session_state.bronze_data.items()
+    ):
 
         if is_valid(df):
 
-            with st.container(border=True):
+            with st.container(
+                border=True
+            ):
 
                 st.markdown(
                     f"### {pretty_names.get(name, name)}"
                 )
 
+
                 c1, c2 = st.columns(2)
 
-                c1.metric("Rows", len(df))
-                c2.metric("Columns", len(df.columns))
+
+                c1.metric(
+                    "Rows",
+                    len(df)
+                )
+
+
+                c2.metric(
+                    "Columns",
+                    len(df.columns)
+                )
+
 
                 st.dataframe(
                     df,
@@ -388,31 +673,55 @@ if st.session_state.current_layer == "bronze":
                     height=300
                 )
 
+
                 st.divider()
 
+
+# =========================================================
+# SILVER + GOLD PREVIEW
+# =========================================================
 
 elif st.session_state.current_layer == "silver_gold":
 
-    # ==============================
+
+    # =====================================================
     # SILVER PREVIEW
-    # ==============================
+    # =====================================================
 
-    st.markdown("## ✨ Silver Layer Preview")
+    st.markdown(
+        "## ✨ Silver Layer Preview"
+    )
 
-    for name, df in st.session_state.silver_data.items():
+
+    for name, df in (
+        st.session_state.silver_data.items()
+    ):
 
         if is_valid(df):
 
-            with st.container(border=True):
+            with st.container(
+                border=True
+            ):
 
                 st.markdown(
                     f"### {pretty_names.get(name, name)}"
                 )
 
+
                 c1, c2 = st.columns(2)
 
-                c1.metric("Rows", len(df))
-                c2.metric("Columns", len(df.columns))
+
+                c1.metric(
+                    "Rows",
+                    len(df)
+                )
+
+
+                c2.metric(
+                    "Columns",
+                    len(df.columns)
+                )
+
 
                 st.dataframe(
                     df,
@@ -420,34 +729,54 @@ elif st.session_state.current_layer == "silver_gold":
                     height=300
                 )
 
+
                 st.divider()
 
 
-    # ==============================
+    # =====================================================
     # GOLD PREVIEW
-    # ==============================
+    # =====================================================
 
-    st.markdown("## ⭐ Gold Layer Preview")
+    st.markdown(
+        "## ⭐ Gold Layer Preview"
+    )
 
-    for name, df in st.session_state.gold_data.items():
+
+    for name, df in (
+        st.session_state.gold_data.items()
+    ):
 
         if is_valid(df):
 
-            with st.container(border=True):
+            with st.container(
+                border=True
+            ):
 
                 st.markdown(
                     f"### {name}"
                 )
 
+
                 c1, c2 = st.columns(2)
 
-                c1.metric("Rows", len(df))
-                c2.metric("Columns", len(df.columns))
+
+                c1.metric(
+                    "Rows",
+                    len(df)
+                )
+
+
+                c2.metric(
+                    "Columns",
+                    len(df.columns)
+                )
+
 
                 st.dataframe(
                     df,
                     width="stretch",
                     height=300
                 )
+
 
                 st.divider()
