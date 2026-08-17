@@ -1,3 +1,4 @@
+import difflib
 import re
 import uuid
 from dataclasses import replace
@@ -407,6 +408,41 @@ def load_scheme_mapping():
 
 
     # =================================================
+    # LOAD SCHEME_MASTER (HISTORICAL AMFI MASTER)
+    # =================================================
+    # public.scheme_master contains 37,764 scheme codes (both active and
+    # historical/restructured/legacy schemes), whereas public.amfi_scheme_master
+    # only has 16,345 currently active schemes.
+    # When nav_master NAV fingerprinting identifies a valid historical scheme_code,
+    # we verify its existence in scheme_master and map it directly.
+
+    sm_query = """
+        SELECT
+            scheme_code::text AS scheme_code,
+            name              AS scheme_name,
+            name_norm,
+            category,
+            isin_growth,
+            isin_reinvest
+        FROM public.scheme_master
+        WHERE is_deleted = false;
+    """
+
+    print("START: Loading scheme_master")
+
+    sm_df = pd.read_sql(sm_query, master_engine)
+    sm_df["scheme_code"] = sm_df["scheme_code"].astype(str).str.strip()
+
+    sm_codes = set(sm_df["scheme_code"].dropna().unique())
+    sm_names = dict(zip(sm_df["scheme_code"], sm_df["scheme_name"]))
+
+    print(
+        f"DONE: scheme_master loaded: "
+        f"{len(sm_df)} schemes ({len(sm_codes)} unique codes)"
+    )
+
+
+    # =================================================
     # LOAD RTA -> AMC SLUG MAPPING
     # =================================================
 
@@ -534,6 +570,46 @@ def load_scheme_mapping():
     )
 
     # =================================================
+    # RULE 2.5 : SCHEME_MASTER EXACT NAME MATCH (99)
+    # Matches RTA normalized scheme name against public.scheme_master
+    # for legacy / historical schemes not present in amfi_scheme_master.
+    # =================================================
+
+    print("=" * 80)
+    print("RULE 2.5 : SCHEME_MASTER EXACT NAME MATCH")
+    print("=" * 80)
+
+    sm_df["name_norm_calc"] = sm_df["scheme_name"].apply(normalize_scheme_name)
+    sm_name_counts = sm_df.groupby("name_norm_calc")["scheme_code"].nunique()
+    sm_unique_names = set(sm_name_counts[sm_name_counts == 1].index)
+    sm_name_to_code = (
+        sm_df[sm_df["name_norm_calc"].isin(sm_unique_names)]
+        .drop_duplicates(subset=["name_norm_calc"])
+        .set_index("name_norm_calc")["scheme_code"]
+        .to_dict()
+    )
+
+    for idx, row in df.iterrows():
+        if pd.notna(df.at[idx, "best_amfi_scheme_code"]):
+            continue
+
+        norm_name = row["normalized_scheme_name"]
+        if norm_name in sm_name_to_code:
+            matched_code = sm_name_to_code[norm_name]
+            update_best_match(
+                df,
+                idx,
+                matched_code,
+                "SCHEME_MASTER_EXACT",
+                99,
+            )
+
+    rule25_matched = df["best_mapping_source"].eq("SCHEME_MASTER_EXACT").sum()
+    print(
+        f"[DIAG] Rule 2.5 (SCHEME_MASTER_EXACT) total matched: {rule25_matched}"
+    )
+
+    # =================================================
     # RULE 3.5 : NAV MATCH (97)
     # Uses bronze.transaction_master_new purprice as the
     # NAV source — covers both CAMS and KFIN.
@@ -601,16 +677,6 @@ def load_scheme_mapping():
                 )
                 rta_nav_df['nav_round'] = rta_nav_df['nav'].round(4)
 
-                # Only keep dates that AMFI also publishes
-                amfi_dates_df = pd.read_sql(
-                    "SELECT DISTINCT nav_date FROM public.nav_master",
-                    master_engine
-                )
-                amfi_dates = set(amfi_dates_df['nav_date'])
-
-                rta_nav_df = rta_nav_df[
-                    rta_nav_df['nav_date'].isin(amfi_dates)
-                ]
                 rta_nav_df = rta_nav_df.sort_values(
                     'nav_date', ascending=False
                 )
@@ -623,10 +689,10 @@ def load_scheme_mapping():
                 counts = top3_navs.groupby(
                     ['rta', 'rta_scheme_code']
                 ).size()
-                valid_rta = counts[counts == 3].index
+                valid_rta = counts[counts >= 2].index
 
                 print(
-                    f"  Schemes with 3+ NAV dates on AMFI calendar: "
+                    f"  Schemes with 2+ NAV dates on AMFI calendar: "
                     f"{len(valid_rta)}"
                 )
 
@@ -647,8 +713,8 @@ def load_scheme_mapping():
 
                     nav_master_query = text("""
                         SELECT nm.scheme_code,
-                               nm.nav_date,
-                               ROUND(nm.nav, 4) as nav_round
+                                nm.nav_date,
+                                ROUND(nm.nav, 4) as nav_round
                         FROM public.nav_master nm
                         WHERE nm.nav_date = ANY(:dates)
                     """)
@@ -656,6 +722,13 @@ def load_scheme_mapping():
                         nav_master_query,
                         master_engine,
                         params={"dates": required_dates},
+                    )
+
+                    amfi_nav_df['scheme_code_str'] = amfi_nav_df['scheme_code'].astype(str)
+                    nav_lookup_dict = (
+                        amfi_nav_df.groupby(['nav_date', 'nav_round'])['scheme_code_str']
+                        .apply(set)
+                        .to_dict()
                     )
 
                     for idx, row in unmatched_nav_df.iterrows():
@@ -670,52 +743,97 @@ def load_scheme_mapping():
                             & (top3_navs['rta_scheme_code'] == rta_code)
                         ]
 
-                        matched_codes = []
-                        for _, sample in sample_navs.iterrows():
-                            amfi_matches = amfi_nav_df[
-                                (amfi_nav_df['nav_date']
-                                 == sample['nav_date'])
-                                & (amfi_nav_df['nav_round']
-                                   == sample['nav_round'])
-                            ]
-                            matched_codes.append(
-                                set(amfi_matches['scheme_code'].astype(str))
-                            )
+                        matched_codes = [
+                            nav_lookup_dict.get((sample['nav_date'], sample['nav_round']), set())
+                            for _, sample in sample_navs.iterrows()
+                        ]
 
                         if any(not codes for codes in matched_codes):
                             continue
 
                         common_codes = set.intersection(*matched_codes)
 
+                        raw_code = None
                         if len(common_codes) == 1:
-                            raw_code = list(common_codes)[0]
+                            raw_code = str(list(common_codes)[0])
+                        elif len(common_codes) > 1:
+                            # Disambiguate multiple candidate schemes (e.g. Growth vs IDCW, Regular vs Direct/Institutional)
+                            rta_name = str(row['rta_scheme_name']).lower()
+                            is_direct = 'direct' in rta_name
+                            is_growth = 'growth' in rta_name or ' gr' in rta_name
+                            is_idcw = 'idcw' in rta_name or 'div' in rta_name
+                            is_retail = 'retail' in rta_name
+                            is_inst = 'institutional' in rta_name or ' inst' in rta_name
 
-                            # Validate against amfi_df for type consistency
+                            cand_scores = []
+                            for c in common_codes:
+                                c_code = str(c)
+                                c_name = sm_names.get(c_code, '').lower()
+                                score = difflib.SequenceMatcher(None, rta_name, c_name).ratio()
+                                if is_direct != ('direct' in c_name):
+                                    score -= 0.3
+                                c_is_growth = 'growth' in c_name or 'cumulative' in c_name
+                                c_is_idcw = 'dividend' in c_name or 'idcw' in c_name or 'payout' in c_name or 'reinvestment' in c_name
+                                if is_growth and c_is_growth:
+                                    score += 0.2
+                                elif is_growth and not c_is_growth:
+                                    score -= 0.2
+                                if is_idcw and c_is_idcw:
+                                    score += 0.2
+                                elif is_idcw and not c_is_idcw:
+                                    score -= 0.2
+                                if is_retail and 'retail' in c_name:
+                                    score += 0.2
+                                if is_inst and 'institutional' in c_name:
+                                    score += 0.2
+                                cand_scores.append((score, c_code))
+
+                            cand_scores.sort(reverse=True)
+                            if cand_scores:
+                                raw_code = cand_scores[0][1]
+
+                        if raw_code:
+                            # Validate against amfi_df (active AMFI schemes)
                             amfi_lookup = amfi_df[
                                 amfi_df["amfi_scheme_code"].astype(str)
-                                == str(raw_code)
+                                == raw_code
                             ]
 
-                            if len(amfi_lookup) != 1:
+                            if len(amfi_lookup) == 1:
+                                matched_amfi = (
+                                    amfi_lookup.iloc[0]["amfi_scheme_code"]
+                                )
+                                update_best_match(
+                                    df, idx, matched_amfi, "NAV_MATCH", 97
+                                )
+                            elif raw_code in sm_codes:
+                                # Historical AMFI scheme in scheme_master
+                                update_best_match(
+                                    df,
+                                    idx,
+                                    raw_code,
+                                    "NAV_MATCH_SCHEME_MASTER",
+                                    97,
+                                )
+                            else:
                                 print(
                                     f"[NAV_MATCH SKIP] nav_master code "
-                                    f"{raw_code} did not resolve uniquely "
-                                    f"in amfi_df ({len(amfi_lookup)} rows) "
-                                    f"for {rta}/{rta_code}"
+                                    f"{raw_code} not found in amfi_df "
+                                    f"or scheme_master for {rta}/{rta_code}"
                                 )
                                 continue
 
-                            matched_amfi = (
-                                amfi_lookup.iloc[0]["amfi_scheme_code"]
-                            )
-                            update_best_match(
-                                df, idx, matched_amfi, "NAV_MATCH", 97
-                            )
-
-    # Diagnostic — Rule 3.5 contribution
-    rule35_matched = df["best_mapping_source"].eq("NAV_MATCH").sum()
+    # Diagnostic — Rule 3.5 contribution (direct amfi_df + scheme_master)
+    rule35_amfi = df["best_mapping_source"].eq("NAV_MATCH").sum()
+    rule35_sm = df["best_mapping_source"].eq("NAV_MATCH_SCHEME_MASTER").sum()
     print(
-        f"[DIAG] Rule 3.5 (NAV_MATCH) total matched: {rule35_matched}"
+        f"[DIAG] Rule 3.5 (NAV_MATCH amfi_master) total matched: {rule35_amfi}"
+    )
+    print(
+        f"[DIAG] Rule 3.5 (NAV_MATCH scheme_master) total matched: {rule35_sm}"
+    )
+    print(
+        f"[DIAG] Rule 3.5 (NAV_MATCH total): {rule35_amfi + rule35_sm}"
     )
 
     # -------------------------------------------------
@@ -875,6 +993,11 @@ def load_scheme_mapping():
         suffixes=("", "_master")
     )
 
+    df["amc_code"] = (
+        df["amc_code"]
+        .combine_first(df["amfi_amc_code"] if "amfi_amc_code" in df.columns else None)
+        .combine_first(df["rta_amc_code"] if "rta_amc_code" in df.columns else None)
+    )
 
     df["scheme_id"] = build_scheme_id_column(df)
 
