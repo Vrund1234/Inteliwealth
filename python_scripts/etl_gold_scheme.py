@@ -1,6 +1,5 @@
 import pandas as pd
 import uuid
-import re
 from datetime import datetime
 
 from sqlalchemy import text
@@ -126,14 +125,146 @@ def extract_scheme():
 
 
 # =====================================================
+# LOAD SCHEME MAPPING
+#
+# ONLY SOURCE USED TO POPULATE amfi_code
+#
+# RTA + RTA Scheme Code
+#          ↓
+# bronze.scheme_mapping
+#          ↓
+# amfi_scheme_code
+# =====================================================
+
+def load_scheme_mapping():
+
+    print("=" * 80)
+    print("LOADING SCHEME MAPPING")
+    print("=" * 80)
+
+    query = """
+
+        SELECT
+            rta,
+            rta_scheme_code,
+            amfi_scheme_code
+        FROM bronze.scheme_mapping
+        WHERE amfi_scheme_code IS NOT NULL
+
+    """
+
+    mapping_df = pd.read_sql(
+        query,
+        engine
+    )
+
+    print(
+        "Scheme mapping rows :",
+        len(mapping_df)
+    )
+
+    if mapping_df.empty:
+
+        print(
+            "WARNING: Scheme mapping table is empty."
+        )
+
+        return mapping_df
+
+    mapping_df["rta"] = clean_text(
+        mapping_df["rta"]
+    )
+
+    mapping_df["rta_scheme_code"] = (
+        mapping_df["rta_scheme_code"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    mapping_df["amfi_scheme_code"] = (
+        mapping_df["amfi_scheme_code"]
+        .astype("string")
+        .str.strip()
+    )
+
+    mapping_df = mapping_df[
+        mapping_df["rta"].notna()
+        &
+        mapping_df["rta"].ne("")
+        &
+        mapping_df["rta"].ne("<NA>")
+        &
+        mapping_df["rta_scheme_code"].notna()
+        &
+        mapping_df["rta_scheme_code"].ne("")
+        &
+        mapping_df["rta_scheme_code"].ne("<NA>")
+        &
+        mapping_df["amfi_scheme_code"].notna()
+        &
+        mapping_df["amfi_scheme_code"].ne("")
+        &
+        mapping_df["amfi_scheme_code"].ne("<NA>")
+    ].copy()
+
+    conflict_check = (
+        mapping_df
+        .groupby(
+            [
+                "rta",
+                "rta_scheme_code"
+            ]
+        )["amfi_scheme_code"]
+        .nunique()
+        .reset_index(name="amfi_count")
+    )
+
+    conflicts = conflict_check[
+        conflict_check["amfi_count"] > 1
+    ]
+
+    if not conflicts.empty:
+
+        print(
+            "\nERROR: Conflicting AMFI mappings found."
+        )
+
+        print(
+            conflicts.to_string(index=False)
+        )
+
+        raise Exception(
+            "One RTA + RTA scheme code maps to "
+            "multiple AMFI scheme codes."
+        )
+
+    mapping_df = (
+        mapping_df
+        .drop_duplicates(
+            subset=[
+                "rta",
+                "rta_scheme_code"
+            ],
+            keep="first"
+        )
+        .reset_index(drop=True)
+    )
+
+    print(
+        "Valid scheme mappings :",
+        len(mapping_df)
+    )
+
+    return mapping_df
+
+
+# =====================================================
 # LOAD AMFI MASTER
 #
-# IMPORTANT:
-# We intentionally DO NOT select name_norm from DB.
-# We generate it in Python.
-#
-# Therefore this code will not fail because of
-# name_norm being absent from the actual DB table.
+# NOTE:
+# ISIN COLUMNS ARE INTENTIONALLY NOT LOADED.
+# gold.scheme.isin WILL REMAIN NULL.
 # =====================================================
 
 def load_amfi_master():
@@ -157,8 +288,6 @@ def load_amfi_master():
             sub_category,
             plan_type,
             option_type,
-            isin_growth,
-            isin_idcw,
             min_amount,
             launch_date,
             closure_date,
@@ -185,12 +314,12 @@ def load_amfi_master():
     )
 
     if amfi_df.empty:
-        print("WARNING: AMFI scheme master is empty.")
-        return amfi_df
 
-    # -------------------------------------------------
-    # Clean columns
-    # -------------------------------------------------
+        print(
+            "WARNING: AMFI scheme master is empty."
+        )
+
+        return amfi_df
 
     amfi_df["amfi_scheme_code"] = (
         amfi_df["amfi_scheme_code"]
@@ -214,19 +343,9 @@ def load_amfi_master():
         .str.strip()
     )
 
-    # -------------------------------------------------
-    # Generate name_norm in Python
-    #
-    # We do NOT depend on DB name_norm column.
-    # -------------------------------------------------
-
     amfi_df["name_norm"] = normalize_scheme_name(
         amfi_df["scheme_name"]
     )
-
-    # -------------------------------------------------
-    # Remove invalid AMFI codes
-    # -------------------------------------------------
 
     amfi_df = amfi_df[
         amfi_df["amfi_scheme_code"].notna()
@@ -235,12 +354,6 @@ def load_amfi_master():
         &
         amfi_df["amfi_scheme_code"].ne("<NA>")
     ].copy()
-
-    # -------------------------------------------------
-    # One normalized scheme name per AMC
-    #
-    # Keep first deterministic record.
-    # -------------------------------------------------
 
     amfi_df = (
         amfi_df
@@ -346,12 +459,6 @@ def transform_scheme(
 
     # =================================================
     # RTA SCHEME CODE
-    #
-    # Transaction:
-    #     prodcode
-    #
-    # Investor:
-    #     product_code
     # =================================================
 
     transaction_df["scheme_code"] = clean_text(
@@ -384,8 +491,6 @@ def transform_scheme(
 
     # =================================================
     # ARN
-    #
-    # arn <- brokcode
     # =================================================
 
     transaction_df["arn"] = (
@@ -405,8 +510,6 @@ def transform_scheme(
 
     # =================================================
     # SUB ARN
-    #
-    # sub_arn <- src_brk_code
     # =================================================
 
     transaction_df["sub_arn"] = (
@@ -469,17 +572,7 @@ def transform_scheme(
     )
 
     # =================================================
-    # IMPORTANT:
-    #
-    # Rename investor columns BEFORE MERGE.
-    #
-    # This prevents pandas from generating:
-    #
-    # scheme_name_x
-    # scheme_name_y
-    # rta_scheme_code_x
-    # rta_scheme_code_y
-    #
+    # RENAME INVESTOR COLUMNS
     # =================================================
 
     investor_scheme = investor_scheme.rename(
@@ -579,10 +672,8 @@ def transform_scheme(
     # =================================================
     # CREATE GOLD DATAFRAME
     #
-    # ONLY FINAL DATABASE COLUMNS.
-    #
-    # NO rta_scheme_code_x
-    # NO rta_scheme_code_y
+    # IMPORTANT:
+    # isin IS INTENTIONALLY NULL.
     # =================================================
 
     gold_df = pd.DataFrame({
@@ -601,6 +692,11 @@ def transform_scheme(
 
         "plan":
             plan,
+
+        # =================================================
+        # ISIN REMOVED
+        # KEEP NULL
+        # =================================================
 
         "isin":
             None,
@@ -674,15 +770,56 @@ def transform_scheme(
     ].copy()
 
     # =================================================
-    # CREATE NORMALIZED SCHEME NAME
-    #
-    # This is used only internally.
-    # It is NOT inserted into gold.scheme.
+    # INTERNAL NORMALIZED NAME
     # =================================================
 
     gold_df["_name_norm"] = normalize_scheme_name(
         gold_df["scheme_name"]
     )
+
+    # =================================================
+    # AUTHORITATIVE AMFI CODE MAPPING
+    #
+    # RTA + RTA SCHEME CODE
+    #          ↓
+    # bronze.scheme_mapping
+    #          ↓
+    # amfi_scheme_code
+    #
+    # THIS IS THE AMFI CODE LOGIC
+    # =================================================
+
+    scheme_mapping_df = load_scheme_mapping()
+
+    if not scheme_mapping_df.empty:
+
+        mapping_key = (
+            scheme_mapping_df["rta"].fillna("")
+            + "|"
+            + scheme_mapping_df["rta_scheme_code"].fillna("")
+        )
+
+        mapping_lookup = pd.Series(
+            scheme_mapping_df["amfi_scheme_code"].values,
+            index=mapping_key
+        ).to_dict()
+
+        gold_key = (
+            gold_df["rta"].fillna("")
+            + "|"
+            + gold_df["rta_scheme_code"].fillna("")
+        )
+
+        gold_df["amfi_code"] = gold_key.map(
+            mapping_lookup
+        )
+
+    else:
+
+        print(
+            "WARNING: Scheme mapping empty. "
+            "AMFI code mapping skipped."
+        )
 
     # =================================================
     # LOAD AMFI MASTER
@@ -691,47 +828,12 @@ def transform_scheme(
     amfi_df = load_amfi_master()
 
     # =================================================
-    # AMFI MAPPING
+    # AMFI MASTER ATTRIBUTES
     #
-    # IMPORTANT:
-    #
-    # We use a dictionary/map instead of pandas merge.
-    #
-    # Therefore NO _x / _y columns can ever be created.
+    # ISIN IS NOT INCLUDED.
     # =================================================
 
     if not amfi_df.empty:
-
-        # -------------------------------------------------
-        # First mapping:
-        #
-        # AMC + normalized scheme name
-        # -------------------------------------------------
-
-        amfi_key = (
-            amfi_df["amc_code"].fillna("")
-            + "|"
-            + amfi_df["name_norm"].fillna("")
-        )
-
-        amfi_lookup = pd.Series(
-            amfi_df["amfi_scheme_code"].values,
-            index=amfi_key
-        ).to_dict()
-
-        gold_key = (
-            gold_df["amc_code"].fillna("")
-            + "|"
-            + gold_df["_name_norm"].fillna("")
-        )
-
-        gold_df["amfi_code"] = gold_key.map(
-            amfi_lookup
-        )
-
-        # -------------------------------------------------
-        # AMFI master attributes
-        # -------------------------------------------------
 
         amfi_attribute_df = (
             amfi_df[
@@ -741,8 +843,6 @@ def transform_scheme(
                     "scheme_category",
                     "plan_type",
                     "option_type",
-                    "isin_growth",
-                    "isin_idcw",
                     "risk_category",
                     "status"
                 ]
@@ -753,69 +853,39 @@ def transform_scheme(
             )
         )
 
-        # -------------------------------------------------
-        # Dictionary lookup for attributes.
-        #
-        # Again, NO merge.
-        # -------------------------------------------------
-
         amfi_attr = (
             amfi_attribute_df
             .set_index("amfi_scheme_code")
         )
 
-        # Scheme type
-        scheme_type_map = (
-            amfi_attr["scheme_type"]
-            .to_dict()
-        )
-
-        # Scheme category
         scheme_category_map = (
             amfi_attr["scheme_category"]
             .to_dict()
         )
 
-        # Plan type
         plan_type_map = (
             amfi_attr["plan_type"]
             .to_dict()
         )
 
-        # Option type
         option_type_map = (
             amfi_attr["option_type"]
             .to_dict()
         )
 
-        # Risk
         risk_map = (
             amfi_attr["risk_category"]
             .to_dict()
         )
 
-        # Status
         status_map = (
             amfi_attr["status"]
             .to_dict()
         )
 
-        # ISIN growth
-        isin_growth_map = (
-            amfi_attr["isin_growth"]
-            .to_dict()
-        )
-
-        # ISIN IDCW
-        isin_idcw_map = (
-            amfi_attr["isin_idcw"]
-            .to_dict()
-        )
-
-        # -------------------------------------------------
-        # Populate fields only when available.
-        # Existing derived values remain as fallback.
-        # -------------------------------------------------
+        # =================================================
+        # AMFI ATTRIBUTE ENRICHMENT
+        # =================================================
 
         gold_df["category"] = (
             gold_df["amfi_code"]
@@ -845,33 +915,9 @@ def transform_scheme(
             .map(status_map)
         )
 
-        # -------------------------------------------------
-        # ISIN
-        #
-        # Prefer growth / IDCW based on option.
-        # -------------------------------------------------
-
-        gold_df["_isin_growth"] = (
-            gold_df["amfi_code"]
-            .map(isin_growth_map)
-        )
-
-        gold_df["_isin_idcw"] = (
-            gold_df["amfi_code"]
-            .map(isin_idcw_map)
-        )
-
-        gold_df["isin"] = (
-            gold_df["_isin_growth"]
-            .combine_first(
-                gold_df["_isin_idcw"]
-            )
-        )
-
-        # -------------------------------------------------
-        # If AMFI plan_type exists, use it for plan.
-        # Otherwise keep Direct/Regular extraction.
-        # -------------------------------------------------
+        # =================================================
+        # PLAN
+        # =================================================
 
         gold_df["plan"] = (
             gold_df["plan_type"]
@@ -884,8 +930,17 @@ def transform_scheme(
 
         print(
             "WARNING: AMFI master empty. "
-            "AMFI mapping skipped."
+            "AMFI enrichment skipped."
         )
+
+    # =================================================
+    # FORCE ISIN TO NULL
+    #
+    # This makes sure that no future logic accidentally
+    # populates it.
+    # =================================================
+
+    gold_df["isin"] = None
 
     # =================================================
     # AMFI CODE CLEANING
@@ -971,17 +1026,12 @@ def transform_scheme(
 
     # =================================================
     # DROP TEMPORARY COLUMNS
-    #
-    # IMPORTANT:
-    # No temporary x/y columns exist.
     # =================================================
 
     gold_df.drop(
         columns=[
             "amc_code",
-            "_name_norm",
-            "_isin_growth",
-            "_isin_idcw"
+            "_name_norm"
         ],
         inplace=True,
         errors="ignore"
@@ -989,8 +1039,6 @@ def transform_scheme(
 
     # =================================================
     # FINAL DEDUPLICATION
-    #
-    # One row per RTA + scheme_code
     # =================================================
 
     print("\nRows Before Final Dedup")
@@ -1111,12 +1159,6 @@ def transform_scheme(
 
     ]
 
-    # -------------------------------------------------
-    # HARD CHECK
-    #
-    # Only columns in final_columns can reach DB.
-    # -------------------------------------------------
-
     gold_df = gold_df[
         final_columns
     ].copy()
@@ -1133,7 +1175,7 @@ def transform_scheme(
     )
 
     # =================================================
-    # EXPLICIT CHECK FOR BAD PANDAS SUFFIX COLUMNS
+    # CHECK UNEXPECTED SUFFIX COLUMNS
     # =================================================
 
     bad_columns = [
@@ -1167,6 +1209,33 @@ def transform_scheme(
         gold_df["amfi_code"].isna().sum()
     )
 
+    # =================================================
+    # ISIN VALIDATION
+    # =================================================
+
+    print("\nISIN Validation")
+    print("-" * 80)
+
+    print(
+        "ISIN populated      :",
+        gold_df["isin"].notna().sum()
+    )
+
+    print(
+        "ISIN null            :",
+        gold_df["isin"].isna().sum()
+    )
+
+    if gold_df["isin"].notna().any():
+
+        raise Exception(
+            "ERROR: ISIN should remain NULL for all schemes."
+        )
+
+    # =================================================
+    # ARN VALIDATION
+    # =================================================
+
     print("\nARN Validation")
     print("-" * 80)
 
@@ -1198,6 +1267,72 @@ def transform_scheme(
         len(gold_df)
     )
 
+    # ============================================================
+    # CHECK VARCHAR COLUMN LENGTHS BEFORE GOLD INSERT
+    # ============================================================
+
+    print("\nVARCHAR LENGTH CHECK")
+    print("-" * 80)
+
+    varchar_limits = {
+        "rta": 10,
+        "scheme_code": 30,
+        "scheme_name": 255,
+        "category": 100,
+        "plan": 40,
+        "isin": 20,
+        "amfi_code": 20,
+        "plan_type": 20,
+        "option_type": 20,
+        "rta_scheme_code": 30,
+        "riskometer": 20,
+        "status": 20,
+        "arn": 50,
+        "sub_arn": 50,
+    }
+
+    for col, limit in varchar_limits.items():
+
+        if col not in gold_df.columns:
+            continue
+
+        bad = gold_df[
+            gold_df[col].notna()
+            &
+            (
+                gold_df[col]
+                .astype(str)
+                .str.len()
+                > limit
+            )
+        ]
+
+        if len(bad) > 0:
+
+            print(
+                f"\n❌ {col}: {len(bad)} values exceed VARCHAR({limit})"
+            )
+
+            print(
+                bad[[col]]
+                .assign(
+                    length=bad[col]
+                    .astype(str)
+                    .str.len()
+                )
+                .to_string(index=False)
+            )
+
+        else:
+
+            print(
+                f"✅ {col}: OK"
+            )
+
+    # =================================================
+    # GOLD SCHEME PREVIEW
+    # =================================================
+
     print("\nGold Scheme Preview")
     print("-" * 80)
 
@@ -1213,6 +1348,7 @@ def transform_scheme(
                 "plan",
                 "plan_type",
                 "option_type",
+                "isin",
                 "rta_scheme_code",
                 "amc_id",
                 "arn",
@@ -1250,6 +1386,7 @@ def load_scheme(gold_df):
     # =================================================
 
     expected_columns = [
+
         "id",
         "rta",
         "scheme_code",
@@ -1272,9 +1409,9 @@ def load_scheme(gold_df):
         "sub_arn",
         "amc_id",
         "created_at"
+
     ]
 
-    # Keep ONLY expected columns
     gold_df = gold_df[
         [
             c
@@ -1283,7 +1420,6 @@ def load_scheme(gold_df):
         ]
     ].copy()
 
-    # Check unexpected columns
     unexpected = [
         c
         for c in gold_df.columns
@@ -1296,7 +1432,6 @@ def load_scheme(gold_df):
             f"Unexpected columns before insert: {unexpected}"
         )
 
-    # Check x/y
     bad_columns = [
         c
         for c in gold_df.columns
@@ -1369,6 +1504,8 @@ def load_scheme(gold_df):
 
     # =================================================
     # UPDATE COLUMNS
+    #
+    # ISIN IS INTENTIONALLY NOT UPDATED.
     # =================================================
 
     update_columns = [
@@ -1376,7 +1513,10 @@ def load_scheme(gold_df):
         "scheme_name",
         "category",
         "plan",
-        "isin",
+
+        # ISIN REMOVED FROM UPDATE
+        # "isin",
+
         "amfi_code",
         "category_id",
         "plan_type",
@@ -1488,17 +1628,15 @@ def load_scheme(gold_df):
 
     if not new_gold_df.empty:
 
-        # -------------------------------------------------
-        # ABSOLUTE FINAL COLUMN FILTER
-        # -------------------------------------------------
-
         new_gold_df = new_gold_df[
             expected_columns
         ].copy()
 
-        # -------------------------------------------------
-        # No x/y allowed
-        # -------------------------------------------------
+        # =================================================
+        # FORCE ISIN NULL BEFORE INSERT
+        # =================================================
+
+        new_gold_df["isin"] = None
 
         bad_columns = [
             c

@@ -1,12 +1,20 @@
 import csv
 import io
+import os
+import tempfile
+
 import pandas as pd
+from dbfread import DBF
 
 from utils.db import engine
 from etl_investor_master import process_investor_master
 from etl_trans import process_transactions
 from etl_sip import process_sip
 
+
+# =====================================================
+# SMART SPLIT
+# =====================================================
 
 def smart_split(line, delimiter):
 
@@ -168,29 +176,19 @@ def read_file(file):
 
                 delimiter = ","
 
-        print("Detected delimiter:", repr(delimiter))
+        print(
+            "Detected delimiter:",
+            repr(delimiter)
+        )
 
         # -------------------------------------------------
         # IMPORTANT
         #
         # CAMS/KFIN files may contain values surrounded
         # by single quotes, and those values can contain
-        # the delimiter itself (e.g. 'Patel, Natvarbhai').
+        # the delimiter itself.
         #
-        # csv.reader with quotechar='"' has no way to know
-        # that a single quote is protecting a delimiter, so
-        # it was splitting these rows into too many columns
-        # and they were being dropped as "bad rows". This is
-        # what was causing the data loss.
-        #
-        # We now split each line with smart_split(), which
-        # understands single-quoted fields the same way the
-        # old code intended quotechar="'" to work, but
-        # without breaking apostrophes inside plain names
-        # like O'Brien.
-        #
-        # Everything downstream (short-row padding, bad-row
-        # detection, outer-quote stripping) is unchanged.
+        # smart_split() handles this case.
         # -------------------------------------------------
 
         lines = text.split("\n")
@@ -287,9 +285,6 @@ def read_file(file):
             # BAD ROW
             #
             # DO NOT truncate it.
-            #
-            # Truncating with row[:expected_columns] can put
-            # data into the wrong columns.
             # -------------------------------------------------
 
             bad_rows += 1
@@ -329,17 +324,6 @@ def read_file(file):
 
         # -------------------------------------------------
         # REMOVE OUTER QUOTES ONLY
-        #
-        # This handles:
-        #
-        # 'Natvarbhai Shankerbhai Patel '
-        #
-        # without breaking commas inside a quoted value.
-        #
-        # smart_split already strips the surrounding single
-        # quotes from quoted fields, so this mainly cleans up
-        # any remaining stray quotes/whitespace and is kept
-        # as-is for safety - no logic removed.
         # -------------------------------------------------
 
         object_cols = df.select_dtypes(
@@ -366,10 +350,168 @@ def read_file(file):
             )
 
     # =================================================
+    # DBF
+    # =================================================
+
+    elif name.endswith(".dbf"):
+
+        print()
+        print("=" * 80)
+        print("READING DBF FILE")
+        print("=" * 80)
+
+        print(
+            "File:",
+            file.name
+        )
+
+        file.seek(0)
+
+        raw = file.read()
+
+        temp_path = None
+
+        try:
+
+            # -------------------------------------------------
+            # DBF READER NEEDS A FILE
+            #
+            # Streamlit UploadedFile is an in-memory object,
+            # therefore save it temporarily.
+            # -------------------------------------------------
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".dbf",
+                delete=False
+            ) as temp_file:
+
+                temp_file.write(raw)
+
+                temp_path = temp_file.name
+
+            print(
+                "Temporary DBF file created:",
+                temp_path
+            )
+
+            # -------------------------------------------------
+            # READ DBF
+            # -------------------------------------------------
+
+            table = DBF(
+                temp_path,
+                load=True
+            )
+
+            # Convert DBF records to DataFrame
+
+            df = pd.DataFrame(
+                iter(table)
+            )
+
+            print(
+                "DBF rows read:",
+                len(df)
+            )
+
+            print(
+                "DBF columns:",
+                len(df.columns)
+            )
+
+            print(
+                "DBF column names:"
+            )
+
+            print(
+                df.columns.tolist()
+            )
+
+        except Exception as e:
+
+            print()
+            print(
+                "ERROR READING DBF FILE"
+            )
+
+            print(
+                "Error type:",
+                type(e).__name__
+            )
+
+            print(
+                "Error:",
+                e
+            )
+
+            raise
+
+        finally:
+
+            # -------------------------------------------------
+            # REMOVE TEMPORARY FILE
+            # -------------------------------------------------
+
+            if (
+                temp_path
+                and os.path.exists(temp_path)
+            ):
+
+                try:
+
+                    os.remove(temp_path)
+
+                    print(
+                        "Temporary DBF file removed."
+                    )
+
+                except Exception as cleanup_error:
+
+                    print(
+                        "Warning: unable to remove "
+                        "temporary DBF file:",
+                        cleanup_error
+                    )
+
+        # -------------------------------------------------
+        # NORMALIZE DBF VALUES
+        #
+        # DBF can return:
+        # - Decimal
+        # - date
+        # - datetime
+        # - bool
+        # - None
+        #
+        # Convert values to strings so that DBF behaves
+        # consistently with the existing CSV/Excel pipeline.
+        # -------------------------------------------------
+
+        df = df.fillna("")
+
+        object_cols = df.columns
+
+        for col in object_cols:
+
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()
+            )
+
+            df[col] = df[col].replace(
+                {
+                    "nan": "",
+                    "None": "",
+                    "NaT": ""
+                }
+            )
+
+    # =================================================
     # EXCEL
     # =================================================
 
-    else:
+    elif name.endswith((".xlsx", ".xls")):
 
         file.seek(0)
 
@@ -377,6 +519,16 @@ def read_file(file):
             file,
             dtype=str,
             keep_default_na=False
+        )
+
+    # =================================================
+    # UNSUPPORTED FILE
+    # =================================================
+
+    else:
+
+        raise ValueError(
+            f"Unsupported file format: {file.name}"
         )
 
     # =====================================================
@@ -514,26 +666,51 @@ def extract_and_push(uploaded_files):
 
         name = file.name.lower()
 
+        print()
+        print("=" * 80)
+        print("PROCESSING FILE:", file.name)
+        print("=" * 80)
+
         df = read_file(file)
 
         # =================================================
         # CAMS FILES
+        #
+        # Support CSV and DBF
         # =================================================
 
-        if name.endswith("r2.csv"):
+        if name.endswith(
+            (
+                "r2.csv",
+                "r2.dbf"
+            )
+        ):
 
             cams_transaction.append(df)
 
-        elif name.endswith("r9.csv"):
+        elif name.endswith(
+            (
+                "r9.csv",
+                "r9.dbf"
+            )
+        ):
 
             cams_investor.append(df)
 
-        elif name.endswith("r49.csv"):
+        elif name.endswith(
+            (
+                "r49.csv",
+                "r49.dbf"
+            )
+        ):
 
             cams_sip.append(df)
 
         # =================================================
         # KFIN FILES
+        #
+        # Filename contains the file identifier.
+        # This works for CSV, Excel and DBF.
         # =================================================
 
         elif "mfsd201" in name:
@@ -576,7 +753,11 @@ def extract_and_push(uploaded_files):
         else None
     )
 
-    if cams_df is not None or kfin_df is not None:
+    if (
+        cams_df is not None
+        or
+        kfin_df is not None
+    ):
 
         process_transactions(
             cams=cams_df,
@@ -605,7 +786,11 @@ def extract_and_push(uploaded_files):
         else None
     )
 
-    if cams_df is not None or kfin_df is not None:
+    if (
+        cams_df is not None
+        or
+        kfin_df is not None
+    ):
 
         process_investor_master(
             cams=cams_df,
@@ -636,7 +821,11 @@ def extract_and_push(uploaded_files):
 
     sip_preview = None
 
-    if cams_df is not None or kfin_df is not None:
+    if (
+        cams_df is not None
+        or
+        kfin_df is not None
+    ):
 
         process_sip(
             cams=cams_df,
@@ -653,14 +842,21 @@ def extract_and_push(uploaded_files):
             con=engine
         )
 
+    # =====================================================
+    # RETURN RESULTS
+    # =====================================================
+
     return (
-        len(cams_transaction) +
+        len(cams_transaction)
+        +
         len(kfin_transaction),
 
-        len(cams_investor) +
+        len(cams_investor)
+        +
         len(kfin_investor),
 
-        len(cams_sip) +
+        len(cams_sip)
+        +
         len(kfin_sip),
 
         sip_preview

@@ -31,14 +31,14 @@ def extract_holdings():
 
                 CASE
                     WHEN pan IS NOT NULL
-                         AND TRIM(pan) <> ''
+                         AND TRIM(pan::text) <> ''
                     THEN
-                        UPPER(TRIM(pan))
+                        UPPER(TRIM(pan::text))
 
                     ELSE
                         COALESCE(
-                            NULLIF(TRIM(folio_no), ''),
-                            NULLIF(TRIM(brokcode), '')
+                            NULLIF(TRIM(folio_no::text), ''),
+                            NULLIF(TRIM(brokcode::text), '')
                         )
                 END AS mapping_key,
 
@@ -49,14 +49,14 @@ def extract_holdings():
 
                         CASE
                             WHEN pan IS NOT NULL
-                                 AND TRIM(pan) <> ''
+                                 AND TRIM(pan::text) <> ''
                             THEN
-                                UPPER(TRIM(pan))
+                                UPPER(TRIM(pan::text))
 
                             ELSE
                                 COALESCE(
-                                    NULLIF(TRIM(folio_no), ''),
-                                    NULLIF(TRIM(brokcode), '')
+                                    NULLIF(TRIM(folio_no::text), ''),
+                                    NULLIF(TRIM(brokcode::text), '')
                                 )
                         END
 
@@ -146,14 +146,14 @@ def extract_holdings():
 
                 (
                     t.pan IS NOT NULL
-                    AND TRIM(t.pan) <> ''
+                    AND TRIM(t.pan::text) <> ''
 
                     AND ts.pan IS NOT NULL
-                    AND TRIM(ts.pan) <> ''
+                    AND TRIM(ts.pan::text) <> ''
 
-                    AND UPPER(TRIM(t.pan))
+                    AND UPPER(TRIM(t.pan::text))
                         =
-                        UPPER(TRIM(ts.pan))
+                        UPPER(TRIM(ts.pan::text))
                 )
 
                 OR
@@ -161,25 +161,25 @@ def extract_holdings():
                 /* =================================================
                    FALLBACK MAPPING:
                    PAN NULL
-                   COALESCE(FOLIO, ARN)
+                   FOLIO / BROKCODE
                    ================================================= */
 
                 (
                     (
                         t.pan IS NULL
-                        OR TRIM(t.pan) = ''
+                        OR TRIM(t.pan::text) = ''
                     )
 
                     AND
 
                     COALESCE(
-                        NULLIF(TRIM(t.folio_no), ''),
-                        NULLIF(TRIM(t.brokcode), '')
+                        NULLIF(TRIM(t.folio_no::text), ''),
+                        NULLIF(TRIM(t.brokcode::text), '')
                     )
                     =
                     COALESCE(
-                        NULLIF(TRIM(ts.folio_no), ''),
-                        NULLIF(TRIM(ts.brokcode), '')
+                        NULLIF(TRIM(ts.folio_no::text), ''),
+                        NULLIF(TRIM(ts.brokcode::text), '')
                     )
                 )
             )
@@ -249,6 +249,7 @@ def extract_holdings():
 
         print()
         print("Sample mapped scheme IDs:")
+
         print(
             df.loc[
                 df["mapped_scheme_id"].notna(),
@@ -408,6 +409,47 @@ def purchase_mask(df):
 
 
 # ============================================================
+# SWITCH OUT MASK
+# ============================================================
+
+def switch_out_mask(df):
+
+    txn_type = (
+        get_column(
+            df,
+            "trxntype"
+        )
+        .fillna("")
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    txn_nature = (
+        get_column(
+            df,
+            "trxn_nature"
+        )
+        .fillna("")
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    transaction_text = (
+        txn_type
+        + " "
+        + txn_nature
+    )
+
+    return transaction_text.str.contains(
+        "SWITCH.?OUT",
+        regex=True,
+        na=False
+    )
+
+
+# ============================================================
 # SIGNED TRANSACTION AMOUNT
 # ============================================================
 
@@ -530,7 +572,8 @@ def calculate_xirr(cashflows):
 
     years = (
         (dates - first_date)
-        / pd.Timedelta(days=365)
+        /
+        pd.Timedelta(days=365)
     )
 
     def npv(rate):
@@ -756,18 +799,6 @@ def transform_holdings(df):
 
     # ========================================================
     # SCHEME ID
-    #
-    # IMPORTANT:
-    #
-    # scheme_id is VARCHAR/TEXT.
-    #
-    # Examples:
-    # B20933
-    # P102135
-    # B1024G
-    #
-    # NEVER convert this to numeric.
-    # NEVER convert this to UUID.
     # ========================================================
 
     gold_df = pd.DataFrame(
@@ -1211,6 +1242,14 @@ def transform_holdings(df):
     )
 
     # ========================================================
+    # SWITCH OUT
+    # ========================================================
+
+    df["is_switch_out"] = switch_out_mask(
+        df
+    )
+
+    # ========================================================
     # SIGNED AMOUNT
     # ========================================================
 
@@ -1620,7 +1659,6 @@ def transform_holdings(df):
         "client_id",
         "amc_id",
 
-        # VARCHAR SCHEME ID
         "scheme_id",
 
         "purchase_date",
@@ -1787,6 +1825,7 @@ def transform_holdings(df):
 
     print()
     print("Sample final scheme IDs:")
+
     print(
         gold_df["scheme_id"]
         .dropna()
@@ -1797,6 +1836,415 @@ def transform_holdings(df):
 
     print("=" * 80)
     print("TRANSFORM COMPLETED")
+    print("=" * 80)
+
+    return gold_df
+
+
+# ============================================================
+# REMOVE ZERO PURCHASE / SWITCH-OUT HOLDINGS
+# ============================================================
+
+def remove_zero_net_holdings(gold_df):
+
+    print("=" * 80)
+    print(
+        "REMOVING ZERO PURCHASE/SWITCH-OUT HOLDINGS "
+        "FROM GOLD"
+    )
+    print("=" * 80)
+
+    if gold_df.empty:
+
+        print(
+            "Gold DataFrame is empty."
+        )
+
+        return gold_df
+
+    # ========================================================
+    # IMPORTANT:
+    #
+    # amount in silver.transaction_master_new is TEXT.
+    #
+    # Therefore we NEVER do:
+    #
+    # COALESCE(amount, 0)
+    #
+    # because PostgreSQL sees:
+    #
+    # TEXT + INTEGER
+    #
+    # and throws:
+    #
+    # DatatypeMismatch
+    #
+    # Instead, amount is explicitly converted to NUMERIC.
+    # ========================================================
+
+    zero_holdings_query = """
+
+        WITH normalized_transactions AS
+        (
+            SELECT
+
+                UPPER(
+                    TRIM(source::text)
+                ) AS rta,
+
+                UPPER(
+                    TRIM(
+                        COALESCE(
+                            NULLIF(
+                                TRIM(
+                                    folio_no::text
+                                ),
+                                ''
+                            ),
+
+                            NULLIF(
+                                TRIM(
+                                    scheme_folio_number::text
+                                ),
+                                ''
+                            )
+                        )
+                    )
+                ) AS folio_number,
+
+                UPPER(
+                    TRIM(
+                        scheme_id::text
+                    )
+                ) AS scheme_id,
+
+                (
+                    UPPER(
+                        COALESCE(
+                            trxntype::text,
+                            ''
+                        )
+                    )
+                    ||
+                    ' '
+                    ||
+                    UPPER(
+                        COALESCE(
+                            trxn_nature::text,
+                            ''
+                        )
+                    )
+                ) AS transaction_text,
+
+                CASE
+
+                    WHEN
+                        NULLIF(
+                            REPLACE(
+                                TRIM(
+                                    amount::text
+                                ),
+                                ',',
+                                ''
+                            ),
+                            ''
+                        ) IS NULL
+
+                    THEN
+                        0::numeric
+
+                    WHEN
+                        REPLACE(
+                            TRIM(
+                                amount::text
+                            ),
+                            ',',
+                            ''
+                        )
+                        ~
+                        '^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+
+                    THEN
+                        REPLACE(
+                            TRIM(
+                                amount::text
+                            ),
+                            ',',
+                            ''
+                        )::numeric
+
+                    ELSE
+                        0::numeric
+
+                END AS amount_numeric
+
+            FROM silver.transaction_master_new
+
+            WHERE scheme_id IS NOT NULL
+
+              AND TRIM(
+                    scheme_id::text
+                  ) <> ''
+        ),
+
+        transaction_groups AS
+        (
+            SELECT
+
+                rta,
+                folio_number,
+                scheme_id,
+
+                SUM(
+                    CASE
+
+                        WHEN transaction_text
+                             ~
+                             'PURCHASE|BUY|SIP'
+
+                        THEN
+                            ABS(
+                                amount_numeric
+                            )
+
+                        ELSE
+                            0::numeric
+
+                    END
+                ) AS purchase_amount,
+
+                SUM(
+                    CASE
+
+                        WHEN transaction_text
+                             ~
+                             'SWITCH.?OUT'
+
+                        THEN
+                            ABS(
+                                amount_numeric
+                            )
+
+                        ELSE
+                            0::numeric
+
+                    END
+                ) AS switch_out_amount
+
+            FROM normalized_transactions
+
+            GROUP BY
+                rta,
+                folio_number,
+                scheme_id
+        )
+
+        SELECT
+
+            rta,
+            folio_number,
+            scheme_id,
+
+            purchase_amount,
+            switch_out_amount,
+
+            ROUND(
+                purchase_amount,
+                2
+            )
+            -
+            ROUND(
+                switch_out_amount,
+                2
+            ) AS net_purchase_amount
+
+        FROM transaction_groups
+
+        WHERE
+            rta IS NOT NULL
+
+            AND folio_number IS NOT NULL
+
+            AND folio_number <> ''
+
+            AND scheme_id IS NOT NULL
+
+            AND scheme_id <> ''
+
+            AND
+            ROUND(
+                purchase_amount,
+                2
+            )
+            -
+            ROUND(
+                switch_out_amount,
+                2
+            )
+            = 0
+
+    """
+
+    zero_holdings = pd.read_sql(
+        zero_holdings_query,
+        engine
+    )
+
+    print()
+    print(
+        f"Zero-net RTA/Folio/Scheme groups found: "
+        f"{len(zero_holdings):,}"
+    )
+
+    if zero_holdings.empty:
+
+        print(
+            "No zero-net holdings found."
+        )
+
+        print("=" * 80)
+
+        return gold_df
+
+    # ========================================================
+    # NORMALIZE ZERO-HOLDING KEYS
+    # ========================================================
+
+    zero_holdings["rta"] = (
+        zero_holdings["rta"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    zero_holdings["folio_number"] = (
+        zero_holdings["folio_number"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    zero_holdings["scheme_id"] = (
+        zero_holdings["scheme_id"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    zero_keys = (
+        zero_holdings[
+            [
+                "rta",
+                "folio_number",
+                "scheme_id"
+            ]
+        ]
+        .drop_duplicates()
+        .assign(
+            _zero_net=True
+        )
+    )
+
+    # ========================================================
+    # CREATE NORMALIZED TEMP KEYS
+    # ========================================================
+
+    gold_df = gold_df.copy()
+
+    gold_df["_rta_key"] = (
+        gold_df["rta"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    gold_df["_folio_key"] = (
+        gold_df["folio_number"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    gold_df["_scheme_key"] = (
+        gold_df["scheme_id"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    zero_keys = zero_keys.rename(
+        columns={
+            "rta": "_rta_key",
+            "folio_number": "_folio_key",
+            "scheme_id": "_scheme_key"
+        }
+    )
+
+    # ========================================================
+    # MATCH ZERO-NET HOLDINGS
+    # ========================================================
+
+    gold_df = gold_df.merge(
+        zero_keys,
+        on=[
+            "_rta_key",
+            "_folio_key",
+            "_scheme_key"
+        ],
+        how="left"
+    )
+
+    zero_rows = (
+        gold_df["_zero_net"]
+        .eq(True)
+        .sum()
+    )
+
+    # ========================================================
+    # REMOVE ZERO-NET ROWS
+    # ========================================================
+
+    gold_df = (
+        gold_df[
+            ~gold_df["_zero_net"].eq(True)
+        ]
+        .drop(
+            columns=[
+                "_rta_key",
+                "_folio_key",
+                "_scheme_key",
+                "_zero_net"
+            ]
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    print()
+    print(
+        f"Zero-net holdings removed: "
+        f"{zero_rows:,}"
+    )
+
+    print(
+        f"Holdings remaining after zero-net removal: "
+        f"{len(gold_df):,}"
+    )
+
+    print()
+    print(
+        "Rule applied:"
+    )
+
+    print(
+        "Purchase Amount - Switch Out Amount = 0"
+    )
+
+    print(
+        "=> Holding is NOT loaded into gold.holdings"
+    )
+
     print("=" * 80)
 
     return gold_df
@@ -1826,6 +2274,24 @@ def load_holdings(gold_df):
 
         print(
             "No holdings to load."
+        )
+
+        return True
+
+    # ========================================================
+    # REMOVE ZERO PURCHASE / SWITCH-OUT HOLDINGS
+    # ========================================================
+
+    gold_df = remove_zero_net_holdings(
+        gold_df
+    )
+
+    if gold_df.empty:
+
+        print()
+        print(
+            "All holdings were removed by "
+            "the zero-net purchase/switch-out rule."
         )
 
         return True
@@ -1904,16 +2370,6 @@ def load_holdings(gold_df):
 
     # ========================================================
     # SCHEME ID TYPE VALIDATION
-    #
-    # IMPORTANT:
-    # scheme_id is VARCHAR.
-    #
-    # DO NOT:
-    # - pd.to_numeric()
-    # - Int64
-    # - int64
-    # - BIGINT
-    # - UUID
     # ========================================================
 
     print(
@@ -1935,7 +2391,9 @@ def load_holdings(gold_df):
     )
 
     print()
-    print("Sample scheme_id before INSERT:")
+    print(
+        "Sample scheme_id before INSERT:"
+    )
 
     print(
         gold_df["scheme_id"]
@@ -2038,6 +2496,7 @@ def load_holdings(gold_df):
             )
         )
 
+    print()
     print(
         f"Rows to insert: "
         f"{len(gold_df):,}"
@@ -2050,6 +2509,43 @@ def load_holdings(gold_df):
         )
 
         return True
+
+    # ========================================================
+    # FINAL DUPLICATE CHECK
+    # ========================================================
+
+    duplicate_count = (
+        gold_df
+        .duplicated(
+            subset=[
+                "rta",
+                "folio_number",
+                "scheme_id"
+            ]
+        )
+        .sum()
+    )
+
+    if duplicate_count > 0:
+
+        print(
+            f"Removing {duplicate_count:,} "
+            "duplicate rows before INSERT."
+        )
+
+        gold_df = (
+            gold_df
+            .drop_duplicates(
+                subset=[
+                    "rta",
+                    "folio_number",
+                    "scheme_id"
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
 
     # ========================================================
     # INSERT
@@ -2089,8 +2585,12 @@ def load_holdings(gold_df):
         print("=" * 80)
 
         print(
-            type(e).__name__,
-            ":",
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
             e
         )
 

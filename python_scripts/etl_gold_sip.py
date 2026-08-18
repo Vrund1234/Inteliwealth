@@ -7,13 +7,12 @@ from utils.db import engine, master_engine
 
 
 # ============================================================
-# SAFE READ
+# SAFE READ - PROJECT DATABASE
 # ============================================================
 
 def safe_read(query, params=None):
 
     try:
-
         return pd.read_sql(
             query,
             engine,
@@ -21,9 +20,29 @@ def safe_read(query, params=None):
         )
 
     except Exception as e:
-
         print("SQL ERROR:", e)
+        return pd.DataFrame()
 
+
+# ============================================================
+# SAFE READ - MASTER DATABASE
+#
+# IMPORTANT:
+# Any table under the PUBLIC schema that belongs to the
+# master database must be read using master_engine.
+# ============================================================
+
+def safe_master_read(query, params=None):
+
+    try:
+        return pd.read_sql(
+            query,
+            master_engine,
+            params=params
+        )
+
+    except Exception as e:
+        print("MASTER SQL ERROR:", e)
         return pd.DataFrame()
 
 
@@ -34,7 +53,6 @@ def safe_read(query, params=None):
 def get_column(df, column, default=None):
 
     if column in df.columns:
-
         return df[column]
 
     return pd.Series(
@@ -87,10 +105,6 @@ def clean_folio(series):
 
 # ============================================================
 # CLEAN SCHEME CODE
-#
-# IMPORTANT:
-# Do not truncate.
-# Do not convert to numeric.
 # ============================================================
 
 def clean_scheme_code(series):
@@ -129,7 +143,6 @@ def first_valid_value(series):
     ]
 
     if series.empty:
-
         return pd.NA
 
     return series.iloc[0]
@@ -137,20 +150,6 @@ def first_valid_value(series):
 
 # ============================================================
 # GET LAST GOLD TIMESTAMP
-#
-# SAME LOGIC AS GOLD.TRANSACTIONS
-#
-# Gold created_at represents the time the previous Gold
-# records were loaded.
-#
-# Silver created_at represents the time Silver records
-# were loaded.
-#
-# Therefore:
-#
-#     Silver created_at > MAX(Gold created_at)
-#
-# is used for incremental processing.
 # ============================================================
 
 def get_last_gold_timestamp():
@@ -168,21 +167,13 @@ def get_last_gold_timestamp():
     result = safe_read(query)
 
     if result.empty:
-
-        print(
-            "Gold SIP table returned no result."
-        )
-
+        print("Gold SIP table returned no result.")
         return None
 
     last_created_at = result.iloc[0]["last_created_at"]
 
     if pd.isna(last_created_at):
-
-        print(
-            "Gold SIP table is empty."
-        )
-
+        print("Gold SIP table is empty.")
         return None
 
     print(
@@ -195,30 +186,6 @@ def get_last_gold_timestamp():
 
 # ============================================================
 # EXTRACT SILVER SIP
-#
-# IMPORTANT:
-#
-# This follows the SAME incremental logic as
-# gold.transactions.
-#
-# FIRST RUN:
-#     Load all Silver SIP rows.
-#
-# SUBSEQUENT RUN:
-#     Load rows where:
-#
-#     silver.created_at > MAX(gold.sip.created_at)
-#
-# IMPORTANT:
-#
-# - No duplicate checking.
-# - No DISTINCT.
-# - No GROUP BY.
-# - No drop_duplicates().
-# - No natural-key comparison.
-# - No Gold/Silver row signature.
-# - NO FLAG UPDATE.
-# - Silver flag is NEVER modified.
 # ============================================================
 
 def extract_sip():
@@ -227,29 +194,17 @@ def extract_sip():
     print("EXTRACTING SILVER SIP")
     print("=" * 80)
 
-    # ========================================================
-    # GET LAST GOLD TIMESTAMP
-    # ========================================================
-
     last_gold_timestamp = get_last_gold_timestamp()
 
     # ========================================================
     # FIRST RUN
-    #
-    # Gold SIP is empty.
-    # Take all Silver SIP rows.
     # ========================================================
 
     if last_gold_timestamp is None:
 
         print()
-        print(
-            "No previous Gold SIP timestamp found."
-        )
-
-        print(
-            "This is treated as the first Gold SIP load."
-        )
+        print("No previous Gold SIP timestamp found.")
+        print("This is treated as the first Gold SIP load.")
 
         query = """
             SELECT
@@ -315,16 +270,11 @@ def extract_sip():
                 request_ref_no,
                 ft_sip_regno,
 
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
 
                 created_at,
                 updated_at,
 
-                -- IMPORTANT:
-                -- Flag is only read.
-                -- It is NEVER updated by this ETL.
                 flag
 
             FROM silver.sip_master_new
@@ -336,12 +286,6 @@ def extract_sip():
 
     # ========================================================
     # SUBSEQUENT RUN
-    #
-    # ONLY NEW SILVER ROWS ARE SELECTED.
-    #
-    # Silver flag is NOT involved in updating/processing.
-    #
-    # Silver flag remains exactly as assigned.
     # ========================================================
 
     else:
@@ -350,10 +294,7 @@ def extract_sip():
         print(
             "Loading only Silver SIP rows newer than:"
         )
-
-        print(
-            last_gold_timestamp
-        )
+        print(last_gold_timestamp)
 
         query = """
             SELECT
@@ -419,16 +360,11 @@ def extract_sip():
                 request_ref_no,
                 ft_sip_regno,
 
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
 
                 created_at,
                 updated_at,
 
-                -- IMPORTANT:
-                -- Flag is only read.
-                -- It is NEVER updated by this ETL.
                 flag
 
             FROM silver.sip_master_new
@@ -458,16 +394,11 @@ def extract_sip():
         return df
 
     print()
-    print(
-        "Rows fetched:",
-        len(df)
-    )
-
+    print("Rows fetched:", len(df))
     print(
         "Minimum Silver created_at:",
         df["created_at"].min()
     )
-
     print(
         "Maximum Silver created_at:",
         df["created_at"].max()
@@ -475,22 +406,16 @@ def extract_sip():
 
     # ========================================================
     # FLAG CHECK
-    #
-    # We only inspect the flag.
-    #
-    # NOTHING IS UPDATED.
     # ========================================================
 
     if "flag" in df.columns:
 
         print()
+        print("Silver flag values in extracted rows:")
         print(
-            "Silver flag values in extracted rows:"
-        )
-
-        print(
-            df["flag"]
-            .value_counts(dropna=False)
+            df["flag"].value_counts(
+                dropna=False
+            )
         )
 
         print(
@@ -521,9 +446,7 @@ def extract_sip():
         df["scheme_id"].isna().sum()
     )
 
-    print(
-        "Sample Silver scheme IDs:"
-    )
+    print("Sample Silver scheme IDs:")
 
     print(
         df["scheme_id"]
@@ -545,11 +468,7 @@ def transform_sip(df):
     print("TRANSFORMING GOLD SIP")
     print("=" * 80)
 
-    if not isinstance(
-        df,
-        pd.DataFrame
-    ):
-
+    if not isinstance(df, pd.DataFrame):
         raise TypeError(
             f"transform_sip expected DataFrame, "
             f"received {type(df).__name__}"
@@ -569,10 +488,7 @@ def transform_sip(df):
     # ========================================================
 
     df["rta_clean"] = (
-        get_column(
-            df,
-            "source"
-        )
+        get_column(df, "source")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -583,10 +499,7 @@ def transform_sip(df):
     # ========================================================
 
     df["pan_clean"] = clean_pan(
-        get_column(
-            df,
-            "pan"
-        )
+        get_column(df, "pan")
     )
 
     # ========================================================
@@ -594,10 +507,7 @@ def transform_sip(df):
     # ========================================================
 
     df["folio_clean"] = clean_folio(
-        get_column(
-            df,
-            "folio_no"
-        )
+        get_column(df, "folio_no")
     )
 
     # ========================================================
@@ -605,10 +515,7 @@ def transform_sip(df):
     # ========================================================
 
     df["scheme_code_clean"] = clean_scheme_code(
-        get_column(
-            df,
-            "scheme_code"
-        )
+        get_column(df, "scheme_code")
     )
 
     # ========================================================
@@ -616,10 +523,7 @@ def transform_sip(df):
     # ========================================================
 
     df["amc_code_clean"] = (
-        get_column(
-            df,
-            "amc_code"
-        )
+        get_column(df, "amc_code")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -640,10 +544,7 @@ def transform_sip(df):
     gold_df["rta"] = df["rta_clean"]
 
     gold_df["sip_reg_no"] = (
-        get_column(
-            df,
-            "ft_sip_regno"
-        )
+        get_column(df, "ft_sip_regno")
         .astype("string")
         .str.strip()
     )
@@ -663,10 +564,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["scheme_name"] = (
-        get_column(
-            df,
-            "scheme_name"
-        )
+        get_column(df, "scheme_name")
         .astype("string")
         .str.strip()
     )
@@ -694,10 +592,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["amount"] = pd.to_numeric(
-        get_column(
-            df,
-            "auto_amount"
-        ),
+        get_column(df, "auto_amount"),
         errors="coerce"
     )
 
@@ -706,10 +601,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["frequency"] = (
-        get_column(
-            df,
-            "periodicity"
-        )
+        get_column(df, "periodicity")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -721,10 +613,7 @@ def transform_sip(df):
 
     gold_df["start_date"] = (
         pd.to_datetime(
-            get_column(
-                df,
-                "from_date"
-            ),
+            get_column(df, "from_date"),
             errors="coerce"
         )
         .dt.date
@@ -736,10 +625,7 @@ def transform_sip(df):
 
     gold_df["end_date"] = (
         pd.to_datetime(
-            get_column(
-                df,
-                "to_date"
-            ),
+            get_column(df, "to_date"),
             errors="coerce"
         )
         .dt.date
@@ -759,10 +645,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["sip_day"] = pd.to_numeric(
-        get_column(
-            df,
-            "period_day"
-        ),
+        get_column(df, "period_day"),
         errors="coerce"
     )
 
@@ -771,10 +654,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["mandate_id"] = (
-        get_column(
-            df,
-            "umrn_code"
-        )
+        get_column(df, "umrn_code")
         .astype("string")
         .str.strip()
     )
@@ -784,10 +664,7 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["status"] = (
-        get_column(
-            df,
-            "status"
-        )
+        get_column(df, "status")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -799,10 +676,7 @@ def transform_sip(df):
 
     gold_df["registered_date"] = (
         pd.to_datetime(
-            get_column(
-                df,
-                "reg_date"
-            ),
+            get_column(df, "reg_date"),
             errors="coerce"
         )
         .dt.date
@@ -814,10 +688,7 @@ def transform_sip(df):
 
     gold_df["ceased_date"] = (
         pd.to_datetime(
-            get_column(
-                df,
-                "cease_date"
-            ),
+            get_column(df, "cease_date"),
             errors="coerce"
         )
         .dt.date
@@ -826,21 +697,7 @@ def transform_sip(df):
     # ========================================================
     # SCHEME ID
     #
-    # IMPORTANT:
-    #
-    # Take scheme_id DIRECTLY from the Silver row.
-    #
-    # There is NO:
-    #
-    # - scheme_code lookup
-    # - Gold scheme lookup
-    # - separate Silver scheme lookup
-    # - UUID generation
-    # - duplicate resolution
-    #
-    # silver.sip_master_new.scheme_id
-    #              ↓
-    #       gold.sip.scheme_id
+    # Take scheme_id directly from Silver.
     # ========================================================
 
     print()
@@ -849,16 +706,10 @@ def transform_sip(df):
     print("=" * 80)
 
     gold_df["scheme_id"] = (
-        get_column(
-            df,
-            "scheme_id"
-        )
+        get_column(df, "scheme_id")
         .astype("string")
         .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
+        .replace("", pd.NA)
     )
 
     print(
@@ -876,9 +727,7 @@ def transform_sip(df):
         gold_df["scheme_id"].isna().sum()
     )
 
-    print(
-        "Sample Gold scheme IDs:"
-    )
+    print("Sample Gold scheme IDs:")
 
     print(
         gold_df["scheme_id"]
@@ -889,14 +738,16 @@ def transform_sip(df):
 
     # ========================================================
     # AMC ID
+    #
+    # IMPORTANT:
+    # public.amc belongs to the MASTER DATABASE.
+    # Therefore master_engine MUST be used.
     # ========================================================
 
     print()
-    print(
-        "Loading AMC mapping..."
-    )
+    print("Loading AMC mapping from MASTER database...")
 
-    amc_master = safe_read(
+    amc_master = safe_master_read(
         """
         SELECT
             id,
@@ -923,7 +774,6 @@ def transform_sip(df):
         )
 
     else:
-
         amc_lookup = {}
 
     gold_df["amc_id"] = (
@@ -933,11 +783,12 @@ def transform_sip(df):
 
     # ========================================================
     # CLIENT ID
+    #
+    # gold.clients belongs to the PROJECT DATABASE.
+    # Therefore engine is intentionally used here.
     # ========================================================
 
-    print(
-        "Loading client mapping..."
-    )
+    print("Loading client mapping...")
 
     clients = safe_read(
         """
@@ -963,7 +814,6 @@ def transform_sip(df):
         )
 
     else:
-
         client_lookup = {}
 
     gold_df["client_id"] = (
@@ -976,10 +826,7 @@ def transform_sip(df):
     # ========================================================
 
     aut_trntyp_clean = (
-        get_column(
-            df,
-            "aut_trntyp"
-        )
+        get_column(df, "aut_trntyp")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -1013,33 +860,17 @@ def transform_sip(df):
 
     gold_df["registered_installments"] = (
         pd.to_numeric(
-            get_column(
-                df,
-                "no_of_installments"
-            ),
+            get_column(df, "no_of_installments"),
             errors="coerce"
         )
     )
 
     # ========================================================
     # LOAD TRANSACTION DATA
-    #
-    # IMPORTANT:
-    #
-    # This is only used to derive:
-    #
-    # - ARN
-    # - Sub ARN
-    # - completed installments
-    # - bounced installments
-    #
-    # It does NOT affect SIP row selection.
     # ========================================================
 
     print()
-    print(
-        "Loading transaction data..."
-    )
+    print("Loading transaction data...")
 
     transactions = safe_read(
         """
@@ -1066,7 +897,6 @@ def transform_sip(df):
     # ========================================================
 
     gold_df["completed_installments"] = 0
-
     gold_df["bounced_installments"] = 0
 
     gold_df["arn"] = pd.Series(
@@ -1110,10 +940,7 @@ def transform_sip(df):
             .astype("string")
             .str.strip()
             .str.upper()
-            .replace(
-                "",
-                pd.NA
-            )
+            .replace("", pd.NA)
         )
 
         transactions["src_brk_code_clean"] = (
@@ -1121,10 +948,7 @@ def transform_sip(df):
             .astype("string")
             .str.strip()
             .str.upper()
-            .replace(
-                "",
-                pd.NA
-            )
+            .replace("", pd.NA)
         )
 
         # ====================================================
@@ -1144,7 +968,6 @@ def transform_sip(df):
                 {
                     "brokcode_clean":
                         first_valid_value,
-
                     "src_brk_code_clean":
                         first_valid_value
                 }
@@ -1170,7 +993,6 @@ def transform_sip(df):
         )
 
         gold_df["arn"] = [
-
             arn_lookup.loc[
                 (
                     df.loc[idx, "rta_clean"],
@@ -1178,19 +1000,15 @@ def transform_sip(df):
                 ),
                 "arn"
             ]
-
             if (
                 df.loc[idx, "rta_clean"],
                 df.loc[idx, "folio_clean"]
             ) in arn_lookup.index
-
             else pd.NA
-
             for idx in df.index
         ]
 
         gold_df["sub_arn"] = [
-
             arn_lookup.loc[
                 (
                     df.loc[idx, "rta_clean"],
@@ -1198,14 +1016,11 @@ def transform_sip(df):
                 ),
                 "sub_arn"
             ]
-
             if (
                 df.loc[idx, "rta_clean"],
                 df.loc[idx, "folio_clean"]
             ) in arn_lookup.index
-
             else pd.NA
-
             for idx in df.index
         ]
 
@@ -1242,37 +1057,27 @@ def transform_sip(df):
             .fillna("")
             .astype("string")
             .str.upper()
-
             + " "
-
             + transactions["trxnstat"]
             .fillna("")
             .astype("string")
             .str.upper()
-
             + " "
-
             + transactions["trxnmode"]
             .fillna("")
             .astype("string")
             .str.upper()
-
             + " "
-
             + transactions["trxnsubtyp"]
             .fillna("")
             .astype("string")
             .str.upper()
-
             + " "
-
             + transactions["trxn_nature"]
             .fillna("")
             .astype("string")
             .str.upper()
-
             + " "
-
             + transactions["remarks"]
             .fillna("")
             .astype("string")
@@ -1348,9 +1153,7 @@ def transform_sip(df):
         # ====================================================
 
         completed = (
-            transactions.loc[
-                completed_mask
-            ]
+            transactions.loc[completed_mask]
             .groupby(
                 [
                     "rta_clean",
@@ -1373,9 +1176,7 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )[
-                "completed_installments"
-            ]
+            )["completed_installments"]
         )
 
         # ====================================================
@@ -1408,9 +1209,7 @@ def transform_sip(df):
                     "folio_clean",
                     "scheme_code_clean"
                 ]
-            )[
-                "bounced_installments"
-            ]
+            )["bounced_installments"]
         )
 
         # ====================================================
@@ -1418,7 +1217,6 @@ def transform_sip(df):
         # ====================================================
 
         gold_df["completed_installments"] = [
-
             completed_lookup.get(
                 (
                     df.loc[idx, "rta_clean"],
@@ -1427,7 +1225,6 @@ def transform_sip(df):
                 ),
                 0
             )
-
             for idx in df.index
         ]
 
@@ -1436,7 +1233,6 @@ def transform_sip(df):
         # ====================================================
 
         gold_df["bounced_installments"] = [
-
             bounced_lookup.get(
                 (
                     df.loc[idx, "rta_clean"],
@@ -1445,7 +1241,6 @@ def transform_sip(df):
                 ),
                 0
             )
-
             for idx in df.index
         ]
 
@@ -1473,32 +1268,24 @@ def transform_sip(df):
 
     # ========================================================
     # ARN ID
+    #
+    # IMPORTANT:
+    # public.arn belongs to the MASTER DATABASE.
+    # Therefore master_engine MUST be used.
     # ========================================================
 
     sub_arn_code = (
-        get_column(
-            df,
-            "sub_arn_code"
-        )
+        get_column(df, "sub_arn_code")
         .astype("string")
         .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
+        .replace("", pd.NA)
     )
 
     subbroker = (
-        get_column(
-            df,
-            "subbroker"
-        )
+        get_column(df, "subbroker")
         .astype("string")
         .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
+        .replace("", pd.NA)
     )
 
     df["arn_code_clean"] = (
@@ -1509,11 +1296,9 @@ def transform_sip(df):
         .str.upper()
     )
 
-    print(
-        "Loading ARN mapping..."
-    )
+    print("Loading ARN mapping from MASTER database...")
 
-    arn_master = safe_read(
+    arn_master = safe_master_read(
         """
         SELECT
             id,
@@ -1540,7 +1325,6 @@ def transform_sip(df):
         )
 
     else:
-
         arn_lookup = {}
 
     gold_df["arn_id"] = (
@@ -1553,19 +1337,13 @@ def transform_sip(df):
     # ========================================================
 
     remarks_clean = (
-        get_column(
-            df,
-            "remarks"
-        )
+        get_column(df, "remarks")
         .astype("string")
         .str.strip()
     )
 
     status_clean = (
-        get_column(
-            df,
-            "status"
-        )
+        get_column(df, "status")
         .astype("string")
         .str.strip()
         .str.upper()
@@ -1573,13 +1351,8 @@ def transform_sip(df):
 
     ceased_reason_value = (
         remarks_clean
-        .replace(
-            "",
-            pd.NA
-        )
-        .fillna(
-            status_clean
-        )
+        .replace("", pd.NA)
+        .fillna(status_clean)
     )
 
     ceased_condition = (
@@ -1611,20 +1384,11 @@ def transform_sip(df):
         gold_df["ceased_reason"]
         .astype("string")
         .str.strip()
-        .replace(
-            "",
-            pd.NA
-        )
+        .replace("", pd.NA)
     )
 
     # ========================================================
     # GOLD CREATED AT
-    #
-    # IMPORTANT:
-    #
-    # This is the Gold LOAD timestamp.
-    #
-    # It is NOT copied from Silver.
     # ========================================================
 
     gold_load_timestamp = datetime.now(
@@ -1640,7 +1404,6 @@ def transform_sip(df):
     # ========================================================
 
     columns = [
-
         "rta",
         "sip_reg_no",
         "folio_number",
@@ -1670,17 +1433,12 @@ def transform_sip(df):
         "arn",
         "sub_arn",
         "created_at"
-
     ]
 
-    gold_df = gold_df[
-        columns
-    ].copy()
+    gold_df = gold_df[columns].copy()
 
     # ========================================================
     # CRITICAL ROW COUNT CHECK
-    #
-    # No transformation is allowed to remove rows.
     # ========================================================
 
     final_row_count = len(gold_df)
@@ -1709,9 +1467,7 @@ def transform_sip(df):
             f"No rows are allowed to be dropped."
         )
 
-    print(
-        "Row count check: PASSED"
-    )
+    print("Row count check: PASSED")
 
     # ========================================================
     # VALIDATION
@@ -1772,6 +1528,8 @@ def transform_sip(df):
 
 # ============================================================
 # GET GOLD.SIP COLUMN LIMITS
+#
+# gold.sip is in the PROJECT DATABASE.
 # ============================================================
 
 def get_gold_sip_column_limits():
@@ -1805,9 +1563,7 @@ def validate_string_lengths(gold_df):
 
     if schema_df.empty:
 
-        print(
-            "Could not read Gold SIP schema."
-        )
+        print("Could not read Gold SIP schema.")
 
         raise ValueError(
             "Unable to validate Gold SIP column lengths."
@@ -1824,7 +1580,6 @@ def validate_string_lengths(gold_df):
         column = row["column_name"]
 
         if column not in gold_df.columns:
-
             continue
 
         limit = int(
@@ -1863,13 +1618,8 @@ def validate_string_lengths(gold_df):
     if problems:
 
         print()
-        print(
-            "STRING LENGTH ERRORS FOUND"
-        )
-
-        print(
-            "-" * 80
-        )
+        print("STRING LENGTH ERRORS FOUND")
+        print("-" * 80)
 
         for problem in problems:
 
@@ -1892,9 +1642,7 @@ def validate_string_lengths(gold_df):
                 f"{problem['offending_rows']}"
             )
 
-            print(
-                "-" * 80
-            )
+            print("-" * 80)
 
         raise ValueError(
             "Gold SIP contains values exceeding "
@@ -1902,24 +1650,13 @@ def validate_string_lengths(gold_df):
             "No rows were inserted."
         )
 
-    print(
-        "String length validation: PASSED"
-    )
+    print("String length validation: PASSED")
 
     return True
 
 
 # ============================================================
 # LOAD GOLD.SIP
-#
-# IMPORTANT:
-#
-# NO DUPLICATE COMPARISON.
-# NO EXISTING GOLD QUERY.
-# NO DROP DUPLICATES.
-#
-# Every row received from transform_sip()
-# is inserted.
 # ============================================================
 
 def load_sip(gold_df):
@@ -1929,10 +1666,7 @@ def load_sip(gold_df):
     print("LOADING DATA INTO GOLD.SIP")
     print("=" * 80)
 
-    if not isinstance(
-        gold_df,
-        pd.DataFrame
-    ):
+    if not isinstance(gold_df, pd.DataFrame):
 
         raise TypeError(
             f"load_sip expected DataFrame, "
@@ -1946,9 +1680,7 @@ def load_sip(gold_df):
 
     if gold_df.empty:
 
-        print(
-            "No SIP rows received."
-        )
+        print("No SIP rows received.")
 
         return True
 
@@ -1957,7 +1689,6 @@ def load_sip(gold_df):
     # ========================================================
 
     gold_columns = [
-
         "rta",
         "sip_reg_no",
         "folio_number",
@@ -1987,7 +1718,6 @@ def load_sip(gold_df):
         "arn",
         "sub_arn",
         "created_at"
-
     ]
 
     # ========================================================
@@ -2032,30 +1762,14 @@ def load_sip(gold_df):
 
     # ========================================================
     # DUPLICATE LOGIC
-    #
-    # DISABLED COMPLETELY.
     # ========================================================
 
     print()
-    print(
-        "Duplicate filtering: DISABLED"
-    )
-
-    print(
-        "Existing Gold comparison: DISABLED"
-    )
-
-    print(
-        "Row signature comparison: DISABLED"
-    )
-
-    print(
-        "Timestamp-based incremental loading: ENABLED"
-    )
-
-    print(
-        "Silver flag update: DISABLED"
-    )
+    print("Duplicate filtering: DISABLED")
+    print("Existing Gold comparison: DISABLED")
+    print("Row signature comparison: DISABLED")
+    print("Timestamp-based incremental loading: ENABLED")
+    print("Silver flag update: DISABLED")
 
     # ========================================================
     # CONVERT PANDAS NULLS TO DATABASE NULL
@@ -2120,9 +1834,7 @@ def load_sip(gold_df):
         )
 
         print()
-        print(
-            "GOLD SIP LOAD SUCCESSFUL"
-        )
+        print("GOLD SIP LOAD SUCCESSFUL")
 
         return True
 
@@ -2159,10 +1871,7 @@ if __name__ == "__main__":
 
         df = extract_sip()
 
-        if not isinstance(
-            df,
-            pd.DataFrame
-        ):
+        if not isinstance(df, pd.DataFrame):
 
             raise TypeError(
                 "extract_sip() did not "
@@ -2172,9 +1881,7 @@ if __name__ == "__main__":
         if df.empty:
 
             print()
-            print(
-                "No new SIP records found."
-            )
+            print("No new SIP records found.")
 
             print(
                 "GOLD SIP ETL COMPLETED - "
@@ -2240,21 +1947,15 @@ if __name__ == "__main__":
             if success:
 
                 print("=" * 80)
-
                 print(
                     "GOLD SIP ETL COMPLETED SUCCESSFULLY"
                 )
-
                 print("=" * 80)
 
             else:
 
                 print("=" * 80)
-
-                print(
-                    "GOLD SIP ETL FAILED"
-                )
-
+                print("GOLD SIP ETL FAILED")
                 print("=" * 80)
 
     except Exception as e:
