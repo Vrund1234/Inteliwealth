@@ -89,3 +89,70 @@ DO UPDATE SET
     reason           = EXCLUDED.reason,
     mapped_by        = EXCLUDED.mapped_by,
     is_active        = EXCLUDED.is_active;
+
+
+-- ---------------------------------------------------------------------------
+-- Added 2026-08-18: two matured schemes settled by maturity-date equality.
+--
+-- Neither is reachable by a name-based rule -- both are re-verified below
+-- against nav_master / scheme_master / bronze.transaction_master_new before
+-- insertion, not taken on the report's word alone. Method: for a matured
+-- scheme, the last RTA transaction is the redemption at maturity, so it must
+-- fall on the scheme's terminal NAV date. A hard date match, not a score.
+--
+-- G950 -- exact date match, no caveat.
+--   Last RTA transaction on G950: 2015-08-20 (bronze.transaction_master_new).
+--   117773's terminal NAV in nav_master: 2015-08-20 (720 obs, 2012-08-21 to
+--   2015-08-20). Unreachable by name matching for two independent reasons at
+--   once: the RTA writes "FTP" / "Series 1", AMFI's scheme_master spells out
+--   "IDFC FTP SERIES I (36 Months) - Growth" -- Roman numeral, not Arabic --
+--   and AMFI never picked up the Bandhan rebrand, so it is also still filed
+--   under IDFC. Either mismatch alone would block a match; both apply here.
+--
+-- L555G -- exact date match, plan-type caveat.
+--   Last RTA transaction on L555G: 2022-04-13. 145644's terminal NAV in
+--   nav_master: 2022-04-13 (1046 obs, 2018-12-10 to 2022-04-13). The day
+--   count agrees -- scheme_master's own name for 145644 is "SBI Debt Fund
+--   Series - C - 30 (1228 Days) - Regular Plan - Income Distribution cum
+--   Capital Withdrawal Option (IDCW)", matching the RTA's "(1228 Days)"
+--   exactly -- but the plan label does not: scheme_master says IDCW, the RTA
+--   says Regular Growth. 145644 is absent from amfi_scheme_master (0 rows --
+--   delisted at maturity, as expected) so there is no live AMFI record to
+--   cross-check the label against. No live holding prices off this scheme
+--   either way (matured 2022), so the cost of being wrong here is zero until
+--   someone reads the plan label off this row -- get a second reviewer on
+--   this one specifically before treating it as final.
+INSERT INTO bronze.scheme_mapping_override
+    (override_id, rta, rta_scheme_code, amfi_scheme_code, reason, mapped_by, is_active)
+VALUES
+    (gen_random_uuid(), 'CAMS', 'G950', '117773',
+     'Maturity-date match: last RTA transaction on G950 is 2015-08-20, exactly '
+     'the terminal NAV date of 117773 in nav_master (720 obs, 2012-08-21 to '
+     '2015-08-20). Unreachable by name matching: RTA writes "Bandhan Fixed '
+     'Term Plan Series 1-Growth (erstwhile IDFC Fixed Term Plan Series '
+     '1-Growth)", scheme_master writes "IDFC FTP SERIES I (36 Months) - '
+     'Growth" -- Arabic vs Roman series numbering, FTP vs spelled-out Fixed '
+     'Term Plan, and AMFI never picked up the Bandhan rebrand.',
+     'scheme-mapping-review', TRUE),
+
+    (gen_random_uuid(), 'CAMS', 'L555G', '145644',
+     'Maturity-date match: last RTA transaction on L555G is 2022-04-13, '
+     'exactly the terminal NAV date of 145644 in nav_master (1046 obs, '
+     '2018-12-10 to 2022-04-13). Day count agrees -- scheme_master names '
+     '145644 "SBI Debt Fund Series - C - 30 (1228 Days) - Regular Plan - '
+     'Income Distribution cum Capital Withdrawal Option (IDCW)", matching '
+     'the RTA''s "(1228 Days)" -- but the plan label does not: scheme_master '
+     'says IDCW, the RTA says Regular Growth. 145644 is absent from '
+     'amfi_scheme_master (matured/delisted), so there is no active AMFI '
+     'record to arbitrate the label against. CAVEAT: date and day-count both '
+     'point at 145644; only the plan label dissents. No live holding prices '
+     'off this scheme (matured 2022), so get a second reviewer to confirm '
+     'the plan-label discrepancy before relying on this row.',
+     'scheme-mapping-review', TRUE)
+
+ON CONFLICT (rta, rta_scheme_code)
+DO UPDATE SET
+    amfi_scheme_code = EXCLUDED.amfi_scheme_code,
+    reason           = EXCLUDED.reason,
+    mapped_by        = EXCLUDED.mapped_by,
+    is_active        = EXCLUDED.is_active;
