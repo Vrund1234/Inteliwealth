@@ -83,7 +83,7 @@ def load_rta_nav(conn_engine, rta_scheme_codes):
     Filters match Rule 3.5 exactly: purprice > 0 drops the zero-price dividend
     and placeholder rows that would otherwise forge candidate matches.
     """
-    if not rta_scheme_codes:
+    if len(rta_scheme_codes) == 0:
         return pd.DataFrame(
             columns=["rta", "rta_scheme_code", "nav_date", "nav", "nav_round"]
         )
