@@ -10,6 +10,15 @@ from gold_loader import load_gold
 
 # Scheme Mapping
 from scheme_mapping import load_scheme_mapping
+from map_unmatched_nav_name import (
+    RULE_NAME,
+    RULE_NAME_TIER2,
+    RULE_NAME_TIER3,
+)
+from promote_approved_mappings import RULE_NAMES as REVIEW_RULES
+from promote_approved_mappings import promote_approved
+from utils.db import engine
+from sqlalchemy import bindparam, text
 
 
 st.set_page_config(
@@ -293,11 +302,43 @@ if extract_btn:
                 "2️⃣ Running Scheme Mapping from Bronze..."
             )
 
-            load_scheme_mapping()
+            # load_scheme_mapping() now also applies any approvals made in
+            # bronze.scheme_mapping_review since the last run, then re-queues
+            # whatever is still unresolved. One call, nothing left stale.
+            mapping_summary = load_scheme_mapping()
 
             st.success(
                 "✔ Scheme Mapping Completed"
             )
+
+            if mapping_summary["newly_mapped"]:
+                st.success(
+                    f"✔ Applied {mapping_summary['newly_mapped']} "
+                    f"previously-approved scheme(s) from the review queue."
+                )
+
+            if mapping_summary["newly_queued"]:
+                st.warning(
+                    f"⚠ {mapping_summary['newly_queued']} scheme(s) matched "
+                    f"and are awaiting approval "
+                    f"(NAV+name: {mapping_summary['queued_tier1']}, "
+                    f"name-only: {mapping_summary['queued_tier2']}). "
+                    "They are NOT mapped yet — approve them, then run Extract "
+                    "again to apply them."
+                )
+
+            if mapping_summary["ambiguous"]:
+                st.warning(
+                    f"⚠ {mapping_summary['ambiguous']} scheme(s) matched more "
+                    "than one candidate and were deliberately left unmapped."
+                )
+
+            if mapping_summary["still_unmatched"]:
+                st.info(
+                    f"ℹ {mapping_summary['still_unmatched']} scheme(s) remain "
+                    f"unmatched ({mapping_summary['no_candidate']} with no "
+                    "candidate found)."
+                )
 
         else:
 
@@ -396,6 +437,176 @@ if extract_btn:
         st.code(
             traceback.format_exc()
         )
+
+
+# =========================================================
+# SCHEME MAPPING REVIEW
+# =========================================================
+# The approval gate for fallback matches. Kept out of the ingestion run on
+# purpose: a wrong scheme mapping silently misattributes every holding and
+# transaction behind it, so mapping is a decision someone makes, not a side
+# effect of uploading a file.
+
+with st.expander("🔍 Scheme Mapping Review", expanded=False):
+
+    # Queried directly rather than through read_table(), which applies a
+    # LIMIT: the approve button updates every pending row in the table, so a
+    # truncated preview would have approved more than it displayed.
+    # All four rules that queue rows here, not just the fallback pair. Tier 3
+    # and the engine's own STRUCT_EXACT ambiguities were invisible in this
+    # panel and therefore unreviewable, while promote_approved_mappings was
+    # perfectly willing to apply them.
+    awaiting = pd.read_sql(
+        text(
+            """
+            SELECT rta, rta_scheme_code, rta_scheme_name,
+                   candidate_rank, candidate_amfi_code, candidate_amfi_name,
+                   candidate_score, rule_name
+            FROM bronze.scheme_mapping_review
+            WHERE reviewer_decision IS NULL
+              AND rule_name = ANY(:rules)
+            ORDER BY rta, rta_scheme_code, candidate_rank
+            """
+        ),
+        engine,
+        params={"rules": list(REVIEW_RULES)},
+    )
+
+    if awaiting.empty:
+        st.success("✔ Nothing pending. Every queued scheme has a decision.")
+
+    else:
+        # A scheme offering several candidates is an ambiguity, and approving
+        # all of them restates it rather than resolving it -- promotion refuses
+        # such a scheme outright. So the two cases are separated here: only
+        # single-candidate rows can be approved in bulk.
+        counts = awaiting.groupby(["rta", "rta_scheme_code"])["candidate_amfi_code"].transform("nunique")
+        single = awaiting[counts == 1]
+        contested = awaiting[counts > 1]
+
+        reviewer = st.text_input(
+            "Your name (recorded against every decision)",
+            key="reviewer_name",
+        )
+
+        # ---------------- single-candidate rows ----------------
+        if not single.empty:
+            st.markdown(f"#### {len(single)} scheme(s) with one candidate")
+            st.caption(
+                f"`{RULE_NAME}` carries two independent signals (NAV and name). "
+                f"`{RULE_NAME_TIER2}` has only the name. "
+                f"`{RULE_NAME_TIER3}` is a close-but-inexact name match — "
+                "check those most carefully."
+            )
+            st.dataframe(
+                single.drop(columns=["candidate_rank"]),
+                use_container_width=True,
+            )
+
+            if st.button("✅ Approve all single-candidate schemes",
+                         use_container_width=True):
+                if not reviewer.strip():
+                    st.error("Enter your name before approving.")
+                else:
+                    pairs = list(
+                        single[["rta", "rta_scheme_code"]]
+                        .drop_duplicates().itertuples(index=False, name=None)
+                    )
+                    with engine.begin() as conn:
+                        updated = conn.execute(
+                            text(
+                                "UPDATE bronze.scheme_mapping_review "
+                                "   SET reviewer_decision = 'APPROVED', "
+                                "       reviewed_by = :who, reviewed_at = now() "
+                                " WHERE reviewer_decision IS NULL "
+                                "   AND (rta, rta_scheme_code) IN :pairs"
+                            ).bindparams(bindparam("pairs", expanding=True)),
+                            {"who": reviewer.strip(), "pairs": pairs},
+                        ).rowcount
+                    st.success(f"✔ Approved {updated} row(s).")
+                    st.rerun()
+
+        # ---------------- ambiguous schemes ----------------
+        if not contested.empty:
+            schemes = contested[["rta", "rta_scheme_code"]].drop_duplicates()
+            st.markdown(
+                f"#### {len(schemes)} scheme(s) with several candidates"
+            )
+            st.warning(
+                "These matched more than one AMFI scheme. Pick one per scheme —"
+                " approving several restates the ambiguity, and promotion "
+                "refuses any scheme whose candidates disagree."
+            )
+
+            for row in schemes.itertuples(index=False):
+                options = contested[
+                    (contested["rta"] == row.rta)
+                    & (contested["rta_scheme_code"] == row.rta_scheme_code)
+                ]
+                st.markdown(
+                    f"**{row.rta} / {row.rta_scheme_code}** — "
+                    f"{options.iloc[0]['rta_scheme_name']}"
+                )
+                labels = {
+                    f"{o.candidate_amfi_code} — {o.candidate_amfi_name}":
+                        o.candidate_amfi_code
+                    for o in options.itertuples()
+                }
+                chosen = st.radio(
+                    "Correct AMFI scheme",
+                    options=["(leave undecided)"] + list(labels),
+                    key=f"pick_{row.rta}_{row.rta_scheme_code}",
+                )
+                if st.button(
+                    "Save decision",
+                    key=f"save_{row.rta}_{row.rta_scheme_code}",
+                ):
+                    if not reviewer.strip():
+                        st.error("Enter your name before deciding.")
+                    elif chosen == "(leave undecided)":
+                        st.error("Pick a candidate first.")
+                    else:
+                        # The rejected candidates are recorded as REJECTED
+                        # rather than left NULL, so the decision is durable and
+                        # the scheme does not reappear as unreviewed.
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    "UPDATE bronze.scheme_mapping_review "
+                                    "   SET reviewer_decision = CASE "
+                                    "         WHEN candidate_amfi_code = :pick "
+                                    "         THEN 'APPROVED' ELSE 'REJECTED' END, "
+                                    "       reviewed_by = :who, reviewed_at = now() "
+                                    " WHERE reviewer_decision IS NULL "
+                                    "   AND rta = :rta AND rta_scheme_code = :code"
+                                ),
+                                {"pick": labels[chosen], "who": reviewer.strip(),
+                                 "rta": row.rta, "code": row.rta_scheme_code},
+                            )
+                        st.success(f"✔ {row.rta_scheme_code} -> {labels[chosen]}")
+                        st.rerun()
+
+        # ---------------- apply ----------------
+        st.divider()
+        if st.button("⬆ Promote approved to scheme_mapping",
+                     use_container_width=True):
+            outcome = promote_approved(engine)
+            st.success(f"✔ Promoted {outcome['promoted']} mapping(s).")
+            if outcome["skipped_already_mapped"]:
+                st.info(
+                    f"ℹ {outcome['skipped_already_mapped']} approval(s) skipped "
+                    "— another rule had already mapped those schemes at higher "
+                    "confidence."
+                )
+            if outcome["skipped_ambiguous"]:
+                st.warning(
+                    f"⚠ {outcome['skipped_ambiguous']} scheme(s) skipped — "
+                    "more than one candidate was approved, so the ambiguity "
+                    "is unresolved."
+                )
+
+
+st.divider()
 
 
 # =========================================================

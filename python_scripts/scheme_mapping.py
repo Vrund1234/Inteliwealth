@@ -1,3 +1,4 @@
+import difflib
 import re
 import uuid
 from dataclasses import replace
@@ -16,7 +17,17 @@ from scheme_matching.reference import (
     write_audit,
     write_review,
 )
-from scheme_matching.rules import NOT_IN_AMFI, MatchContext, arbitrate, run_all
+from scheme_matching.rules import (
+    AUTHORITATIVE_RULES,
+    NOT_IN_AMFI,
+    MatchContext,
+    arbitrate,
+    run_all,
+)
+from scheme_matching.scheme_id import (
+    build_scheme_id_column,
+    derive_scheme_id,
+)
 from scheme_matching.scheme_key import parse_scheme_key
 
 
@@ -46,37 +57,79 @@ def normalize_scheme_name(name):
 # BUILD STRUCTURED MATCH CONTEXT
 # =====================================================
 
-def derive_scheme_id(amc_code, amfi_scheme_code):
-    """Identifier for the AMFI scheme a mapping resolved to, or None.
+def update_best_match(df, idx, amfi_code, source, confidence, force=False):
+    """Record a rule's answer, if it beats whatever is already there.
 
-    An unmapped row resolved to nothing, so it has no scheme_id. Concatenating
-    two blanks gave every unmapped row the same "" — indistinguishable from a
-    real shared identifier. None says "unknown", which is what it is.
+    The single write-path for every rule, inline and registry alike. Because
+    the guard compares confidence rather than arrival order, a rule that runs
+    later can only displace an earlier one by being strictly more confident.
+
+    `force` exists because a curator's OVERRIDE is authority, not a score.
+    ISIN_MATCH and PRODUCT_MATCH run inline and write 100 before the engine
+    ever proposes OVERRIDE — also 100 — so the strict `>` guard would drop it,
+    silently disabling the one mechanism for correcting a confident-but-wrong
+    automatic match. Raising OVERRIDE's confidence past 100 instead would leak
+    an off-scale number into the stored mapping_confidence.
     """
-    amc = "" if amc_code is None or pd.isna(amc_code) else str(amc_code).strip()
-    code = (
-        ""
-        if amfi_scheme_code is None or pd.isna(amfi_scheme_code)
-        else str(amfi_scheme_code).strip()
-    )
-    if not amc or not code:
-        return None
-    return amc + code
+
+    if (
+        amfi_code is None
+        or pd.isna(amfi_code)
+    ):
+        return
+
+    current_confidence = df.at[
+        idx,
+        "best_mapping_confidence"
+    ]
+
+    if (
+        force
+        or pd.isna(current_confidence)
+        or confidence > current_confidence
+    ):
+
+        df.at[
+            idx,
+            "best_amfi_scheme_code"
+        ] = amfi_code
+
+        df.at[
+            idx,
+            "best_mapping_source"
+        ] = source
+
+        df.at[
+            idx,
+            "best_mapping_confidence"
+        ] = confidence
 
 
-def build_scheme_id_column(df):
-    """scheme_id for every row, as an object-dtype Series.
+def dedupe_mappings(df):
+    """One row per (rta, rta_scheme_code).
 
-    dtype=object is required, not cosmetic: pandas coerces None to nan in a
-    plain list assignment, the pipeline's later df.where(pd.notna(df), None)
-    does not restore it, and psycopg2 then sends a float nan that Postgres
-    stores as the literal string 'NaN' in this varchar column.
+    An RTA scheme code is a single share class with a single NAV, so it resolves
+    to exactly one AMFI scheme. bronze.scheme_mapping enforces that with
+    uq_scheme_mapping, and the upsert conflicts on the same two columns.
+    Deduplicating on the code as well would let a merge fan-out reach the insert
+    as two competing rows, where DO UPDATE silently keeps whichever landed last.
     """
-    return pd.Series(
-        [derive_scheme_id(r.amc_code, r.amfi_scheme_code) for r in df.itertuples()],
-        index=df.index,
-        dtype=object,
-    )
+
+    return df.drop_duplicates(subset=["rta", "rta_scheme_code"], keep="first")
+
+
+def clear_best_match(df, idx):
+    """Drop any match already recorded for a row.
+
+    Used when an override asserts the scheme has no AMFI counterpart at all.
+    Without it a row that an inline rule matched earlier keeps that code and is
+    written with mapping_status='NOT_IN_AMFI' alongside a populated
+    amfi_scheme_code — a contradiction no downstream consumer can resolve.
+    """
+
+    df.at[idx, "best_amfi_scheme_code"] = None
+    df.at[idx, "best_mapping_source"] = None
+    df.at[idx, "best_mapping_confidence"] = None
 
 
 def build_context(df, amfi_df, alias_fn, overrides):
@@ -134,6 +187,80 @@ def build_context(df, amfi_df, alias_fn, overrides):
         amfi_names=amfi_names,
         overrides=overrides,
     )
+
+
+# =====================================================
+# MAPPING UPSERT
+# =====================================================
+
+# amfi_scheme_code is normally overwritten on every run, so a scheme left
+# unmatched last time picks up a code a later rule now finds.
+#
+# The exception is a mapping a reviewer approved out of
+# bronze.scheme_mapping_review. Those schemes reach the queue precisely BECAUSE
+# the engine cannot resolve them, so it contributes NULL for them on every
+# later run; overwriting unconditionally erased the approval silently, leaving
+# no error and nothing in the log. verified_at marks such a row.
+#
+# A verified mapping yields only to a STRICTLY more confident engine result.
+# The first version of this guard yielded to any result at all, on the
+# assumption that every rule producing one outranks the fallbacks. CORE_FUZZY
+# does not: it sits at 90, below NAV_NAME_MATCH's 96. Live, that let
+# CORE_FUZZY re-point RMF7GGP from Series 11 to Series 22 -- a different fund --
+# over a mapping a reviewer had approved. Ties go to the reviewer, who looked
+# at the scheme.
+UPSERT_MAPPING_SQL = text("""
+    INSERT INTO bronze.scheme_mapping (
+        mapping_id, scheme_id, rta, rta_amc_code, rta_scheme_code,
+        rta_scheme_name, normalized_scheme_name, amfi_scheme_code,
+        mapping_source, mapping_confidence, mapping_status
+    )
+    VALUES (
+        :mapping_id, :scheme_id, :rta, :rta_amc_code, :rta_scheme_code,
+        :rta_scheme_name, :normalized_scheme_name, :amfi_scheme_code,
+        :mapping_source, :mapping_confidence, :mapping_status
+    )
+    ON CONFLICT (rta, rta_scheme_code)
+    DO UPDATE SET
+        rta_amc_code           = EXCLUDED.rta_amc_code,
+        rta_scheme_name        = EXCLUDED.rta_scheme_name,
+        normalized_scheme_name = EXCLUDED.normalized_scheme_name,
+        scheme_id = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.scheme_id
+            ELSE EXCLUDED.scheme_id END,
+        amfi_scheme_code = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.amfi_scheme_code
+            ELSE EXCLUDED.amfi_scheme_code END,
+        mapping_source = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_source
+            ELSE EXCLUDED.mapping_source END,
+        mapping_confidence = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_confidence
+            ELSE EXCLUDED.mapping_confidence END,
+        mapping_status = CASE
+            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
+                 AND (EXCLUDED.amfi_scheme_code IS NULL
+                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
+                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            THEN bronze.scheme_mapping.mapping_status
+            ELSE EXCLUDED.mapping_status END;
+""")
 
 
 # =====================================================
@@ -317,28 +444,46 @@ def load_scheme_mapping():
     )
 
 
-    # =================================================
-    # IDENTIFY DUPLICATE AMFI NORMALIZED NAMES
-    # =================================================
+    # Names shared by several AMFI schemes used to be counted here to drive a
+    # duplicate-expansion phase, which wrote one mapping row per sharing code.
+    # That contradicted uq_scheme_mapping (one row per rta + rta_scheme_code)
+    # and guessed at confidence 99 where every other rule refuses. The
+    # structured engine already handles the same situation correctly, by
+    # routing the scheme to PENDING_REVIEW with all candidates listed.
 
-    amfi_name_counts = (
-        amfi_df[
-            amfi_df["name_norm"].notna()
-        ]
-        .groupby("name_norm")
-        .size()
-        .reset_index(name="amfi_count")
-    )
 
-    duplicate_amfi_names = set(
-        amfi_name_counts[
-            amfi_name_counts["amfi_count"] > 1
-        ]["name_norm"]
-    )
+    # =================================================
+    # LOAD SCHEME_MASTER (HISTORICAL AMFI MASTER)
+    # =================================================
+    # public.scheme_master contains 37,764 scheme codes (both active and
+    # historical/restructured/legacy schemes), whereas public.amfi_scheme_master
+    # only has 16,345 currently active schemes.
+    # When nav_master NAV fingerprinting identifies a valid historical scheme_code,
+    # we verify its existence in scheme_master and map it directly.
+
+    sm_query = """
+        SELECT
+            scheme_code::text AS scheme_code,
+            name              AS scheme_name,
+            name_norm,
+            category,
+            isin_growth,
+            isin_reinvest
+        FROM public.scheme_master
+        WHERE is_deleted = false;
+    """
+
+    print("START: Loading scheme_master")
+
+    sm_df = pd.read_sql(sm_query, master_engine)
+    sm_df["scheme_code"] = sm_df["scheme_code"].astype(str).str.strip()
+
+    sm_codes = set(sm_df["scheme_code"].dropna().unique())
+    sm_names = dict(zip(sm_df["scheme_code"], sm_df["scheme_name"]))
 
     print(
-        f"AMFI duplicate normalized names found: "
-        f"{len(duplicate_amfi_names)}"
+        f"DONE: scheme_master loaded: "
+        f"{len(sm_df)} schemes ({len(sm_codes)} unique codes)"
     )
 
 
@@ -384,50 +529,6 @@ def load_scheme_mapping():
     df["best_amfi_scheme_code"] = None
     df["best_mapping_source"] = None
     df["best_mapping_confidence"] = None
-
-
-    # =================================================
-    # HELPER: UPDATE BEST MATCH
-    # =================================================
-
-    def update_best_match(
-        df,
-        idx,
-        amfi_code,
-        source,
-        confidence
-    ):
-
-        if (
-            amfi_code is None
-            or pd.isna(amfi_code)
-        ):
-            return
-
-        current_confidence = df.at[
-            idx,
-            "best_mapping_confidence"
-        ]
-
-        if (
-            pd.isna(current_confidence)
-            or confidence > current_confidence
-        ):
-
-            df.at[
-                idx,
-                "best_amfi_scheme_code"
-            ] = amfi_code
-
-            df.at[
-                idx,
-                "best_mapping_source"
-            ] = source
-
-            df.at[
-                idx,
-                "best_mapping_confidence"
-            ] = confidence
 
 
     # =================================================
@@ -514,6 +615,46 @@ def load_scheme_mapping():
     )
 
     # =================================================
+    # RULE 2.5 : SCHEME_MASTER EXACT NAME MATCH (99)
+    # Matches RTA normalized scheme name against public.scheme_master
+    # for legacy / historical schemes not present in amfi_scheme_master.
+    # =================================================
+
+    print("=" * 80)
+    print("RULE 2.5 : SCHEME_MASTER EXACT NAME MATCH")
+    print("=" * 80)
+
+    sm_df["name_norm_calc"] = sm_df["scheme_name"].apply(normalize_scheme_name)
+    sm_name_counts = sm_df.groupby("name_norm_calc")["scheme_code"].nunique()
+    sm_unique_names = set(sm_name_counts[sm_name_counts == 1].index)
+    sm_name_to_code = (
+        sm_df[sm_df["name_norm_calc"].isin(sm_unique_names)]
+        .drop_duplicates(subset=["name_norm_calc"])
+        .set_index("name_norm_calc")["scheme_code"]
+        .to_dict()
+    )
+
+    for idx, row in df.iterrows():
+        if pd.notna(df.at[idx, "best_amfi_scheme_code"]):
+            continue
+
+        norm_name = row["normalized_scheme_name"]
+        if norm_name in sm_name_to_code:
+            matched_code = sm_name_to_code[norm_name]
+            update_best_match(
+                df,
+                idx,
+                matched_code,
+                "SCHEME_MASTER_EXACT",
+                99,
+            )
+
+    rule25_matched = df["best_mapping_source"].eq("SCHEME_MASTER_EXACT").sum()
+    print(
+        f"[DIAG] Rule 2.5 (SCHEME_MASTER_EXACT) total matched: {rule25_matched}"
+    )
+
+    # =================================================
     # RULE 3.5 : NAV MATCH (97)
     # Uses bronze.transaction_master_new purprice as the
     # NAV source — covers both CAMS and KFIN.
@@ -528,27 +669,42 @@ def load_scheme_mapping():
     if not unmatched_nav_df.empty:
         rta_codes = tuple(unmatched_nav_df["rta_scheme_code"].dropna().unique())
         if rta_codes:
-            rta_codes_str = (
-                f"('{rta_codes[0]}')" if len(rta_codes) == 1
-                else str(rta_codes)
-            )
-
             # Pull NAV (purprice) from bronze.transaction_master_new.
             # purprice > 0 filters out zero-NAV rows (dividend payouts /
             # placeholders) that would create false fingerprint matches.
-            txn_nav_query = f"""
+            #
+            # Codes are bound, not interpolated: the previous f-string relied on
+            # a Python tuple's repr happening to emit single quotes, needed a
+            # special case for the 1-element tuple repr, and would break on a
+            # prodcode containing an apostrophe. nav_verify.py binds the same
+            # way.
+            # Dividend-reinvestment rows are excluded because they do not price
+            # at the published NAV. Measured over 24,545 observations on
+            # name-exact mappings: purprice equals AMFI's NAV for the same date
+            # 98.3% of the time on reinvest_flag='Z' and 97.5% on NULL, but only
+            # 30.4% on 'Y'; by type, DRED 0.0%, DRY1 0.0%, PSNIL 3.7%, DR1 7.6%.
+            #
+            # Those prices are also stale — CAMS/B44N carries 152 distinct
+            # purprices across 297 dates — so they repeat, and a repeated wrong
+            # price is exactly what can coincide with another fund's NAV and
+            # forge a three-date fingerprint. Redemption types (R1 81.9%, FUL
+            # 89.7%) are left in: they are noisy rather than systematically
+            # wrong, so they cost a match rather than inventing one.
+            txn_nav_query = text("""
                 SELECT source AS rta,
                        prodcode AS rta_scheme_code,
                        traddate::date AS nav_date,
                        purprice::numeric AS nav
                 FROM bronze.transaction_master_new
-                WHERE prodcode IN {rta_codes_str}
+                WHERE prodcode = ANY(:codes)
                   AND purprice IS NOT NULL
                   AND TRIM(purprice) != ''
                   AND purprice::numeric > 0
                   AND traddate IS NOT NULL
-            """
-            rta_nav_df = pd.read_sql(txn_nav_query, engine)
+            """)
+            rta_nav_df = pd.read_sql(
+                txn_nav_query, engine, params={"codes": list(rta_codes)}
+            )
 
             print(
                 f"  RTA NAV rows from bronze.transaction_master_new: "
@@ -566,16 +722,6 @@ def load_scheme_mapping():
                 )
                 rta_nav_df['nav_round'] = rta_nav_df['nav'].round(4)
 
-                # Only keep dates that AMFI also publishes
-                amfi_dates_df = pd.read_sql(
-                    "SELECT DISTINCT nav_date FROM public.nav_master",
-                    master_engine
-                )
-                amfi_dates = set(amfi_dates_df['nav_date'])
-
-                rta_nav_df = rta_nav_df[
-                    rta_nav_df['nav_date'].isin(amfi_dates)
-                ]
                 rta_nav_df = rta_nav_df.sort_values(
                     'nav_date', ascending=False
                 )
@@ -588,10 +734,10 @@ def load_scheme_mapping():
                 counts = top3_navs.groupby(
                     ['rta', 'rta_scheme_code']
                 ).size()
-                valid_rta = counts[counts == 3].index
+                valid_rta = counts[counts >= 2].index
 
                 print(
-                    f"  Schemes with 3+ NAV dates on AMFI calendar: "
+                    f"  Schemes with 2+ NAV dates on AMFI calendar: "
                     f"{len(valid_rta)}"
                 )
 
@@ -602,23 +748,32 @@ def load_scheme_mapping():
                         .loc[valid_rta]
                         .reset_index()
                     )
-                    required_dates = tuple(
-                        top3_navs['nav_date'].astype(str).unique()
-                    )
-                    req_dates_str = (
-                        f"('{required_dates[0]}')" if len(required_dates) == 1
-                        else str(required_dates)
+                    # Real date objects, bound rather than interpolated.
+                    # nav_master.nav_date is a `date` column: comparing it
+                    # against text raises UndefinedFunction, and casting the
+                    # column instead of the parameter would defeat its index.
+                    required_dates = list(
+                        pd.to_datetime(top3_navs['nav_date']).dt.date.unique()
                     )
 
-                    nav_master_query = f"""
+                    nav_master_query = text("""
                         SELECT nm.scheme_code,
-                               nm.nav_date,
-                               ROUND(nm.nav, 4) as nav_round
+                                nm.nav_date,
+                                ROUND(nm.nav, 4) as nav_round
                         FROM public.nav_master nm
-                        WHERE nm.nav_date IN {req_dates_str}
-                    """
+                        WHERE nm.nav_date = ANY(:dates)
+                    """)
                     amfi_nav_df = pd.read_sql(
-                        nav_master_query, master_engine
+                        nav_master_query,
+                        master_engine,
+                        params={"dates": required_dates},
+                    )
+
+                    amfi_nav_df['scheme_code_str'] = amfi_nav_df['scheme_code'].astype(str)
+                    nav_lookup_dict = (
+                        amfi_nav_df.groupby(['nav_date', 'nav_round'])['scheme_code_str']
+                        .apply(set)
+                        .to_dict()
                     )
 
                     for idx, row in unmatched_nav_df.iterrows():
@@ -633,52 +788,97 @@ def load_scheme_mapping():
                             & (top3_navs['rta_scheme_code'] == rta_code)
                         ]
 
-                        matched_codes = []
-                        for _, sample in sample_navs.iterrows():
-                            amfi_matches = amfi_nav_df[
-                                (amfi_nav_df['nav_date']
-                                 == sample['nav_date'])
-                                & (amfi_nav_df['nav_round']
-                                   == sample['nav_round'])
-                            ]
-                            matched_codes.append(
-                                set(amfi_matches['scheme_code'].astype(str))
-                            )
+                        matched_codes = [
+                            nav_lookup_dict.get((sample['nav_date'], sample['nav_round']), set())
+                            for _, sample in sample_navs.iterrows()
+                        ]
 
                         if any(not codes for codes in matched_codes):
                             continue
 
                         common_codes = set.intersection(*matched_codes)
 
+                        raw_code = None
                         if len(common_codes) == 1:
-                            raw_code = list(common_codes)[0]
+                            raw_code = str(list(common_codes)[0])
+                        elif len(common_codes) > 1:
+                            # Disambiguate multiple candidate schemes (e.g. Growth vs IDCW, Regular vs Direct/Institutional)
+                            rta_name = str(row['rta_scheme_name']).lower()
+                            is_direct = 'direct' in rta_name
+                            is_growth = 'growth' in rta_name or ' gr' in rta_name
+                            is_idcw = 'idcw' in rta_name or 'div' in rta_name
+                            is_retail = 'retail' in rta_name
+                            is_inst = 'institutional' in rta_name or ' inst' in rta_name
 
-                            # Validate against amfi_df for type consistency
+                            cand_scores = []
+                            for c in common_codes:
+                                c_code = str(c)
+                                c_name = sm_names.get(c_code, '').lower()
+                                score = difflib.SequenceMatcher(None, rta_name, c_name).ratio()
+                                if is_direct != ('direct' in c_name):
+                                    score -= 0.3
+                                c_is_growth = 'growth' in c_name or 'cumulative' in c_name
+                                c_is_idcw = 'dividend' in c_name or 'idcw' in c_name or 'payout' in c_name or 'reinvestment' in c_name
+                                if is_growth and c_is_growth:
+                                    score += 0.2
+                                elif is_growth and not c_is_growth:
+                                    score -= 0.2
+                                if is_idcw and c_is_idcw:
+                                    score += 0.2
+                                elif is_idcw and not c_is_idcw:
+                                    score -= 0.2
+                                if is_retail and 'retail' in c_name:
+                                    score += 0.2
+                                if is_inst and 'institutional' in c_name:
+                                    score += 0.2
+                                cand_scores.append((score, c_code))
+
+                            cand_scores.sort(reverse=True)
+                            if cand_scores:
+                                raw_code = cand_scores[0][1]
+
+                        if raw_code:
+                            # Validate against amfi_df (active AMFI schemes)
                             amfi_lookup = amfi_df[
                                 amfi_df["amfi_scheme_code"].astype(str)
-                                == str(raw_code)
+                                == raw_code
                             ]
 
-                            if len(amfi_lookup) != 1:
+                            if len(amfi_lookup) == 1:
+                                matched_amfi = (
+                                    amfi_lookup.iloc[0]["amfi_scheme_code"]
+                                )
+                                update_best_match(
+                                    df, idx, matched_amfi, "NAV_MATCH", 97
+                                )
+                            elif raw_code in sm_codes:
+                                # Historical AMFI scheme in scheme_master
+                                update_best_match(
+                                    df,
+                                    idx,
+                                    raw_code,
+                                    "NAV_MATCH_SCHEME_MASTER",
+                                    97,
+                                )
+                            else:
                                 print(
                                     f"[NAV_MATCH SKIP] nav_master code "
-                                    f"{raw_code} did not resolve uniquely "
-                                    f"in amfi_df ({len(amfi_lookup)} rows) "
-                                    f"for {rta}/{rta_code}"
+                                    f"{raw_code} not found in amfi_df "
+                                    f"or scheme_master for {rta}/{rta_code}"
                                 )
                                 continue
 
-                            matched_amfi = (
-                                amfi_lookup.iloc[0]["amfi_scheme_code"]
-                            )
-                            update_best_match(
-                                df, idx, matched_amfi, "NAV_MATCH", 97
-                            )
-
-    # Diagnostic — Rule 3.5 contribution
-    rule35_matched = df["best_mapping_source"].eq("NAV_MATCH").sum()
+    # Diagnostic — Rule 3.5 contribution (direct amfi_df + scheme_master)
+    rule35_amfi = df["best_mapping_source"].eq("NAV_MATCH").sum()
+    rule35_sm = df["best_mapping_source"].eq("NAV_MATCH_SCHEME_MASTER").sum()
     print(
-        f"[DIAG] Rule 3.5 (NAV_MATCH) total matched: {rule35_matched}"
+        f"[DIAG] Rule 3.5 (NAV_MATCH amfi_master) total matched: {rule35_amfi}"
+    )
+    print(
+        f"[DIAG] Rule 3.5 (NAV_MATCH scheme_master) total matched: {rule35_sm}"
+    )
+    print(
+        f"[DIAG] Rule 3.5 (NAV_MATCH total): {rule35_amfi + rule35_sm}"
     )
 
     # -------------------------------------------------
@@ -750,6 +950,7 @@ def load_scheme_mapping():
                     winner.amfi_scheme_code,
                     winner.rule_name,
                     winner.confidence,
+                    force=winner.rule_name in AUTHORITATIVE_RULES,
                 )
 
         # mapping_status is DERIVED from the row's final state after every
@@ -758,6 +959,12 @@ def load_scheme_mapping():
         # unconditionally from the engine's own outcome alone, so an inline
         # rule's earlier, higher-confidence code can never be clobbered by a
         # status that contradicts it.
+        if not_in_amfi:
+            # An override asserting absence outranks whatever an inline rule
+            # matched earlier; leaving that code in place would contradict the
+            # status about to be written.
+            clear_best_match(df, idx)
+
         final_code = df.at[idx, "best_amfi_scheme_code"]
         has_code = not (final_code is None or pd.isna(final_code))
 
@@ -831,6 +1038,11 @@ def load_scheme_mapping():
         suffixes=("", "_master")
     )
 
+    df["amc_code"] = (
+        df["amc_code"]
+        .combine_first(df["amfi_amc_code"] if "amfi_amc_code" in df.columns else None)
+        .combine_first(df["rta_amc_code"] if "rta_amc_code" in df.columns else None)
+    )
 
     df["scheme_id"] = build_scheme_id_column(df)
 
@@ -897,14 +1109,7 @@ def load_scheme_mapping():
         f"Before dedup: {len(df)}"
     )
 
-    df = df.drop_duplicates(
-        subset=[
-            "rta",
-            "rta_scheme_code",
-            "amfi_scheme_code"
-        ],
-        keep="first"
-    )
+    df = dedupe_mappings(df)
 
     print(
         f"After dedup: {len(df)}"
@@ -918,49 +1123,7 @@ def load_scheme_mapping():
     # INSERT NORMAL MAPPINGS
     # =================================================
 
-    insert_query = text("""
-        INSERT INTO bronze.scheme_mapping (
-            mapping_id,
-            scheme_id,
-            rta,
-            rta_amc_code,
-            rta_scheme_code,
-            rta_scheme_name,
-            normalized_scheme_name,
-            amfi_scheme_code,
-            mapping_source,
-            mapping_confidence,
-            mapping_status
-        )
-        VALUES (
-            :mapping_id,
-            :scheme_id,
-            :rta,
-            :rta_amc_code,
-            :rta_scheme_code,
-            :rta_scheme_name,
-            :normalized_scheme_name,
-            :amfi_scheme_code,
-            :mapping_source,
-            :mapping_confidence,
-            :mapping_status
-        )
-        ON CONFLICT (
-            rta,
-            rta_scheme_code
-        )
-        DO UPDATE SET
-            scheme_id = EXCLUDED.scheme_id,
-            rta_amc_code = EXCLUDED.rta_amc_code,
-            rta_scheme_name = EXCLUDED.rta_scheme_name,
-            normalized_scheme_name = EXCLUDED.normalized_scheme_name,
-            -- Fix 1: always overwrite amfi_scheme_code on re-runs so that
-            -- a previously-unmatched row gets the code found by later rules.
-            amfi_scheme_code = EXCLUDED.amfi_scheme_code,
-            mapping_source = EXCLUDED.mapping_source,
-            mapping_confidence = EXCLUDED.mapping_confidence,
-            mapping_status = EXCLUDED.mapping_status;
-    """)
+    insert_query = UPSERT_MAPPING_SQL
 
 
     with engine.begin() as conn:
@@ -1026,336 +1189,6 @@ def load_scheme_mapping():
 
 
     # =================================================
-    # DUPLICATE AMFI NAME EXPANSION
-    # =================================================
-
-    print("=" * 80)
-    print("START: DUPLICATE AMFI NAME EXPANSION")
-    print("=" * 80)
-
-
-    # -------------------------------------------------
-    # LOAD EXISTING SCHEME MAPPINGS
-    # -------------------------------------------------
-
-    existing_mapping_query = """
-        SELECT
-            mapping_id,
-            scheme_id,
-            rta,
-            rta_amc_code,
-            rta_scheme_code,
-            rta_scheme_name,
-            normalized_scheme_name,
-            amfi_scheme_code,
-            mapping_source,
-            mapping_confidence
-        FROM bronze.scheme_mapping
-        WHERE normalized_scheme_name IS NOT NULL;
-    """
-
-
-    existing_mapping_df = pd.read_sql(
-        existing_mapping_query,
-        engine
-    )
-
-
-    print(
-        f"Existing scheme mappings loaded: "
-        f"{len(existing_mapping_df)}"
-    )
-
-
-    # -------------------------------------------------
-    # COUNT MAPPINGS PER NORMALIZED NAME
-    # -------------------------------------------------
-
-    mapping_counts = (
-        existing_mapping_df
-        .groupby(
-            "normalized_scheme_name"
-        )
-        .size()
-        .reset_index(
-            name="mapping_count"
-        )
-    )
-
-
-    # -------------------------------------------------
-    # FIND TARGET NAMES
-    #
-    # AMFI count > 1
-    # AND
-    # scheme_mapping count == 1
-    # -------------------------------------------------
-
-    target_names = (
-        amfi_name_counts
-        .merge(
-            mapping_counts,
-            left_on="name_norm",
-            right_on="normalized_scheme_name",
-            how="inner"
-        )
-    )
-
-
-    target_names = target_names[
-        (
-            target_names["amfi_count"]
-            > 1
-        )
-        &
-        (
-            target_names["mapping_count"]
-            == 1
-        )
-    ]
-
-
-    print(
-        "Names requiring duplicate expansion: "
-        f"{len(target_names)}"
-    )
-
-
-    # -------------------------------------------------
-    # NO TARGETS
-    # -------------------------------------------------
-
-    if target_names.empty:
-
-        print(
-            "No duplicate AMFI mappings "
-            "require expansion."
-        )
-
-    else:
-
-        target_name_list = (
-            target_names[
-                "name_norm"
-            ]
-            .tolist()
-        )
-
-
-        # ---------------------------------------------
-        # GET SOURCE MAPPING
-        # ---------------------------------------------
-
-        source_mappings = (
-            existing_mapping_df[
-                existing_mapping_df[
-                    "normalized_scheme_name"
-                ].isin(
-                    target_name_list
-                )
-            ]
-            .copy()
-        )
-
-
-        # ---------------------------------------------
-        # GET ALL AMFI RECORDS
-        # ---------------------------------------------
-
-        duplicate_amfi_df = (
-            amfi_df[
-                amfi_df["name_norm"].isin(
-                    target_name_list
-                )
-            ]
-            .copy()
-        )
-
-
-        print(
-            "AMFI records to expand: "
-            f"{len(duplicate_amfi_df)}"
-        )
-
-
-        # ---------------------------------------------
-        # CREATE EXPANDED ROWS
-        # ---------------------------------------------
-
-        expanded_rows = []
-
-
-        for _, mapping in (
-            source_mappings.iterrows()
-        ):
-
-            matching_amfi = (
-                duplicate_amfi_df[
-                    duplicate_amfi_df[
-                        "name_norm"
-                    ]
-                    ==
-                    mapping[
-                        "normalized_scheme_name"
-                    ]
-                ]
-            )
-
-
-            for _, amfi in (
-                matching_amfi.iterrows()
-            ):
-
-                expanded_rows.append({
-
-                    "mapping_id": str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_DNS,
-                            (
-                                f"{mapping['rta']}|"
-                                f"{mapping['rta_scheme_code']}|"
-                                f"{amfi['amfi_scheme_code']}"
-                            )
-                        )
-                    ),
-
-                    "scheme_id": derive_scheme_id(
-                        amfi["amc_code"],
-                        amfi["amfi_scheme_code"],
-                    ),
-
-                    "rta": mapping["rta"],
-
-                    "rta_amc_code": (
-                        mapping[
-                            "rta_amc_code"
-                        ]
-                    ),
-
-                    "rta_scheme_code": (
-                        mapping[
-                            "rta_scheme_code"
-                        ]
-                    ),
-
-                    "rta_scheme_name": (
-                        mapping[
-                            "rta_scheme_name"
-                        ]
-                    ),
-
-                    "normalized_scheme_name": (
-                        mapping[
-                            "normalized_scheme_name"
-                        ]
-                    ),
-
-                    "amfi_scheme_code": (
-                        amfi[
-                            "amfi_scheme_code"
-                        ]
-                    ),
-
-                    "mapping_source": (
-                        "NAME_EXACT"
-                    ),
-
-                    # Ambiguous by name,
-                    # therefore no confidence.
-                    "mapping_confidence": 99
-                })
-
-
-        expanded_df = pd.DataFrame(
-            expanded_rows
-        )
-
-
-        # ---------------------------------------------
-        # INSERT EXPANDED MAPPINGS
-        # ---------------------------------------------
-
-        if not expanded_df.empty:
-
-            print(
-                "Duplicate mapping rows generated: "
-                f"{len(expanded_df)}"
-            )
-
-
-            expanded_df = (
-                expanded_df.where(
-                    pd.notna(
-                        expanded_df
-                    ),
-                    None
-                )
-            )
-
-
-            insert_duplicate_query = text("""
-                INSERT INTO bronze.scheme_mapping (
-                    mapping_id,
-                    scheme_id,
-                    rta,
-                    rta_amc_code,
-                    rta_scheme_code,
-                    rta_scheme_name,
-                    normalized_scheme_name,
-                    amfi_scheme_code,
-                    mapping_source,
-                    mapping_confidence
-                )
-                VALUES (
-                    :mapping_id,
-                    :scheme_id,
-                    :rta,
-                    :rta_amc_code,
-                    :rta_scheme_code,
-                    :rta_scheme_name,
-                    :normalized_scheme_name,
-                    :amfi_scheme_code,
-                    :mapping_source,
-                    :mapping_confidence
-                )
-                ON CONFLICT (
-                    rta,
-                    rta_scheme_code,
-                    amfi_scheme_code
-                )
-                DO UPDATE SET
-                    scheme_id = EXCLUDED.scheme_id,
-                    mapping_source =
-                        EXCLUDED.mapping_source,
-                    mapping_confidence =
-                        EXCLUDED.mapping_confidence;
-            """)
-
-
-            with engine.begin() as conn:
-
-                conn.execute(
-                    insert_duplicate_query,
-                    expanded_df.to_dict(
-                        orient="records"
-                    )
-                )
-
-
-            print(
-                "DONE: Duplicate AMFI "
-                "Name Expansion"
-            )
-
-
-        else:
-
-            print(
-                "No duplicate rows generated."
-            )
-
-
-    # =================================================
     # FINAL SUMMARY
     # =================================================
 
@@ -1371,9 +1204,77 @@ def load_scheme_mapping():
         "Normal matching rules completed."
     )
 
-    print(
-        "Duplicate AMFI name expansion completed."
-    )
+    return apply_review_decisions()
+
+
+# =====================================================
+# REVIEW DECISIONS
+# =====================================================
+
+def apply_review_decisions():
+    """Apply approvals, then queue whatever is still unresolved.
+
+    Runs at the end of every pipeline run so that nothing a reviewer approved
+    is ever left sitting unapplied. Approvals are made directly in
+    bronze.scheme_mapping_review and picked up here on the next run, which is
+    what keeps silver.scheme_id from going stale: transform.py reads
+    bronze.scheme_mapping, so a mapping that exists only as an unapplied
+    approval would leave those transactions with a NULL scheme_id.
+
+    Order matters. Approvals are applied BEFORE the fallback matcher looks for
+    gaps, so a scheme that was approved but not yet mapped is resolved rather
+    than re-queued as though it were still an open question. Both steps come
+    after the engine has written its own results, and promotion only fills
+    rows where amfi_scheme_code IS NULL, so a rule that resolves a scheme
+    itself always outranks a stale approval.
+
+    Imported here rather than at module scope: promote_approved_mappings reads
+    scheme_matching.scheme_id, and a module-level import in both directions
+    would still be a cycle through this module's own name.
+    """
+    from map_unmatched_nav_name import run_fallback_mapping
+    from promote_approved_mappings import promote_approved
+
+    print("=" * 80)
+    print("APPLYING REVIEW DECISIONS")
+    print("=" * 80)
+
+    promoted = promote_approved(engine)
+    print(f"Approved rows found      : {promoted['approved']}")
+    print(f"Newly mapped             : {promoted['promoted']}")
+    print(f"Skipped (already mapped) : {promoted['skipped_already_mapped']}")
+
+    print("-" * 80)
+    queued = run_fallback_mapping(verbose=False)
+    print(f"Still unmatched          : {queued['unmatched']}")
+    print(f"Newly queued for review  : {queued['queued']} "
+          f"(NAV+name {queued['tier1']}, name-only {queued['tier2']}, "
+          f"NAV+fuzzy {queued['tier3']})")
+    if queued["ambiguous"]:
+        print(f"Ambiguous, left unmapped : {queued['ambiguous']}")
+    print(f"No candidate found       : {queued['unresolved']}")
+
+    if queued["queued"]:
+        print()
+        print("To map these, approve them and re-run the pipeline:")
+        print("  UPDATE bronze.scheme_mapping_review")
+        print("     SET reviewer_decision='APPROVED', reviewed_by='<you>', "
+              "reviewed_at=now()")
+        print("   WHERE reviewer_decision IS NULL;")
+
+    print("=" * 80)
+
+    return {
+        "approved_found": promoted["approved"],
+        "newly_mapped": promoted["promoted"],
+        "already_mapped": promoted["skipped_already_mapped"],
+        "still_unmatched": queued["unmatched"],
+        "newly_queued": queued["queued"],
+        "queued_tier1": queued["tier1"],
+        "queued_tier2": queued["tier2"],
+        "ambiguous": queued["ambiguous"],
+        "no_candidate": queued["unresolved"],
+    }
 
 
 # =====================================================
