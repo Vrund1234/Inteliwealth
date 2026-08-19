@@ -1,11 +1,19 @@
 -- =====================================================================
--- CAMS WBR REPORTS - GOLD TABLES
+-- WBR REPORTS - GOLD TABLES  (CAMS AND KFINTECH)
 -- =====================================================================
 --
 -- Three report-shaped tables, derived from the existing silver layer. There is
 -- no bronze or silver stage of their own: the WBR reports are OUTPUT, built out
 -- of silver.transaction_master_new and silver.investor_master, which are
 -- themselves fed by the CAMS R2 / R9 / R49 and KFIN MFSD files.
+--
+-- Both RTAs land in these same three tables, told apart by the source column.
+-- source is part of every natural key, so a CAMS folio and a KFIN folio that
+-- happen to share an AMC code and a folio number stay two rows rather than
+-- overwriting each other. The two feeds fill different parts of the layout —
+-- what each one cannot source is recorded next to UNAVAILABLE in
+-- etl_gold_wbr.py — so merging them on one key would also let a NULL from one
+-- feed overwrite a real value from the other.
 --
 -- Gold here is report-shaped rather than entity-shaped, one table per report,
 -- because the deliverable is the report. That is a deliberate difference from
@@ -20,7 +28,7 @@
 -- returns heap order, which changes after an UPDATE, and two consecutive runs
 -- produce byte-different files.
 --
--- Columns the CAMS feed cannot source are still present and still in the
+-- Columns a feed cannot source are still present and still in the
 -- provider's position, holding NULL. Dropping them would change the report
 -- layout, which is the contract with whoever consumes it. Which columns those
 -- are, and why, is recorded in etl_gold_wbr.py next to UNAVAILABLE.
@@ -32,7 +40,7 @@ CREATE SCHEMA IF NOT EXISTS gold;
 -- WBR36 / WBR36H - BROKERAGE SUMMARY BY SCHEME
 -- =====================================================================
 --
--- One row per (report_period, report_variant, product_code).
+-- One row per (source, report_period, report_variant, product_code).
 --
 -- report_variant is in the natural key because the provider delivers two
 -- variants of this report that share most of their product codes. Only STD can
@@ -63,14 +71,14 @@ CREATE TABLE gold.brokerage_by_scheme (
     clawback            numeric(20,8),
     incentives          numeric(20,8),
 
-    source              text,
+    source              text NOT NULL,
     source_row          integer,
 
     created_at          timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT gold_brokerage_by_scheme_nk
-        UNIQUE (report_period, report_variant, product_code)
+        UNIQUE (source, report_period, report_variant, product_code)
 );
 
 
@@ -78,11 +86,12 @@ CREATE TABLE gold.brokerage_by_scheme (
 -- WBR56 - KYC STATUS OF INVESTOR
 -- =====================================================================
 --
--- One row per (amc_code, folio).
+-- One row per (source, amc_code, folio).
 --
 -- silver.investor_master carries one row per folio per scheme, so the folio
 -- grain here is reached by deduplication, not by assumption. The KYC status and
--- Aadhaar-link columns are populated only for folios the KFIN feed supplies;
+-- Aadhaar-link columns are populated only for folios the KFIN feed supplies
+-- (MFSD211 Kyc1Flag/Kyc2Flag/Kyc3Flag/KycGFlag and Holder 1/2/3 Aadhaar info);
 -- for CAMS-fed folios they are NULL, because the CAMS R9 file does not carry
 -- them.
 
@@ -141,13 +150,13 @@ CREATE TABLE gold.investor_kyc_status (
     rep_to_date         date,
     rep_date            date,
 
-    source              text,
+    source              text NOT NULL,
     source_row          integer,
 
     created_at          timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
 
-    CONSTRAINT gold_investor_kyc_status_nk UNIQUE (amc_code, folio)
+    CONSTRAINT gold_investor_kyc_status_nk UNIQUE (source, amc_code, folio)
 );
 
 
@@ -155,11 +164,15 @@ CREATE TABLE gold.investor_kyc_status (
 -- WBR68 - INVALID EUIN REPORT
 -- =====================================================================
 --
--- One row per (amc_code, trxn_no) — a transaction ledger, not a dimension.
+-- One row per (source, amc_code, trxn_no) — a transaction ledger, not a
+-- dimension.
 --
 -- The filter is euin_valid <> 'Y' with a non-blank euin, never euin_valid = 'N'.
 -- The provider's own file carries both 'N' and 'F' under the same reason, and a
 -- blank euin_valid means no EUIN was quoted at all rather than an invalid one.
+--
+-- Only CAMS can fill this table. KFIN MFSD201 has no EUIN column at all, so the
+-- KFIN feed contributes zero rows here rather than zero-valued ones.
 
 DROP TABLE IF EXISTS gold.invalid_euin;
 
@@ -206,13 +219,13 @@ CREATE TABLE gold.invalid_euin (
     sip_regn_date       date,
     auto_trxn_no        text,
 
-    source              text,
+    source              text NOT NULL,
     source_row          integer,
 
     created_at          timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
 
-    CONSTRAINT gold_invalid_euin_nk UNIQUE (amc_code, trxn_no)
+    CONSTRAINT gold_invalid_euin_nk UNIQUE (source, amc_code, trxn_no)
 );
 
 
@@ -228,3 +241,14 @@ CREATE INDEX IF NOT EXISTS ix_gold_wbr_kyc_amc
 
 CREATE INDEX IF NOT EXISTS ix_gold_wbr_brokerage_variant
     ON gold.brokerage_by_scheme (report_variant, product_code);
+
+-- Every export is filtered by source when a single RTA's delivery is wanted.
+
+CREATE INDEX IF NOT EXISTS ix_gold_wbr_kyc_source
+    ON gold.investor_kyc_status (source);
+
+CREATE INDEX IF NOT EXISTS ix_gold_wbr_euin_source
+    ON gold.invalid_euin (source);
+
+CREATE INDEX IF NOT EXISTS ix_gold_wbr_brokerage_source
+    ON gold.brokerage_by_scheme (source);

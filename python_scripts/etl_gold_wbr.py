@@ -8,7 +8,7 @@ from utils.db import engine
 
 
 # =====================================================
-# GOLD LAYER  -  CAMS WBR REPORTS, DERIVED
+# GOLD LAYER  -  WBR REPORTS, DERIVED  (CAMS AND KFINTECH)
 # =====================================================
 #
 # extract_ / transform_ / load_ per report, same shape as
@@ -21,6 +21,25 @@ from utils.db import engine
 #   WBR36 / WBR36H  <- silver.transaction_master_new  (scheme list)
 #   WBR56           <- silver.investor_master         (folio demographics)
 #   WBR68           <- silver.transaction_master_new  (invalid-EUIN ledger)
+#
+# Both RTAs are derived here, into the same three tables, told apart by the
+# source column. source is part of every natural key: a CAMS folio and a KFIN
+# folio can share an AMC code and a folio number, and merging them on one key
+# would also let a NULL from the feed that cannot source a column overwrite the
+# real value from the feed that can. What each feed cannot source is in
+# UNAVAILABLE below, per report AND per RTA, because the two differ: KFIN fills
+# the four KYC flags and three Aadhaar-link columns of WBR56 that CAMS leaves
+# empty, and CAMS is the only feed that can produce WBR68 at all.
+#
+# EVERY KFIN-specific decision is made in this module, against silver as it
+# stands. mapping.py, the ingestion scripts and the other gold loaders are not
+# touched: the WBR reports are one consumer of silver among several, and
+# changing the shared column mapping to suit them would move every other gold
+# table underneath its own tests. The cost of that boundary is recorded rather
+# than hidden — where MFSD211 or MFSD201 carries a column that the shared
+# mapping does not lift into silver, the reason in UNAVAILABLE says so, naming
+# the file column, so it reads as a known ingestion gap and not as a missing
+# field at the RTA.
 #
 # Three things are done differently from the existing gold loaders, each for a
 # reason that showed up while running this against the real files:
@@ -43,8 +62,10 @@ NAMESPACE = uuid.UUID("3f2b6c48-7f4a-5d21-9e6b-1c8a4d0e5b72")
 
 
 # =====================================================
-# WHAT THE CAMS FEED CANNOT SOURCE
+# WHAT EACH FEED CANNOT SOURCE
 # =====================================================
+#
+# report code -> RTA -> column -> why it loads as NULL.
 #
 # These columns exist in the report layout and in the gold tables, and they load
 # as NULL. Each was checked against the actual input files, not assumed. They are
@@ -52,12 +73,19 @@ NAMESPACE = uuid.UUID("3f2b6c48-7f4a-5d21-9e6b-1c8a4d0e5b72")
 # with whoever consumes the report: dropping a column changes the file, leaving
 # it empty does not.
 #
+# The split by RTA is not cosmetic. The same column is structural for one feed
+# and populated for the other — fh_kyc is absent from CAMS R9 and present in
+# KFIN MFSD211 — so a single flat list would either excuse a real gap or report
+# a filled column as missing.
+#
 # Anything added to this dict is also printed at the end of every load, so an
 # empty column stays visible instead of becoming normal.
 
 UNAVAILABLE = {
 
     "WBR36": {
+
+      "CAMS": {
         "upfront": "no brokerage component breakdown in R2",
         "afe": "no brokerage component breakdown in R2",
         "trailer_fee": (
@@ -69,9 +97,27 @@ UNAVAILABLE = {
         "trxn_charges": "TRXN_CHARGES is 0 on all 90,536 R2 rows",
         "clawback": "no clawback column in R2",
         "incentives": "no incentives column in R2"
+      },
+
+      # Same five measures, different reasons: MFSD201 does carry a commission
+      # column and a charges column, and both are empty in the delivered file.
+      "KFIN": {
+        "upfront": "no brokerage component breakdown in MFSD201",
+        "afe": "no brokerage component breakdown in MFSD201",
+        "trailer_fee": (
+            "MFSD201 brokcomm is 0 on all 38,230 rows, and brokper with it. "
+            "Even populated it would be per-transaction commission, not the "
+            "trail the RTA computes on AUM over a period"
+        ),
+        "trxn_charges": "MFSD201 TrCharges is blank on all 38,230 rows",
+        "clawback": "no clawback column in MFSD201",
+        "incentives": "no incentives column in MFSD201"
+      }
     },
 
     "WBR56": {
+
+      "CAMS": {
         "fh_kyc": "CAMS R9 carries FH_CKYC_NO, a CKYC number, not a KYC status",
         "gu_kyc": "same, G_CKYC_NO",
         "jh1_kyc": "same, JH1_CKYC",
@@ -84,9 +130,75 @@ UNAVAILABLE = {
         "jh1_aadharlink": "no per-holder Aadhaar link status in the CAMS feed",
         "jh2_aadharlink": "no per-holder Aadhaar link status in the CAMS feed",
         "brok_name": "R9 carries BROKER_CODE only; no broker master to join to"
+      },
+
+      # The KYC and Aadhaar columns are NOT here: MFSD211 supplies Kyc1Flag,
+      # Kyc2Flag, Kyc3Flag, KycGFlag and Holder 1/2/3 Aadhaar info, which is
+      # exactly the block CAMS cannot fill.
+      #
+      # Two different reasons are mixed in below and the wording keeps them
+      # apart, because they ask for different things:
+      #
+      #   - the RTA does not deliver it. Nothing can be done here.
+      #   - MFSD211 delivers it and silver does not carry it, because the
+      #     shared column mapping has no alias for that heading. Fixable, but
+      #     in ingestion and for every consumer of silver at once, not here.
+      "KFIN": {
+
+        # Not delivered by the RTA.
+        "fh_kyc_desc": (
+            "MFSD211 carries the flag but no description for it. CategoryDesc "
+            "and StatusDesc describe the investor category and tax status, not "
+            "the KYC verdict"
+        ),
+        "gu_kyc_desc": "same, no description for KycGFlag",
+        "jh1_kyc_desc": "same, no description for Kyc2Flag",
+        "jh2_kyc_desc": "same, no description for Kyc3Flag",
+        "brok_name": (
+            "MFSD211 carries Broker Code only. MFSD243 has an AgentName "
+            "column and it is blank on all 658 rows, so there is nothing to "
+            "join to"
+        ),
+
+        # Delivered by the RTA, absent from silver. The heading MFSD211 uses is
+        # named in each reason so the ingestion alias that would carry it is
+        # obvious; adding those aliases is an ingestion change and is out of
+        # this module's scope.
+        "tax_no": (
+            "MFSD211 \"PAN Number\" (1,423 of 1,444 rows) is not carried into "
+            "silver.investor_master.pan_no. Its PAN2 and PAN3 are, and they "
+            "are the joint holders\', not the first holder\'s"
+        ),
+        "guardian_panno": (
+            "MFSD211 \"GuardPanNo\" (28 rows) is not carried into "
+            "silver.investor_master.guardian_pan"
+        ),
+        "guardian": (
+            "MFSD211 \"GuardianName\" (20 rows) is not carried into "
+            "silver.investor_master.guardian_name"
+        ),
+        "address1": (
+            "MFSD211 \"Address #1\" (all 1,444 rows) is not carried into "
+            "silver.investor_master.address1"
+        ),
+        "address2": "MFSD211 \"Address #2\" (1,399 rows), same",
+        "address3": "MFSD211 \"Address #3\" (1,117 rows), same",
+        "mobile_no": (
+            "MFSD211 \"Mobile Number\" (1,355 rows) is not carried into "
+            "silver.investor_master.mobile_no"
+        ),
+        "phone_res": "MFSD211 \"Phone Residence\" (79 rows), same",
+        "phone_off": "MFSD211 \"Phone Office\" (52 rows), same",
+
+        # Delivered as an empty column.
+        "country": "MFSD211 Country is blank on all 1,444 rows",
+        "fax_off": "MFSD211 Fax Office is blank on all 1,444 rows"
+      }
     },
 
     "WBR68": {
+
+      "CAMS": {
         "trxn_desc": "R2 carries TRXNTYPE but no description for it",
         "email": (
             "the provider writes the DISTRIBUTOR's email here, not the "
@@ -100,13 +212,34 @@ UNAVAILABLE = {
             "SIPTRXNNO to sip_master_new.ft_sip_regno fans out to 359,518 "
             "pairs, so joining on it would multiply the ledger"
         )
+      },
+
+      # Not a list of columns: the whole report is unproducible from KFIN.
+      # MFSD201 has no euin, no euin_valid and no euin_opted column, so there is
+      # no invalid-EUIN verdict to filter on and the feed contributes zero rows
+      # rather than rows with an empty verdict. This is recorded as a report-
+      # level note, printed once, instead of 31 identical per-column reasons.
+      "KFIN": {}
     }
 }
 
 
-# Populated only for folios the KFIN feed supplies. The CAMS R9 file leaves every
-# one of them blank, which is why they are in UNAVAILABLE above as well: for a
-# CAMS-only delivery these stay NULL, and for a KFIN delivery they fill in.
+# Report codes an RTA cannot produce at all, with the reason. Distinct from a
+# feed that produces rows with empty columns: here there are no rows.
+
+UNPRODUCIBLE = {
+
+    ("WBR68", "KFIN"): (
+        "MFSD201 carries no euin, euin_valid or euin_opted column, so the "
+        "invalid-EUIN verdict this report filters on does not exist in the "
+        "KFIN feed"
+    )
+}
+
+
+# WBR56 columns only the KFIN feed can fill, target -> silver column. The CAMS
+# R9 file leaves every one of them blank, which is why they appear under
+# UNAVAILABLE["WBR56"]["CAMS"] and not under ...["KFIN"].
 KFIN_ONLY_COLUMNS = {
     "fh_kyc": "kyc1flag",
     "jh1_kyc": "kyc2flag",
@@ -125,27 +258,40 @@ KFIN_ONLY_COLUMNS = {
 # Also the UNIQUE constraints in sql/wbr_gold_tables.sql and the ON CONFLICT
 # targets. One declaration, so the three can never drift apart.
 
+# source leads every key. The two RTAs use different code systems — CAMS
+# product codes are D104 and TSCFG, KFIN's are 128SCGP and RMFSCGP — so they do
+# not collide today, but folio numbers can, and a shared key would let the feed
+# that cannot source a column blank out the feed that can.
+
 NATURAL_KEYS = {
 
     # report_variant stays in the key because the provider delivers two variants
     # of this report that share most of their product codes. Only STD is
-    # derivable from the CAMS feed.
+    # derivable from either feed.
     "brokerage_by_scheme": [
+        "source",
         "report_period",
         "report_variant",
         "product_code"
     ],
 
     "investor_kyc_status": [
+        "source",
         "amc_code",
         "folio"
     ],
 
     "invalid_euin": [
+        "source",
         "amc_code",
         "trxn_no"
     ]
 }
+
+
+# The RTAs this module derives, in the order they are reported.
+
+SOURCES = ["CAMS", "KFIN"]
 
 
 # =====================================================
@@ -451,12 +597,30 @@ def compound(code, name):
     return f"{code}/{name}"
 
 
+def unavailable_for(report_code, source):
+    """The column -> reason map for one report and one RTA.
+
+    An unknown RTA returns an empty map rather than raising: a third feed would
+    then report every empty column as incidental, which is the honest answer
+    until someone profiles its files.
+    """
+
+    return UNAVAILABLE.get(report_code, {}).get(source, {})
+
+
 def add_unavailable_columns(df, report_code):
+    """Add every column either feed cannot source, so the layout stays whole.
 
-    for column in UNAVAILABLE.get(report_code, {}):
+    The union across RTAs, not one feed's list: the gold table holds both, and a
+    column KFIN fills must still exist on the CAMS rows to hold their NULL.
+    """
 
-        if column not in df.columns:
-            df[column] = None
+    for by_source in UNAVAILABLE.get(report_code, {}).values():
+
+        for column in by_source:
+
+            if column not in df.columns:
+                df[column] = None
 
     return df
 
@@ -464,7 +628,12 @@ def add_unavailable_columns(df, report_code):
 def report_unavailable(report_code, df):
     """Print every layout column that came out entirely empty, with the reason.
 
-    Three cases, and they are not the same thing:
+    Per RTA, and that is the point. A column is judged against the feed that was
+    supposed to fill it: fh_kyc empty across the whole table means nothing, and
+    fh_kyc empty on the KFIN rows means MFSD211 stopped delivering Kyc1Flag.
+    Judging the mixed table would hide both.
+
+    Three cases per RTA, and they are not the same thing:
 
       - the feed has no such column at all, which is what UNAVAILABLE records
       - the column exists and every row in THIS delivery happens to be blank
@@ -474,41 +643,72 @@ def report_unavailable(report_code, df):
     they are separated. Only the third asks for a person.
     """
 
-    reasons = UNAVAILABLE.get(report_code, {})
-
     if df is None or df.empty:
         return
 
-    empty = sorted(
-        c for c in df.columns
-        if df[c].isna().all()
-    )
-
-    if not empty:
+    if "source" not in df.columns:
         return
 
-    structural = [c for c in empty if c in reasons]
-    incidental = [c for c in empty if c not in reasons]
+    present = set(df["source"].dropna().unique())
 
-    if structural:
+    # An RTA that contributed nothing is reported too. Silence would read the
+    # same whether the feed cannot produce the report at all or simply has not
+    # been loaded yet, and those need different responses.
+    for source in SOURCES:
 
-        print(
-            f"  {report_code} : {len(structural)} column(s) the feed cannot "
-            f"source"
-        )
+        if source in present:
+            continue
 
-        for column in structural:
-            print(f"    {column:20s} {reasons[column]}")
-
-    if incidental:
+        note = UNPRODUCIBLE.get((report_code, source))
 
         print(
-            f"  {report_code} : {len(incidental)} column(s) present in the feed "
-            f"but blank on every row of this delivery"
+            f"  {report_code} / {source} : no rows"
+            + (f" - {note}" if note else "")
         )
 
-        for column in incidental:
-            print(f"    {column}")
+    for source, rows in df.groupby("source", dropna=False):
+
+        note = UNPRODUCIBLE.get((report_code, source))
+
+        if note:
+
+            print(f"  {report_code} / {source} : not producible - {note}")
+            continue
+
+        reasons = unavailable_for(report_code, source)
+
+        empty = sorted(
+            c for c in rows.columns
+            if rows[c].isna().all()
+        )
+
+        print(f"  {report_code} / {source} : {len(rows)} rows")
+
+        if not empty:
+            continue
+
+        structural = [c for c in empty if c in reasons]
+        incidental = [c for c in empty if c not in reasons]
+
+        if structural:
+
+            print(
+                f"    {len(structural)} column(s) the {source} feed cannot "
+                f"source"
+            )
+
+            for column in structural:
+                print(f"      {column:20s} {reasons[column]}")
+
+        if incidental:
+
+            print(
+                f"    {len(incidental)} column(s) present in the {source} feed "
+                f"but blank on every row of this delivery"
+            )
+
+            for column in incidental:
+                print(f"      {column}")
 
 
 # =====================================================
@@ -517,24 +717,31 @@ def report_unavailable(report_code, df):
 #
 # The scheme list is derivable; the money is not. Every measure is NULL, for the
 # reasons in UNAVAILABLE. What this table therefore delivers is the report's
-# skeleton — one row per scheme transacted in the period, in the provider's
-# column order — and it is honest about the rest.
+# skeleton — one row per scheme transacted in the period per RTA, in the
+# provider's column order — and it is honest about the rest.
 #
-# Only the STD variant is produced. Nothing in R2 marks which schemes belong to
-# the H variant, so inventing that split would be worse than omitting it.
+# Only the STD variant is produced. Neither R2 nor MFSD201 marks which schemes
+# belong to the H variant, so inventing that split would be worse than omitting
+# it.
 
 def extract_brokerage_by_scheme():
+
+    # amc_code, td_fund and funddesc are selected for the KFIN rows. The filter
+    # is deliberately NOT "prodcode IS NOT NULL": that dropped 26,673 KFIN rows,
+    # which carry the product code in amc_code and nothing in prodcode. Which
+    # column actually holds it is decided per row in the transform.
 
     return read_silver(
         """
         SELECT
             prodcode,
+            amc_code,
+            td_fund,
             scheme,
+            funddesc,
             traddate,
             source
         FROM silver.transaction_master_new
-        WHERE prodcode IS NOT NULL
-        AND btrim(prodcode) <> ''
         """
     )
 
@@ -549,47 +756,108 @@ def transform_brokerage_by_scheme(df, report_period=None):
     if report_period is None:
         report_period = resolve_report_period()
 
-    df["product_code"] = clean_text(df["prodcode"])
-    df["product_name"] = clean_text(df["scheme"])
+    for column in ("prodcode", "amc_code", "td_fund", "scheme", "funddesc"):
+
+        df[column] = (
+            clean_text(df[column])
+            if column in df.columns
+            else None
+        )
+
+    # Which silver column holds the product code depends on the feed, and for
+    # KFIN on which MFSD201 layout the row came from:
+    #
+    #   CAMS R2                  prodcode  (B51, TSCFG)
+    #   KFIN, long headers       prodcode  (105MDGP)         49,787 rows
+    #   KFIN, short headers      amc_code  (128TSGP)         26,673 rows
+    #
+    # The short-header layout is the MFSD201 in files/excel. Its fmcode column
+    # is the product code and the shared ingestion mapping sends fmcode to
+    # amc_code, so on those rows amc_code holds 128TSGP and prodcode is empty.
+    # That mapping is left alone — it feeds every other gold table — and the
+    # column is re-read here instead.
+    #
+    # The fallback is taken only when amc_code differs from td_fund, which is
+    # what tells "128TSGP parked in the wrong column" apart from a plain AMC
+    # code of 128. If the ingestion mapping is ever corrected, prodcode fills in
+    # and the fallback stops firing on its own.
+    fallback = df["amc_code"].where(
+        df["amc_code"].notna()
+        & df["td_fund"].notna()
+        & df["amc_code"].ne(df["td_fund"]),
+        None
+    )
+
+    df["product_code"] = df["prodcode"].fillna(fallback)
+
+    # KFIN's scheme column is the plan suffix (TSGP, 03GP) when the row came
+    # from MFSD201's schpln; funddesc is the full scheme name. CAMS has no
+    # funddesc, so the coalesce order is per feed rather than global.
+    kfin = df["source"].astype("string").str.upper().eq("KFIN")
+
+    df["product_name"] = df["scheme"].where(
+        ~kfin,
+        df["funddesc"].fillna(df["scheme"])
+    ).fillna(df["funddesc"])
 
     df = df[df["product_code"].notna()]
 
-    # Earliest appearance decides the row order, which is what lets the export
-    # be byte-stable across runs.
-    df["seen"] = to_date(df["traddate"])
+    if df.empty:
+        return pd.DataFrame()
 
+    # Earliest appearance decides the row order, which is what lets the export
+    # be byte-stable across runs. Kept as datetime64 rather than .dt.date: a
+    # column of date objects is object dtype, and groupby.min() refuses it once
+    # any row is missing a trade date.
+    df["seen"] = pd.to_datetime(df["traddate"], errors="coerce")
+
+    # Grouped by source as well as product code. The same scheme reaches both
+    # RTAs under different codes and the report is delivered per RTA, so folding
+    # them together would emit one row under whichever code sorted last.
     grouped = (
         df
-        .groupby("product_code", dropna=False)
+        .groupby(["source", "product_code"], dropna=False)
         .agg(
             product_name=("product_name", "last"),
-            source=("source", "last"),
             first_seen=("seen", "min")
         )
         .reset_index()
     )
 
     grouped = grouped.sort_values(
-        ["first_seen", "product_code"],
+        ["source", "first_seen", "product_code"],
         na_position="last"
     ).reset_index(drop=True)
 
     grouped["report_period"] = report_period
     grouped["report_variant"] = "STD"
-    grouped["source_row"] = range(1, len(grouped) + 1)
+
+    # source_row restarts per RTA, because each RTA is exported as its own file.
+    grouped["source_row"] = (
+        grouped.groupby("source").cumcount() + 1
+    )
 
     grouped = add_unavailable_columns(grouped, "WBR36")
 
     grouped["id"] = [
-        stable_uuid(row.report_period, row.report_variant, row.product_code)
+        stable_uuid(
+            row.source,
+            row.report_period,
+            row.report_variant,
+            row.product_code
+        )
         for row in grouped.itertuples()
     ]
 
     grouped["updated_at"] = pd.Timestamp.now()
 
+    per_source = (
+        grouped.groupby("source")["product_code"].count().to_dict()
+    )
+
     print(
         f"gold brokerage_by_scheme : {len(df)} transaction rows -> "
-        f"{len(grouped)} schemes at declared grain"
+        f"{len(grouped)} schemes at declared grain {per_source}"
     )
 
     return grouped
@@ -612,6 +880,11 @@ def load_brokerage_by_scheme(df):
 # is reached by deduplication. The KYC and Aadhaar columns come from the KFIN
 # feed when it supplies them and stay NULL otherwise; the CAMS R9 file carries
 # none of them.
+#
+# This is the report the KFIN feed contributes most to. MFSD211 fills the four
+# KYC flags and three Aadhaar-link columns CAMS cannot, and CAMS fills the
+# guardian PAN and joint-holder columns MFSD211 names differently. Both land in
+# the same table, keyed by source.
 
 def extract_investor_kyc_status():
 
@@ -627,6 +900,8 @@ def extract_investor_kyc_status():
             joint1_pan,
             joint_name_2,
             joint2_pan,
+            pan2,
+            pan3,
             guardian_name,
             guardian_pan,
             address1,
@@ -649,6 +924,7 @@ def extract_investor_kyc_status():
             holder_1_aadhaar_info,
             holder_2_aadhaar_info,
             holder_3_aadhaar_info,
+            fund,
             report_date,
             source
         FROM silver.investor_master
@@ -665,16 +941,31 @@ def transform_investor_kyc_status(df):
 
     df = df.copy()
 
-    df["amc_code"] = clean_text(df["amc_code"])
+    # MFSD211 has no AMC_CODE column; its Fund column (128, 117, RMF) is the
+    # same thing, and is the AMC half of its Product Code (128SCGP). The shared
+    # ingestion mapping lands it in silver.investor_master.fund and leaves
+    # amc_code empty, so every one of the 1,444 KFIN folios has a blank
+    # amc_code — half its natural key — and used to be dropped here in silence.
+    #
+    # Reading fund as the AMC code recovers all of them without touching the
+    # ingestion mapping the other gold tables share.
+    df["amc_code"] = clean_text(df["amc_code"]).fillna(
+        clean_text(df["fund"])
+    )
+
     df["folio"] = clean_text(df["folio_no"].astype("string"))
 
-    # amc_code is half the natural key, so a row without one cannot be written.
-    # The count is printed rather than swallowed: on the current data this drops
-    # every KFIN folio, because the KFIN feed leaves amc_code blank, and that is
-    # a data-mapping gap worth seeing on every run instead of a quiet 60% loss.
+    df["source"] = clean_text(df["source"])
+
+    # amc_code is part of the natural key, so a row without one cannot be
+    # written. The count is printed rather than swallowed.
     before = len(df)
 
-    df = df[df["folio"].notna() & df["amc_code"].notna()]
+    df = df[
+        df["folio"].notna()
+        & df["amc_code"].notna()
+        & df["source"].notna()
+    ]
 
     dropped = before - len(df)
 
@@ -690,12 +981,16 @@ def transform_investor_kyc_status(df):
 
     df["rep_date"] = to_date(df["report_date"])
 
-    # One row per folio. The most recently reported row wins, because a folio's
-    # demographics change over time and the report carries the current state.
+    # One row per folio per RTA. The most recently reported row wins, because a
+    # folio's demographics change over time and the report carries the current
+    # state.
     df = (
         df
-        .sort_values(["amc_code", "folio", "rep_date"], na_position="first")
-        .drop_duplicates(subset=["amc_code", "folio"], keep="last")
+        .sort_values(
+            ["source", "amc_code", "folio", "rep_date"],
+            na_position="first"
+        )
+        .drop_duplicates(subset=["source", "amc_code", "folio"], keep="last")
         .reset_index(drop=True)
     )
 
@@ -709,9 +1004,21 @@ def transform_investor_kyc_status(df):
     out["tax_no"] = clean_text(df["pan_no"])
 
     out["jname1"] = clean_text(df["joint_name_1"])
-    out["jointpan1"] = clean_text(df["joint1_pan"])
     out["jname2"] = clean_text(df["joint_name_2"])
-    out["jointpan2"] = clean_text(df["joint2_pan"])
+
+    # CAMS R9 names the joint holders' PANs JOINT1_PAN and JOINT2_PAN. KFIN
+    # MFSD211 names the same two PAN2 and PAN3, PAN Number being the first
+    # holder's. silver carries both pairs under their own names, so the two
+    # feeds are coalesced here rather than in the ingestion mapping: 405 CAMS
+    # rows arrive as joint1_pan and 221 KFIN rows as pan2, and neither feed
+    # populates the other's column.
+    out["jointpan1"] = clean_text(df["joint1_pan"]).fillna(
+        clean_text(df["pan2"])
+    )
+
+    out["jointpan2"] = clean_text(df["joint2_pan"]).fillna(
+        clean_text(df["pan3"])
+    )
     out["guardian"] = clean_text(df["guardian_name"])
     out["guardian_panno"] = clean_text(df["guardian_pan"])
 
@@ -744,26 +1051,31 @@ def transform_investor_kyc_status(df):
     out["rep_date"] = df["rep_date"]
 
     # The reporting window is the span the delivery covers. It is a report
-    # parameter, not a per-folio value, so every row carries the same pair.
-    reported = out["rep_date"].dropna()
+    # parameter, not a per-folio value, so every row of one RTA carries the same
+    # pair — per RTA, because the two feeds are delivered on their own dates and
+    # a shared window would report the CAMS span on the KFIN file.
+    by_source = out.groupby(df["source"])["rep_date"]
 
-    out["rep_from_date"] = reported.min() if len(reported) else None
-    out["rep_to_date"] = reported.max() if len(reported) else None
+    out["rep_from_date"] = by_source.transform("min")
+    out["rep_to_date"] = by_source.transform("max")
 
-    out["source"] = clean_text(df["source"])
-    out["source_row"] = range(1, len(out) + 1)
+    out["source"] = df["source"]
+
+    # Restarts per RTA: each RTA is exported as its own file.
+    out["source_row"] = out.groupby("source").cumcount() + 1
 
     out = add_unavailable_columns(out, "WBR56")
 
     out["id"] = [
-        stable_uuid(row.amc_code, row.folio)
+        stable_uuid(row.source, row.amc_code, row.folio)
         for row in out.itertuples()
     ]
 
     out["updated_at"] = pd.Timestamp.now()
 
     print(
-        f"gold investor_kyc_status : {len(df)} folios at declared grain"
+        f"gold investor_kyc_status : {len(df)} folios at declared grain "
+        f"{out.groupby('source')['folio'].count().to_dict()}"
     )
 
     return out
@@ -796,6 +1108,13 @@ def load_investor_kyc_status(df):
 #
 # email is NOT the investor's — see UNAVAILABLE. It is the distributor's, and
 # nothing in the CAMS feed carries it.
+#
+# CAMS is the only feed that can produce this report. KFIN MFSD201 has no euin,
+# euin_valid or euin_opted column, so the verdict this report filters on does
+# not exist there and the KFIN feed contributes zero rows — see UNPRODUCIBLE.
+# The extract is not restricted to source = 'CAMS' for that reason: the EUIN
+# filter already excludes every KFIN row, and hard-coding the RTA would hide the
+# day KFIN starts delivering the column.
 
 def extract_invalid_euin():
 
@@ -911,25 +1230,39 @@ def transform_invalid_euin(df):
     out["auto_trxn_no"] = blank_zero(df["siptrxnno"].astype("string"))
     out["sip_regn_date"] = None
 
-    out = out[out["amc_code"].notna() & out["trxn_no"].notna()]
+    # Set before the dedup, not after: taking one row's source and stamping it
+    # on the whole frame labelled every row CAMS the moment a second RTA
+    # qualified.
+    out["source"] = clean_text(df["source"])
+
+    out = out[
+        out["amc_code"].notna()
+        & out["trxn_no"].notna()
+        & out["source"].notna()
+    ]
 
     if out.empty:
         return pd.DataFrame()
 
     out = (
         out
-        .sort_values(["trade_date", "amc_code", "trxn_no"], na_position="last")
-        .drop_duplicates(subset=["amc_code", "trxn_no"], keep="last")
+        .sort_values(
+            ["source", "trade_date", "amc_code", "trxn_no"],
+            na_position="last"
+        )
+        .drop_duplicates(
+            subset=["source", "amc_code", "trxn_no"],
+            keep="last"
+        )
         .reset_index(drop=True)
     )
 
-    out["source"] = clean_text(df["source"]).iloc[0] if len(df) else None
-    out["source_row"] = range(1, len(out) + 1)
+    out["source_row"] = out.groupby("source").cumcount() + 1
 
     out = add_unavailable_columns(out, "WBR68")
 
     out["id"] = [
-        stable_uuid(row.amc_code, row.trxn_no)
+        stable_uuid(row.source, row.amc_code, row.trxn_no)
         for row in out.itertuples()
     ]
 
@@ -937,7 +1270,7 @@ def transform_invalid_euin(df):
 
     print(
         f"gold invalid_euin : {len(out)} invalid-EUIN transactions at declared "
-        f"grain"
+        f"grain {out.groupby('source')['trxn_no'].count().to_dict()}"
     )
 
     return out
@@ -985,7 +1318,7 @@ WBR_GOLD_ENTITIES = [
 def load_wbr_gold():
 
     print("=" * 80)
-    print("GOLD : CAMS WBR REPORTS (derived from silver)")
+    print("GOLD : WBR REPORTS, CAMS AND KFINTECH (derived from silver)")
     print("=" * 80)
 
     for label, extract_fn, transform_fn, load_fn in WBR_GOLD_ENTITIES:

@@ -1,7 +1,13 @@
-"""CAMS WBR reports, derived from silver.
+"""WBR reports for CAMS and KFintech, derived from silver.
 
 The reports are OUTPUT: there is no WBR input file. WBR36 and WBR68 are built
 from silver.transaction_master_new, WBR56 from silver.investor_master.
+
+Both RTAs land in the same three gold tables, keyed by source. The reference
+files in files/gold are CAMS deliveries, so every test that compares against the
+provider compares the CAMS export; the KFIN side is tested for the things that
+can be asserted without a provider file — that it produces rows at all, in the
+same layout, and that WBR68 produces none.
 
 Most of these tests pin a defect that reached the database once — a filter that
 turned 406 invalid-EUIN transactions into 44,299, a scheme code carrying the AMC
@@ -17,7 +23,8 @@ import pytest
 from etl_gold_wbr import (
     KFIN_ONLY_COLUMNS,
     NATURAL_KEYS,
-    UNAVAILABLE,
+    SOURCES,
+    UNPRODUCIBLE,
     blank_zero,
     compound,
     extract_invalid_euin,
@@ -27,6 +34,7 @@ from etl_gold_wbr import (
     transform_brokerage_by_scheme,
     transform_invalid_euin,
     transform_investor_kyc_status,
+    unavailable_for,
 )
 from export_wbr import export_wbr_reports
 from mapping import WBR_OUTPUT_DATE_FORMATS, WBR_OUTPUT_LAYOUTS
@@ -69,6 +77,35 @@ def reference(report):
     frame = pd.read_excel(path, dtype=str, keep_default_na=False)
     frame.columns = [c.strip().lower() for c in frame.columns]
     return frame
+
+
+# Every column extract_investor_kyc_status() selects, so a fixture only has to
+# name the ones its assertion is about. Silver carries both feeds\' spellings
+# side by side — amc_code and fund, joint1_pan and pan2 — and a test that named
+# only one of each would pass on a transform that never looked at the other.
+
+KYC_COLUMNS = [
+    "amc_code", "fund", "folio_no", "broker_code", "investor_name", "pan_no",
+    "joint_name_1", "joint1_pan", "joint_name_2", "joint2_pan", "pan2", "pan3",
+    "guardian_name", "guardian_pan",
+    "address1", "address2", "address3", "city", "pincode", "state", "country",
+    "phone_res", "phone_off", "mobile_no", "email",
+    "fax_residence", "fax_office",
+    "kyc1flag", "kyc2flag", "kyc3flag", "kycgflag",
+    "holder_1_aadhaar_info", "holder_2_aadhaar_info", "holder_3_aadhaar_info",
+    "report_date", "source",
+]
+
+
+def kyc_frame(**columns):
+    rows = len(next(iter(columns.values())))
+
+    frame = {c: columns.get(c, [None] * rows) for c in KYC_COLUMNS}
+
+    if "report_date" not in columns:
+        frame["report_date"] = ["2025-07-16"] * rows
+
+    return pd.DataFrame(frame)
 
 
 @pytest.fixture(scope="module")
@@ -188,7 +225,10 @@ class TestTransforms:
         frame = pd.DataFrame(
             {
                 "prodcode": ["B51", "B51", "G201"],
+                "amc_code": ["B", "B", "G"],
+                "td_fund": [None, None, None],
                 "scheme": ["Alpha", "Alpha", "Beta"],
+                "funddesc": [None, None, None],
                 "traddate": ["2025-01-01", "2025-02-01", "2025-01-15"],
                 "source": ["CAMS"] * 3,
             }
@@ -201,12 +241,15 @@ class TestTransforms:
         assert out["source_row"].tolist() == [1, 2]
 
     def test_brokerage_measures_are_null_not_zero(self):
-        """Nothing in R2 sources them. NULL says "unknown"; 0.0 would claim the
-        distributor earned nothing."""
+        """Neither R2 nor MFSD201 sources them. NULL says "unknown"; 0.0 would
+        claim the distributor earned nothing."""
         frame = pd.DataFrame(
             {
                 "prodcode": ["B51"],
+                "amc_code": ["B"],
+                "td_fund": [None],
                 "scheme": ["Alpha"],
+                "funddesc": [None],
                 "traddate": ["2025-01-01"],
                 "source": ["CAMS"],
             }
@@ -214,84 +257,154 @@ class TestTransforms:
 
         out = transform_brokerage_by_scheme(frame, report_period="2025")
 
-        for measure in UNAVAILABLE["WBR36"]:
-            assert out[measure].isna().all(), measure
+        for source in SOURCES:
+            for measure in unavailable_for("WBR36", source):
+                assert out[measure].isna().all(), (source, measure)
 
-    def test_kyc_status_skips_rows_without_a_complete_natural_key(self, capsys):
-        """amc_code is half the key. The KFIN feed leaves it blank, so those rows
-        cannot be written — and the count has to be printed rather than
-        swallowed, or 40% of the folios vanish quietly."""
+    def test_brokerage_reads_the_kfin_product_code_out_of_amc_code(self):
+        """The shared ingestion mapping sends MFSD201\'s fmcode to amc_code and
+        leaves prodcode empty on 26,673 KFIN rows, so the product code has to be
+        read back out here. td_fund is the real AMC code and is what tells
+        "128TSGP in the wrong column" from a plain AMC code of 128."""
         frame = pd.DataFrame(
             {
-                "amc_code": ["B", None],
-                "folio_no": ["1001", "1002"],
-                "broker_code": ["ARN-1", "ARN-1"],
-                "investor_name": ["A", "B"],
-                "pan_no": ["P1", "P2"],
-                "joint_name_1": [None, None],
-                "joint1_pan": [None, None],
-                "joint_name_2": [None, None],
-                "joint2_pan": [None, None],
-                "guardian_name": [None, None],
-                "guardian_pan": [None, None],
-                "address1": ["a", "a"],
-                "address2": [None, None],
-                "address3": [None, None],
-                "city": ["Vadodara", "Surat"],
-                "pincode": ["390001", "395001"],
-                "state": ["Gujarat", "Gujarat"],
-                "country": ["INDIA", "INDIA"],
-                "phone_res": [None, None],
-                "phone_off": [None, None],
-                "mobile_no": ["9", "9"],
-                "email": ["a@b.c", "d@e.f"],
-                "fax_residence": [None, None],
-                "fax_office": [None, None],
-                "kyc1flag": [None, None],
-                "kyc2flag": [None, None],
-                "kyc3flag": [None, None],
-                "kycgflag": [None, None],
-                "holder_1_aadhaar_info": [None, None],
-                "holder_2_aadhaar_info": [None, None],
-                "holder_3_aadhaar_info": [None, None],
-                "report_date": ["2025-07-16", "2025-07-16"],
+                "prodcode": [None, None],
+                "amc_code": ["128TSGP", "128"],
+                "td_fund": ["128", "128"],
+                "scheme": ["TSGP", "TSGP"],
+                "funddesc": ["Axis ELSS Tax Saver Fund", "Axis ELSS Tax Saver Fund"],
+                "traddate": ["2025-01-01", "2025-01-01"],
+                "source": ["KFIN", "KFIN"],
+            }
+        )
+
+        out = transform_brokerage_by_scheme(frame, report_period="2025")
+
+        # Row two has nothing but a plain AMC code and is not invented into a
+        # product; row one is recovered.
+        assert out["product_code"].tolist() == ["128TSGP"]
+        assert out["product_name"].iloc[0] == "Axis ELSS Tax Saver Fund"
+        assert out["source"].iloc[0] == "KFIN"
+
+    def test_brokerage_keeps_the_two_rtas_apart(self):
+        """Same scheme, two RTAs, two codes. source is in the natural key, so
+        both survive and each file numbers its own rows from 1."""
+        frame = pd.DataFrame(
+            {
+                "prodcode": ["B51", "128TSGP"],
+                "amc_code": ["B", "128"],
+                "td_fund": [None, "128"],
+                "scheme": ["Alpha", "TSGP"],
+                "funddesc": [None, "Axis ELSS Tax Saver Fund"],
+                "traddate": ["2025-01-01", "2025-01-01"],
                 "source": ["CAMS", "KFIN"],
             }
         )
 
-        out = transform_investor_kyc_status(frame)
+        out = transform_brokerage_by_scheme(frame, report_period="2025")
+
+        assert len(out) == 2
+        assert sorted(out["source"]) == ["CAMS", "KFIN"]
+        assert out["source_row"].tolist() == [1, 1]
+        assert out["id"].nunique() == 2
+
+    def test_kyc_status_reads_the_kfin_amc_code_out_of_fund(self):
+        """MFSD211 has no AMC_CODE column; its Fund column is the same thing and
+        the shared ingestion mapping lands it in silver as fund. amc_code is part
+        of the natural key, so without reading fund every one of the 1,444 KFIN
+        folios is dropped."""
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=[None, "B"],
+                fund=["128", None],
+                folio_no=["1001", "1002"],
+                source=["KFIN", "CAMS"],
+            )
+        )
+
+        assert len(out) == 2
+        assert dict(zip(out["source"], out["amc_code"])) == {
+            "KFIN": "128",
+            "CAMS": "B",
+        }
+
+    def test_kyc_status_skips_rows_without_a_complete_natural_key(self, capsys):
+        """A row with neither amc_code nor fund cannot be keyed. The count is
+        printed rather than swallowed."""
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=["B", None],
+                folio_no=["1001", "1002"],
+                source=["CAMS", "CAMS"],
+            )
+        )
 
         assert len(out) == 1
         assert "skipped" in capsys.readouterr().out
 
-    def test_kyc_state_and_location_are_compound(self):
-        frame = pd.DataFrame(
-            {
-                "amc_code": ["B"],
-                "folio_no": ["1001"],
-                "broker_code": ["ARN-1"],
-                "investor_name": ["A"],
-                "pan_no": ["P1"],
-                "joint_name_1": [None], "joint1_pan": [None],
-                "joint_name_2": [None], "joint2_pan": [None],
-                "guardian_name": [None], "guardian_pan": [None],
-                "address1": ["a"], "address2": [None], "address3": [None],
-                "city": ["Vadodara"], "pincode": ["390001"],
-                "state": ["Gujarat"], "country": ["INDIA"],
-                "phone_res": [None], "phone_off": [None],
-                "mobile_no": ["9"], "email": ["a@b.c"],
-                "fax_residence": [None], "fax_office": [None],
-                "kyc1flag": [None], "kyc2flag": [None], "kyc3flag": [None],
-                "kycgflag": [None],
-                "holder_1_aadhaar_info": [None],
-                "holder_2_aadhaar_info": [None],
-                "holder_3_aadhaar_info": [None],
-                "report_date": ["2025-07-16"],
-                "source": ["CAMS"],
-            }
+    def test_kyc_joint_pans_come_from_whichever_column_the_feed_uses(self):
+        """CAMS R9 writes JOINT1_PAN / JOINT2_PAN; KFIN MFSD211 writes PAN2 /
+        PAN3 for the same two holders. Neither feed fills the other's column."""
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=["B", None],
+                fund=[None, "128"],
+                folio_no=["1001", "1002"],
+                source=["CAMS", "KFIN"],
+                joint1_pan=["CAMSPAN1", None],
+                joint2_pan=["CAMSPAN2", None],
+                pan2=[None, "KFINPAN1"],
+                pan3=[None, "KFINPAN2"],
+            )
+        ).set_index("source")
+
+        assert out.loc["CAMS", "jointpan1"] == "CAMSPAN1"
+        assert out.loc["CAMS", "jointpan2"] == "CAMSPAN2"
+        assert out.loc["KFIN", "jointpan1"] == "KFINPAN1"
+        assert out.loc["KFIN", "jointpan2"] == "KFINPAN2"
+
+    def test_kyc_reporting_window_is_per_rta(self):
+        """The window is the span the delivery covers. The two RTAs deliver on
+        their own dates, so one shared window would print the CAMS span on the
+        KFIN file."""
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=["B", None],
+                fund=[None, "128"],
+                folio_no=["1001", "1002"],
+                source=["CAMS", "KFIN"],
+                report_date=["2025-01-31", "2026-07-15"],
+            )
+        ).set_index("source")
+
+        assert str(out.loc["CAMS", "rep_from_date"]) == "2025-01-31"
+        assert str(out.loc["KFIN", "rep_from_date"]) == "2026-07-15"
+
+    def test_kyc_rows_are_kept_apart_by_rta(self):
+        """The same AMC code and folio number from two RTAs are two folios, not
+        one. source leads the natural key for exactly this."""
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=["128", "128"],
+                folio_no=["1001", "1001"],
+                source=["CAMS", "KFIN"],
+            )
         )
 
-        out = transform_investor_kyc_status(frame)
+        assert len(out) == 2
+        assert out["id"].nunique() == 2
+        assert out["source_row"].tolist() == [1, 1]
+
+    def test_kyc_state_and_location_are_compound(self):
+        out = transform_investor_kyc_status(
+            kyc_frame(
+                amc_code=["B"],
+                folio_no=["1001"],
+                source=["CAMS"],
+                city=["Vadodara"],
+                state=["Gujarat"],
+            )
+        )
 
         assert out["state"].iloc[0] == "/Gujarat"
         assert out["location"].iloc[0] == "/Vadodara"
@@ -353,7 +466,14 @@ class TestTransforms:
 
         assert len(emails) == 1
         assert folios > 1
-        assert "email" in UNAVAILABLE["WBR68"]
+        assert "email" in unavailable_for("WBR68", "CAMS")
+
+    def test_wbr68_cannot_be_produced_from_kfin_at_all(self):
+        """MFSD201 has no euin, euin_valid or euin_opted column, so there is no
+        verdict to filter on. That is a missing report, not a report with empty
+        columns, and it is recorded as one."""
+        assert ("WBR68", "KFIN") in UNPRODUCIBLE
+        assert unavailable_for("WBR68", "KFIN") == {}
 
 
 # =====================================================
@@ -400,11 +520,30 @@ class TestGrain:
 # EXPORT
 # =====================================================
 
+# The reference files are CAMS deliveries, so the provider comparisons run
+# against the CAMS export. Filenames carry the RTA now — two RTAs writing the
+# provider\'s four stems into one directory would overwrite each other.
+
 @pytest.fixture(scope="module")
 def exported(tmp_path_factory, gold_loaded):
     out_dir = tmp_path_factory.mktemp("wbr_export")
-    results = export_wbr_reports(output_dir=str(out_dir))
+    results = export_wbr_reports(output_dir=str(out_dir), sources=["CAMS"])
     return {r["report_code"]: r for r in results}, out_dir
+
+
+@pytest.fixture(scope="module")
+def exported_kfin(tmp_path_factory, gold_loaded):
+    out_dir = tmp_path_factory.mktemp("wbr_export_kfin")
+    results = export_wbr_reports(output_dir=str(out_dir), sources=["KFIN"])
+    return {r["report_code"]: r for r in results}, out_dir
+
+
+def written_csv(out_dir, report, source):
+    stem = Path(REFERENCE_FILES[report]).stem
+
+    return pd.read_csv(
+        out_dir / f"{stem}-{source}.csv", dtype=str, keep_default_na=False
+    )
 
 
 class TestExport:
@@ -417,11 +556,8 @@ class TestExport:
     @pytest.mark.parametrize("report", list(REFERENCE_FILES))
     def test_column_order_matches_the_providers_file(self, report, exported):
         _, out_dir = exported
-        stem = Path(REFERENCE_FILES[report]).stem
 
-        written = pd.read_csv(
-            out_dir / f"{stem}.csv", dtype=str, keep_default_na=False
-        )
+        written = written_csv(out_dir, report, "CAMS")
 
         assert list(written.columns) == list(reference(report).columns)
         assert list(written.columns) == WBR_OUTPUT_LAYOUTS[report]["columns"]
@@ -434,11 +570,7 @@ class TestExport:
 
         assert results["WBR36H"]["rows"] == 0
 
-        written = pd.read_csv(
-            out_dir / f"{Path(REFERENCE_FILES['WBR36H']).stem}.csv",
-            dtype=str,
-            keep_default_na=False,
-        )
+        written = written_csv(out_dir, "WBR36H", "CAMS")
         assert written.empty
         assert list(written.columns) == WBR_OUTPUT_LAYOUTS["WBR36H"]["columns"]
 
@@ -459,11 +591,7 @@ class TestExport:
     def test_dates_render_in_the_providers_formats(self, exported):
         _, out_dir = exported
 
-        written = pd.read_csv(
-            out_dir / f"{Path(REFERENCE_FILES['WBR68']).stem}.csv",
-            dtype=str,
-            keep_default_na=False,
-        )
+        written = written_csv(out_dir, "WBR68", "CAMS")
 
         assert "trade_date" in WBR_OUTPUT_DATE_FORMATS["WBR68"]
 
@@ -477,12 +605,69 @@ class TestExport:
         1000.0 where the provider writes 1000."""
         _, out_dir = exported
 
-        written = pd.read_csv(
-            out_dir / f"{Path(REFERENCE_FILES['WBR68']).stem}.csv",
-            dtype=str,
-            keep_default_na=False,
-        )
+        written = written_csv(out_dir, "WBR68", "CAMS")
 
         amounts = written["amount"][written["amount"] != ""]
         assert len(amounts)
         assert not amounts.str.endswith(".0").any()
+
+
+# =====================================================
+# KFINTECH EXPORT
+# =====================================================
+
+class TestKfinExport:
+    """There is no KFIN reference file, so these assert what can be checked
+    without one: the layout is the same, the rows are there, and the report the
+    KFIN feed cannot produce produces nothing rather than something wrong."""
+
+    @pytest.mark.parametrize("report", list(REFERENCE_FILES))
+    def test_layout_is_the_same_for_both_rtas(self, report, exported_kfin):
+        _, out_dir = exported_kfin
+
+        written = written_csv(out_dir, report, "KFIN")
+
+        assert list(written.columns) == WBR_OUTPUT_LAYOUTS[report]["columns"]
+
+    def test_kfin_fills_wbr36_and_wbr56(self, exported_kfin):
+        results, _ = exported_kfin
+
+        assert results["WBR36"]["rows"]
+        assert results["WBR56"]["rows"]
+
+    def test_wbr68_is_empty_for_kfin(self, exported_kfin):
+        """MFSD201 carries no EUIN column, so there is no verdict to filter on.
+        The file is still written, with its header, because an absent file reads
+        as a failed run."""
+        results, out_dir = exported_kfin
+
+        assert results["WBR68"]["rows"] == 0
+        assert written_csv(out_dir, "WBR68", "KFIN").empty
+
+    def test_kyc_flags_are_populated_on_the_kfin_file_only(self, exported, exported_kfin):
+        """The block CAMS R9 cannot fill and MFSD211 can. If both files come out
+        empty here the KFIN feed has stopped delivering Kyc1Flag; if both come
+        out full, something is filling the CAMS rows from the wrong place."""
+        _, cams_dir = exported
+        _, kfin_dir = exported_kfin
+
+        cams = written_csv(cams_dir, "WBR56", "CAMS")
+        kfin = written_csv(kfin_dir, "WBR56", "KFIN")
+
+        for column in ("fh_kyc", "fh_g_aadharlink"):
+            assert (cams[column] == "").all(), column
+            assert (kfin[column] != "").any(), column
+
+    def test_the_two_rtas_do_not_overwrite_each_others_files(
+        self, exported, exported_kfin
+    ):
+        """The four stems are the provider's own. Without the RTA in the
+        filename the second export silently replaces the first."""
+        _, cams_dir = exported
+        _, kfin_dir = exported_kfin
+
+        cams_names = {p.name for p in cams_dir.iterdir()}
+        kfin_names = {p.name for p in kfin_dir.iterdir()}
+
+        assert cams_names
+        assert not (cams_names & kfin_names)

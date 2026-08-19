@@ -310,9 +310,7 @@ def load_amc(gold_df):
 
         SELECT
 
-            amc_code,
-
-            created_at
+            amc_code
 
         FROM gold.amc
 
@@ -369,43 +367,30 @@ def load_amc(gold_df):
 
 
 
-        gold_df = gold_df.merge(
+        # amc_code is the natural key, so an AMC already in gold is skipped
+        # rather than inserted again.
+        #
+        # created_at is deliberately not part of this test. The merge this
+        # replaces joined on amc_code and expected the two frames' created_at
+        # columns to collide into created_at_new and created_at_old — but
+        # transform_amc never builds a created_at column, gold.amc defaults it,
+        # so nothing collided, the column arrived from the merge under its own
+        # name, and the filter raised KeyError: 'created_at_old'. Because the
+        # block only runs when gold.amc already holds rows, the stage succeeded
+        # once and has failed on every run since.
 
-            existing_amc,
+        existing_keys = set(
 
-            on="amc_code",
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
-
-            )
+            existing_amc["amc_code"]
 
         )
 
 
+        gold_df = gold_df.loc[
 
-        gold_df = gold_df[
-
-            gold_df["created_at_old"].isna()
+            ~gold_df["amc_code"].isin(existing_keys)
 
         ]
-
-
-
-        gold_df = gold_df.drop(
-
-            columns=[
-
-                "created_at_old"
-
-            ]
-
-        )
 
 
 

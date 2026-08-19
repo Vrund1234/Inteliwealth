@@ -435,9 +435,7 @@ def load_clients(gold_df):
 
         SELECT
 
-            pan,
-
-            created_at
+            pan
 
         FROM gold.clients
 
@@ -490,49 +488,32 @@ def load_clients(gold_df):
 
 
 
-        compare_df = gold_df.merge(
+        # pan is the natural key, so a client already in gold is skipped rather
+        # than inserted again.
+        #
+        # created_at is deliberately not part of this test. The merge this
+        # replaces renamed the frame's own created_at to created_at_new, so the
+        # reprojection onto gold_df.columns then asked for a created_at that no
+        # longer existed and raised "['created_at'] not in index". Because the
+        # block only runs when gold.clients already holds rows, the stage
+        # succeeded once and has failed on every run since.
+        #
+        # The comparison it made was wrong in its own right: created_at_new is
+        # stamped with datetime.now() in transform_clients, so it is always
+        # greater than the stored created_at, every existing client passed the
+        # filter, and the append-only to_sql below would have inserted the whole
+        # table again on each run.
 
-            existing_clients,
+        existing_keys = set(
 
-            on="pan",
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
-
-            )
+            existing_clients["pan"]
 
         )
 
 
+        gold_df = gold_df.loc[
 
-        compare_df = compare_df[
-
-            compare_df["created_at_old"].isna()
-
-            |
-
-            (
-
-                compare_df["created_at_new"]
-
-                >
-
-                compare_df["created_at_old"]
-
-            )
-
-        ]
-
-
-
-        gold_df = compare_df[
-
-            gold_df.columns
+            ~gold_df["pan"].isin(existing_keys)
 
         ]
 

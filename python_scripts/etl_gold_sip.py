@@ -805,9 +805,7 @@ def load_sip(gold_df):
 
             rta,
 
-            sip_reg_no,
-
-            created_at
+            sip_reg_no
 
         FROM gold.sip
 
@@ -893,55 +891,59 @@ def load_sip(gold_df):
 
 
 
-        compare_df = gold_df.merge(
+        # (rta, sip_reg_no) is the natural key, so a registration already in gold
+        # is skipped rather than inserted again.
+        #
+        # created_at is deliberately not part of this test. The merge this
+        # replaces renamed the frame's own created_at to created_at_new, so the
+        # reprojection onto gold_df.columns then asked for a created_at that no
+        # longer existed and raised "['created_at'] not in index". Because the
+        # block only runs when gold.sip already holds rows, the stage succeeded
+        # once and has failed on every run since.
+        #
+        # The comparison it made was wrong in its own right: created_at_new is
+        # stamped with datetime.now() in transform_sip, so it is always greater
+        # than the stored created_at, every existing registration passed the
+        # filter, and the append-only to_sql below would have inserted the whole
+        # table again on each run.
 
-            existing_sip,
+        existing_keys = set(
 
-            on=[
+            zip(
 
-                "rta",
+                existing_sip["rta"],
 
-                "sip_reg_no"
-
-            ],
-
-            how="left",
-
-            suffixes=(
-
-                "_new",
-
-                "_old"
+                existing_sip["sip_reg_no"]
 
             )
 
         )
 
 
+        already_loaded = pd.Series(
 
-        compare_df = compare_df[
+            [
 
-            compare_df["created_at_old"].isna()
+                key in existing_keys
 
-            |
+                for key in zip(
 
-            (
+                    gold_df["rta"],
 
-                compare_df["created_at_new"]
+                    gold_df["sip_reg_no"]
 
-                >
+                )
 
-                compare_df["created_at_old"]
+            ],
 
-            )
+            index=gold_df.index
 
-        ]
+        )
 
 
+        gold_df = gold_df.loc[
 
-        gold_df = compare_df[
-
-            gold_df.columns
+            ~already_loaded
 
         ]
 
@@ -949,7 +951,7 @@ def load_sip(gold_df):
 
     print(
 
-        "Rows after timestamp duplicate check:",
+        "Rows after duplicate check:",
 
         len(gold_df)
 

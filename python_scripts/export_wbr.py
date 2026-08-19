@@ -13,17 +13,24 @@ from mapping import (
     WBR_OUTPUT_DATE_FORMATS
 )
 
-from etl_gold_wbr import NATURAL_KEYS
+from etl_gold_wbr import NATURAL_KEYS, SOURCES
 
 from utils.db import engine
 
 
 # =====================================================
-# CAMS WBR REPORT EXPORTER
+# WBR REPORT EXPORTER  (CAMS AND KFINTECH)
 # =====================================================
 #
 # Writes the derived gold tables out as the four WBR report files. The tables
 # are the source of truth; the files are a projection of them.
+#
+# The gold tables hold both RTAs, keyed by source. A report is a per-RTA
+# deliverable, so an export is filtered to one RTA and its filename carries the
+# RTA — "WBR56-KYC status of Investor-KFIN". Exporting unfiltered would put CAMS
+# and KFIN rows in one file under a layout the consumer expects to be one RTA\'s.
+# Passing source=None restores the single mixed file, for a consumer that wants
+# the whole table.
 #
 # Four layouts read three tables: WBR36 and WBR36H both read
 # gold.brokerage_by_scheme and are separated by the report_variant filter in
@@ -60,6 +67,27 @@ OUTPUT_DIR = os.environ.get(
 SOFFICE_BIN = os.environ.get("WBR_SOFFICE", "soffice")
 
 DEFAULT_FORMATS = ("xlsx", "csv")
+
+
+# =====================================================
+# SOURCES
+# =====================================================
+#
+# The RTAs exported by default, one set of files each. WBR_SOURCES overrides it
+# ("CAMS", or "CAMS,KFIN"); WBR_SOURCES=ALL writes one unfiltered file per
+# report instead.
+
+def default_sources():
+
+    override = os.environ.get("WBR_SOURCES", "").strip()
+
+    if not override:
+        return list(SOURCES)
+
+    if override.upper() == "ALL":
+        return [None]
+
+    return [s.strip().upper() for s in override.split(",") if s.strip()]
 
 
 # =====================================================
@@ -132,7 +160,7 @@ def format_number(value):
 # FETCH
 # =====================================================
 
-def fetch(layout):
+def fetch(layout, source=None):
 
     table = layout["source_table"]
 
@@ -143,6 +171,11 @@ def fetch(layout):
 
         conditions.append(f'"{key}" = :{key}')
         params[key] = value
+
+    if source:
+
+        conditions.append('"source" = :source')
+        params["source"] = source
 
     where = (
         f" WHERE {' AND '.join(conditions)}"
@@ -292,12 +325,17 @@ def write_xls_via_soffice(xlsx_path):
 # EXPORT ONE REPORT
 # =====================================================
 
-def export_report(report_code, formats=DEFAULT_FORMATS, output_dir=None):
+def export_report(
+    report_code,
+    formats=DEFAULT_FORMATS,
+    output_dir=None,
+    source=None
+):
 
     layout = WBR_OUTPUT_LAYOUTS[report_code]
 
     df = project(
-        fetch(layout),
+        fetch(layout, source=source),
         layout,
         report_code
     )
@@ -306,7 +344,14 @@ def export_report(report_code, formats=DEFAULT_FORMATS, output_dir=None):
 
     os.makedirs(out_dir, exist_ok=True)
 
-    stem = layout["file_stem"]
+    # The RTA is in the filename, not only in the directory: the four stems are
+    # the provider\'s own and two RTAs writing to one directory would otherwise
+    # overwrite each other silently.
+    stem = (
+        f"{layout['file_stem']}-{source}"
+        if source
+        else layout["file_stem"]
+    )
 
     written = []
     xlsx_path = None
@@ -343,13 +388,16 @@ def export_report(report_code, formats=DEFAULT_FORMATS, output_dir=None):
         if converted:
             written.append(converted)
 
+    label = f"{report_code}/{source}" if source else report_code
+
     print(
-        f"{report_code} : {len(df)} rows, {len(df.columns)} columns -> "
+        f"{label} : {len(df)} rows, {len(df.columns)} columns -> "
         f"{[os.path.basename(p) for p in written]}"
     )
 
     return {
         "report_code": report_code,
+        "source": source,
         "rows": len(df),
         "columns": len(df.columns),
         "files": written
@@ -366,18 +414,26 @@ def export_report(report_code, formats=DEFAULT_FORMATS, output_dir=None):
 def export_wbr_reports(
     report_codes=None,
     formats=DEFAULT_FORMATS,
-    output_dir=None
+    output_dir=None,
+    sources=None
 ):
 
     codes = report_codes or list(WBR_OUTPUT_LAYOUTS)
 
+    rtas = sources if sources is not None else default_sources()
+
     results = []
 
     print("=" * 80)
-    print("EXPORTING CAMS WBR REPORTS")
+    print(
+        "EXPORTING WBR REPORTS : "
+        + ", ".join(r or "ALL SOURCES" for r in rtas)
+    )
     print("=" * 80)
 
-    for code in codes:
+    for source in rtas:
+
+      for code in codes:
 
         try:
 
@@ -385,7 +441,8 @@ def export_wbr_reports(
                 export_report(
                     code,
                     formats=formats,
-                    output_dir=output_dir
+                    output_dir=output_dir,
+                    source=source
                 )
             )
 
@@ -396,6 +453,7 @@ def export_wbr_reports(
             results.append(
                 {
                     "report_code": code,
+                    "source": source,
                     "rows": 0,
                     "columns": 0,
                     "files": [],
@@ -407,7 +465,8 @@ def export_wbr_reports(
 
     print("=" * 80)
     print(
-        f"EXPORT COMPLETED : {len(results)} reports, {total_files} files in "
+        f"EXPORT COMPLETED : {len(results)} report files across "
+        f"{len(rtas)} source(s), {total_files} files in "
         f"{output_dir or OUTPUT_DIR}"
     )
     print("=" * 80)

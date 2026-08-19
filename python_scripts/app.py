@@ -524,7 +524,7 @@ elif st.session_state.current_layer == "silver_gold":
 
     if st.session_state.wbr_exports:
 
-        st.markdown("## 📥 CAMS WBR Reports")
+        st.markdown("## 📥 WBR Reports")
 
         st.caption(
             "Regenerated from the gold tables. Column order, column names and "
@@ -535,12 +535,21 @@ elif st.session_state.current_layer == "silver_gold":
 
             code = result["report_code"]
 
+            # One block per report per RTA. The RTA is part of the widget key
+            # as well as the heading: without it the CAMS and KFIN download
+            # buttons for the same report share a key and Streamlit raises.
+            source = result.get("source")
+
+            slug = f"{code}_{source}" if source else code
+
             layout = WBR_OUTPUT_LAYOUTS.get(code, {})
 
             with st.container(border=True):
 
                 st.markdown(
-                    f"### {code} — {layout.get('file_stem', code)}"
+                    f"### {code}"
+                    + (f" · {source}" if source else "")
+                    + f" — {layout.get('file_stem', code)}"
                 )
 
                 c1, c2 = st.columns(2)
@@ -579,7 +588,7 @@ elif st.session_state.current_layer == "silver_gold":
                         f"⬇ {extension.upper()}",
                         data=payload,
                         file_name=filename,
-                        key=f"download_{code}_{extension}",
+                        key=f"download_{slug}_{extension}",
                         width="stretch"
                     )
 
