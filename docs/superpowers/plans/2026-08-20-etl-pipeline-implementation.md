@@ -41,7 +41,7 @@ If one member of an otherwise-ready group fails at the bronze-download/parse ste
 - Test: `python_scripts/tests/test_etl_pipeline_config.py`
 
 **Interfaces:**
-- Produces: `etl_pipeline.config` module with attributes `DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, MASTER_DB_NAME, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_S3_ENDPOINT_URL, INTELLIWEALTH_API_BASE, INTELLIWEALTH_RUNNER_EMAIL, INTELLIWEALTH_RUNNER_PASSWORD, ETL_RUNNER_NAME, ETL_BATCH_LIMIT (int), ETL_PEEK_LIMIT (int), ETL_HOLD_TIMEOUT_MINUTES (int), ETL_MAX_RESERVATION_CALLS_PER_RUN (int)` — every later task imports from here.
+- Produces: `etl_pipeline.config` module with attributes `DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME` (project DB — this repo's own bronze/silver/gold/pipeline schemas), `MASTER_POSTGRES_HOST, MASTER_POSTGRES_PORT, MASTER_POSTGRES_USER, MASTER_POSTGRES_PASSWORD, MASTER_POSTGRES_DB` (master DB — `intelli-wealth-backend`'s own database, e.g. `public.arn` — a **separate credential set and host**, not reused from the project DB), `AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_S3_ENDPOINT_URL, INTELLIWEALTH_API_BASE, INTELLIWEALTH_RUNNER_EMAIL, INTELLIWEALTH_RUNNER_PASSWORD, ETL_RUNNER_NAME, ETL_BATCH_LIMIT (int), ETL_PEEK_LIMIT (int), ETL_HOLD_TIMEOUT_MINUTES (int), ETL_MAX_RESERVATION_CALLS_PER_RUN (int)` — every later task imports from here.
 
 - [ ] **Step 1: Add new dependencies**
 
@@ -62,13 +62,23 @@ Expected: all four install cleanly, no errors.
 - [ ] **Step 3: Create `python_scripts/.env.example`**
 
 ```
-# --- Database (moved off the hardcoded values in utils/db.py) ---
+# --- Project Database (this repo's own bronze/silver/gold/pipeline schemas —
+# moved off the hardcoded values in utils/db.py) ---
 DB_HOST=localhost
 DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=changeme
 DB_NAME=19_08_2026_intelliwealth_layer_db
-MASTER_DB_NAME=intelliwealth
+
+# --- Master Database (intelli-wealth-backend's own DB — public.arn, etc.
+# SEPARATE credentials/host from the project DB above: this is a different
+# service, typically reachable at its docker-compose service name when this
+# pipeline runs inside that network — not "localhost"). ---
+MASTER_POSTGRES_HOST=db
+MASTER_POSTGRES_PORT=5432
+MASTER_POSTGRES_USER=intelliwealth
+MASTER_POSTGRES_PASSWORD=intelliwealth
+MASTER_POSTGRES_DB=intelliwealth
 
 # --- AWS S3 (new — this pipeline is the first S3 consumer in this repo) ---
 AWS_ACCESS_KEY_ID=
@@ -98,7 +108,7 @@ python_scripts/.env
 
 - [ ] **Step 5: Create the real `.env` for this environment**
 
-Copy `python_scripts/.env.example` to `python_scripts/.env`, then set `DB_PASSWORD` and `DB_NAME` to the current live values already in `python_scripts/utils/db.py` (its `PASSWORD` and `PROJECT_DATABASE` constants), `MASTER_DB_NAME` to its `MASTER_DATABASE` constant, and leave `AWS_*`/`INTELLIWEALTH_*` blank until Part A's later tasks need them (Task 4 for the API client, Task 6 for S3).
+Copy `python_scripts/.env.example` to `python_scripts/.env`, then set `DB_PASSWORD` and `DB_NAME` to the current live values already in `python_scripts/utils/db.py` (its `PASSWORD` and `PROJECT_DATABASE` constants — `DB_HOST`/`DB_PORT`/`DB_USER` already match the `.env.example` defaults). Set the five `MASTER_POSTGRES_*` values exactly as given in `.env.example` (`db` / `5432` / `intelliwealth` / `intelliwealth` / `intelliwealth`) — these are `intelli-wealth-backend`'s own DB credentials, confirmed separately, not derived from the project DB. Leave `AWS_*`/`INTELLIWEALTH_*` blank until Part A's later tasks need them (Task 4 for the API client, Task 6 for S3).
 
 - [ ] **Step 6: Create `python_scripts/etl_pipeline/__init__.py`** (empty file, makes it a package)
 
@@ -120,6 +130,15 @@ def test_db_config_loaded_from_env():
     assert config.DB_PASSWORD
     assert config.DB_HOST == "localhost"
     assert config.DB_PORT == "5432"
+
+
+def test_master_db_config_is_separate_from_project_db():
+    assert config.MASTER_POSTGRES_DB == "intelliwealth"
+    assert config.MASTER_POSTGRES_USER == "intelliwealth"
+    assert config.MASTER_POSTGRES_PASSWORD == "intelliwealth"
+    assert config.MASTER_POSTGRES_HOST == "db"
+    # must NOT silently fall back to reusing the project DB's credentials
+    assert config.MASTER_POSTGRES_USER != config.DB_USER or config.MASTER_POSTGRES_HOST != config.DB_HOST
 
 
 def test_tuning_values_are_ints_with_sane_defaults():
@@ -157,7 +176,15 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
-MASTER_DB_NAME = os.getenv("MASTER_DB_NAME", "intelliwealth")
+
+# Master DB (intelli-wealth-backend's own database) — separate credentials
+# and host from the project DB above, e.g. reachable at its docker-compose
+# service name rather than "localhost".
+MASTER_POSTGRES_HOST = os.getenv("MASTER_POSTGRES_HOST", "localhost")
+MASTER_POSTGRES_PORT = os.getenv("MASTER_POSTGRES_PORT", "5432")
+MASTER_POSTGRES_USER = os.getenv("MASTER_POSTGRES_USER", "postgres")
+MASTER_POSTGRES_PASSWORD = os.getenv("MASTER_POSTGRES_PASSWORD")
+MASTER_POSTGRES_DB = os.getenv("MASTER_POSTGRES_DB", "intelliwealth")
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -178,7 +205,7 @@ ETL_MAX_RESERVATION_CALLS_PER_RUN = _int("ETL_MAX_RESERVATION_CALLS_PER_RUN", 5)
 - [ ] **Step 10: Run test to verify it passes**
 
 Run: `cd python_scripts && source venv/bin/activate && pytest tests/test_etl_pipeline_config.py -v`
-Expected: PASS (2 tests)
+Expected: PASS (3 tests)
 
 - [ ] **Step 11: Commit**
 
@@ -222,7 +249,14 @@ def test_engine_uses_configured_database_name():
 
 
 def test_master_engine_uses_configured_master_database_name():
-    assert config.MASTER_DB_NAME in str(master_engine.url)
+    assert config.MASTER_POSTGRES_DB in str(master_engine.url)
+
+
+def test_master_engine_uses_separate_credentials_from_project_engine():
+    assert master_engine.url.username == config.MASTER_POSTGRES_USER
+    assert master_engine.url.host == config.MASTER_POSTGRES_HOST
+    assert engine.url.username == config.DB_USER
+    assert engine.url.host == config.DB_HOST
 
 
 def test_engine_is_actually_reachable():
@@ -245,16 +279,19 @@ from urllib.parse import quote_plus
 from etl_pipeline import config
 
 ENCODED_PASSWORD = quote_plus(config.DB_PASSWORD)
+MASTER_ENCODED_PASSWORD = quote_plus(config.MASTER_POSTGRES_PASSWORD)
 
-# Project Database
+# Project Database (this repo's own bronze/silver/gold/pipeline schemas)
 engine = create_engine(
     f"postgresql+psycopg2://{config.DB_USER}:{ENCODED_PASSWORD}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}",
     pool_pre_ping=True
 )
 
-# Master Database
+# Master Database (intelli-wealth-backend's own DB — separate credentials/host)
 master_engine = create_engine(
-    f"postgresql+psycopg2://{config.DB_USER}:{ENCODED_PASSWORD}@{config.DB_HOST}:{config.DB_PORT}/{config.MASTER_DB_NAME}"
+    f"postgresql+psycopg2://{config.MASTER_POSTGRES_USER}:{MASTER_ENCODED_PASSWORD}"
+    f"@{config.MASTER_POSTGRES_HOST}:{config.MASTER_POSTGRES_PORT}/{config.MASTER_POSTGRES_DB}",
+    pool_pre_ping=True
 )
 
 
@@ -293,7 +330,7 @@ Note: keep whatever the current `read_table` body actually does beyond the engin
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd python_scripts && source venv/bin/activate && pytest tests/test_db_config.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests). Note `master_engine` is built from `MASTER_POSTGRES_HOST=db`, a docker-compose service name — it will not resolve outside that network, so this test suite deliberately never calls `master_engine.connect()`, only checks its constructed URL.
 
 - [ ] **Step 5: Run the full existing test suite to confirm nothing else broke**
 
