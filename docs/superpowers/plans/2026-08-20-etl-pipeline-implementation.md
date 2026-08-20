@@ -108,7 +108,7 @@ python_scripts/.env
 
 - [ ] **Step 5: Create the real `.env` for this environment**
 
-Copy `python_scripts/.env.example` to `python_scripts/.env`, then set `DB_PASSWORD` and `DB_NAME` to the current live values already in `python_scripts/utils/db.py` (its `PASSWORD` and `PROJECT_DATABASE` constants — `DB_HOST`/`DB_PORT`/`DB_USER` already match the `.env.example` defaults). Set the five `MASTER_POSTGRES_*` values exactly as given in `.env.example` (`db` / `5432` / `intelliwealth` / `intelliwealth` / `intelliwealth`) — these are `intelli-wealth-backend`'s own DB credentials, confirmed separately, not derived from the project DB. Leave `AWS_*`/`INTELLIWEALTH_*` blank until Part A's later tasks need them (Task 4 for the API client, Task 6 for S3).
+Copy `python_scripts/.env.example` to `python_scripts/.env`. Set the project DB values to the actual live credentials for this environment — `DB_HOST=localhost`, `DB_PORT=5432`, `DB_USER=postgres`, `DB_PASSWORD=Test123migration`, `DB_NAME=19_08_2026_intelliwealth_layer_db` (do not read these from `python_scripts/utils/db.py` — that file may be mid-migration/stale at this point in the branch history; these are the confirmed-working values). Set the five `MASTER_POSTGRES_*` values exactly as given in `.env.example` (`db` / `5432` / `intelliwealth` / `intelliwealth` / `intelliwealth`) — these are `intelli-wealth-backend`'s own DB credentials, confirmed separately, not derived from the project DB. Leave `AWS_*`/`INTELLIWEALTH_*` blank until Part A's later tasks need them (Task 4 for the API client, Task 6 for S3).
 
 - [ ] **Step 6: Create `python_scripts/etl_pipeline/__init__.py`** (empty file, makes it a package)
 
@@ -267,7 +267,7 @@ def test_engine_is_actually_reachable():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd python_scripts && source venv/bin/activate && pytest tests/test_db_config.py -v`
-Expected: FAIL (current `db.py` doesn't reference `config`, but the DB-name assertions will fail since the hardcoded name happens to already equal `config.DB_NAME` today — run it anyway to confirm the *reachability* test passes and note the name assertions are trivially true pre-migration; the real signal is Step 4).
+Expected: FAIL — current `db.py` still has its own hardcoded (and possibly stale — see Task 1 Step 5's note) credentials, not `config`-derived ones, so at minimum the name/credential-matching assertions fail, and `engine.connect()` may fail outright if the hardcoded values don't point at a reachable DB in this environment. Either failure mode confirms the migration in Step 3 is necessary.
 
 - [ ] **Step 3: Rewrite `python_scripts/utils/db.py`**
 
