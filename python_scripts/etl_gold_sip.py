@@ -461,6 +461,185 @@ def extract_sip():
 
 
 # ============================================================
+# EXTRACT PENDING SIP RETRY CANDIDATES
+#
+# Rows in gold.sip whose enrichment (arn/client_id) is still marked
+# pending, re-matched back to their original silver.sip_master_new row via
+# the SAME natural key load_sip()'s ON CONFLICT clause already uses as
+# this row's identity — (rta, folio_number, scheme_code, registered_date,
+# amount). Returns rows in extract_sip()'s exact column shape so they can
+# be fed straight into transform_sip()/load_sip() unchanged.
+# ============================================================
+
+def extract_pending_sip_retry_candidates(limit=200, max_age_days=30):
+
+    print("=" * 80)
+    print("EXTRACTING PENDING SIP RETRY CANDIDATES")
+    print("=" * 80)
+
+    # The inner query's DISTINCT ON collapses the join down to at most one
+    # silver row per gold.sip pending row BEFORE this ever reaches
+    # load_sip(). Without it, multiple silver rows genuinely colliding on
+    # the same natural key (rta, folio_number, scheme_code, registered_date,
+    # amount) — confirmed to exist live in silver.sip_master_new — would
+    # all join to the same gold.sip row and be handed to load_sip()'s
+    # single-statement ON CONFLICT upsert as a duplicate-key batch, raising
+    # CardinalityViolation and silently failing the retry (load_sip()
+    # catches and swallows that error), leaving the row pending forever
+    # instead of reconciling it. DISTINCT ON requires its ORDER BY to start
+    # with its own key columns, so it can't also lead with
+    # enrichment_pending_since for oldest-pending-first prioritization —
+    # the outer query re-sorts the already-deduped rows by
+    # enrichment_pending_since ASC before applying LIMIT, preserving that
+    # original prioritization.
+    query = """
+        SELECT candidate.* FROM (
+            SELECT DISTINCT ON (g.rta, g.folio_number, g.scheme_code, g.registered_date, g.amount)
+
+                s.source,
+                s.zone,
+                s.branch,
+                s.ter_location,
+                s.inv_name,
+                s.pan,
+                s.folio_no,
+                s.folio_old,
+                s.inv_iin,
+                s.inv_dp_id,
+                s.inv_client_id,
+                s.dp_inv_name,
+
+                s.scheme_code,
+
+                s.product_code,
+                s.scheme_name,
+                s.plan,
+                s.sub_arn_code,
+                s.agent_name,
+                s.subbroker,
+                s.euin,
+                s.aut_trntyp,
+                s.payment_mode,
+                s.periodicity,
+                s.auto_amount,
+                s.no_of_installments,
+                s.period_day,
+                s.reg_date,
+                s.from_date,
+                s.to_date,
+                s.cease_date,
+                s.pause_from_date,
+                s.pause_to_date,
+                s.target_scheme,
+                s.target_scheme_code,
+                s.target_scheme_name,
+                s.target_plan,
+                s.bank,
+                s.ac_holder_name,
+                s.ecs_account_no,
+                s.ecsno,
+                s.instrm_no,
+                s.cheq_micr_no,
+                s.umrn_code,
+                s.ac_type,
+                s.amc_code,
+                s.user_code,
+                s.package_name,
+                s.special_product,
+                s.subtrxndesc,
+                s.remarks,
+                s.top_up_frq,
+                s.top_up_amt,
+                s.top_up_perc,
+                s.status,
+                s.modify_flag,
+                s.scheme_folio_number,
+                s.request_ref_no,
+                s.ft_sip_regno,
+
+                s.scheme_id,
+
+                s.created_at,
+                s.updated_at,
+
+                s.flag,
+
+                g.enrichment_pending_since AS _enrichment_pending_since
+
+            FROM silver.sip_master_new s
+
+            JOIN gold.sip g
+                ON UPPER(TRIM(s.source)) = g.rta
+               -- Mirrors clean_folio() exactly (etl_gold_sip.py:93): strip,
+               -- upper, then strip ALL occurrences of the literal ".0"
+               -- substring (str.replace(".0", "", regex=False) in pandas) —
+               -- NOT just a trailing ".0". A regex anchored to the end (\\.0$)
+               -- would silently mismatch any folio with an embedded ".0".
+               AND REPLACE(UPPER(TRIM(CAST(s.folio_no AS TEXT))), '.0', '') = g.folio_number
+               -- Mirrors clean_scheme_code() exactly (etl_gold_sip.py:112):
+               -- strip + upper on scheme_code alone, no product_code fallback
+               -- (transform_sip() never falls back to product_code at the gold
+               -- stage — that fallback only exists in the SILVER scheme_id
+               -- join, a different purpose).
+               AND UPPER(TRIM(CAST(s.scheme_code AS TEXT))) = g.scheme_code
+               AND s.reg_date = g.registered_date
+               AND s.auto_amount = g.amount
+
+            WHERE g.enrichment_pending_since IS NOT NULL
+              AND g.enrichment_pending_since > now() - make_interval(days => %(max_age_days)s)
+
+            ORDER BY g.rta, g.folio_number, g.scheme_code, g.registered_date, g.amount,
+                     s.created_at DESC
+        ) candidate
+
+        ORDER BY candidate._enrichment_pending_since ASC
+
+        LIMIT %(limit)s
+    """
+
+    df = safe_read(query, params={"max_age_days": max_age_days, "limit": limit})
+
+    # Ordering-only helper column, not part of extract_sip()'s column shape.
+    df = df.drop(columns=["_enrichment_pending_since"], errors="ignore")
+
+    print()
+    print("Retry candidates found:", len(df))
+
+    return df
+
+
+# ============================================================
+# RECONCILE PENDING SIP
+#
+# Runs the EXACT same transform_sip()/load_sip() path as a normal load,
+# just fed the bounded retry-candidate batch instead of extract_sip()'s
+# cursor-based selection. Rows whose enrichment still can't be resolved
+# simply get re-stamped with a fresh (or unchanged) enrichment_pending_since
+# by transform_sip() itself and get retried again next run, until either
+# they resolve or age past max_age_days and drop out of the candidate set.
+# ============================================================
+
+def reconcile_pending_sip(limit=200, max_age_days=30):
+
+    print("=" * 80)
+    print("RECONCILING PENDING SIP ENRICHMENT")
+    print("=" * 80)
+
+    df = extract_pending_sip_retry_candidates(limit=limit, max_age_days=max_age_days)
+
+    if df.empty:
+        print("No pending SIP rows to reconcile.")
+        return load_result("skipped", 0)
+
+    gold_df = transform_sip(df)
+
+    if gold_df.empty:
+        return load_result("skipped", 0)
+
+    return load_sip(gold_df)
+
+
+# ============================================================
 # TRANSFORM GOLD SIP
 # ============================================================
 
@@ -1436,10 +1615,10 @@ def transform_sip(df):
     # ========================================================
     # ENRICHMENT PENDING SINCE
     #
-    # Set only when NEITHER the transaction match NOR the client match was
-    # found — i.e. genuinely nothing to enrich from yet, not "matched but
-    # the field happens to be blank" (e.g. a real direct-plan investment
-    # with no ARN). NULL = fully resolved or structurally not applicable.
+    # Set when at least one of the transaction match or client match was not
+    # found — i.e. at least one enrichment source is still pending, not just
+    # "matched but the field happens to be blank" (e.g. a real direct-plan
+    # investment with no ARN). NULL = fully resolved or structurally complete.
     # ========================================================
 
     gold_load_timestamp_for_pending = datetime.now(timezone.utc)

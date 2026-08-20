@@ -5,6 +5,8 @@ import numpy as np
 from datetime import datetime, timezone
 
 from utils.db import engine, master_engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # ============================================================
@@ -2276,7 +2278,7 @@ def load_holdings(gold_df):
             "No holdings to load."
         )
 
-        return True
+        return load_result("skipped", 0)
 
     # ========================================================
     # REMOVE ZERO PURCHASE / SWITCH-OUT HOLDINGS
@@ -2294,7 +2296,7 @@ def load_holdings(gold_df):
             "the zero-net purchase/switch-out rule."
         )
 
-        return True
+        return load_result("skipped", 0)
 
     # ========================================================
     # VARCHAR LIMITS
@@ -2403,31 +2405,6 @@ def load_holdings(gold_df):
     )
 
     # ========================================================
-    # EXISTING HOLDINGS
-    # ========================================================
-
-    print(
-        "Checking existing holdings..."
-    )
-
-    existing_holdings = pd.read_sql(
-        """
-        SELECT
-            rta,
-            folio_number,
-            scheme_id
-
-        FROM gold.holdings
-        """,
-        engine
-    )
-
-    print(
-        f"Existing holdings: "
-        f"{len(existing_holdings):,}"
-    )
-
-    # ========================================================
     # NORMALIZE KEYS
     # ========================================================
 
@@ -2436,14 +2413,6 @@ def load_holdings(gold_df):
         "folio_number",
         "scheme_id"
     ]:
-
-        existing_holdings[col] = (
-            existing_holdings[col]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
 
         gold_df[col] = (
             gold_df[col]
@@ -2454,64 +2423,7 @@ def load_holdings(gold_df):
         )
 
     # ========================================================
-    # REMOVE EXISTING HOLDINGS
-    # ========================================================
-
-    if not existing_holdings.empty:
-
-        existing_keys = (
-            existing_holdings[
-                [
-                    "rta",
-                    "folio_number",
-                    "scheme_id"
-                ]
-            ]
-            .drop_duplicates()
-        )
-
-        gold_df = gold_df.merge(
-
-            existing_keys.assign(
-                _exists=True
-            ),
-
-            on=[
-                "rta",
-                "folio_number",
-                "scheme_id"
-            ],
-
-            how="left"
-        )
-
-        gold_df = (
-            gold_df[
-                gold_df["_exists"].isna()
-            ]
-            .drop(
-                columns=[
-                    "_exists"
-                ]
-            )
-        )
-
-    print()
-    print(
-        f"Rows to insert: "
-        f"{len(gold_df):,}"
-    )
-
-    if gold_df.empty:
-
-        print(
-            "No new holdings to insert."
-        )
-
-        return True
-
-    # ========================================================
-    # FINAL DUPLICATE CHECK
+    # FINAL DUPLICATE CHECK (within this batch)
     # ========================================================
 
     duplicate_count = (
@@ -2530,7 +2442,7 @@ def load_holdings(gold_df):
 
         print(
             f"Removing {duplicate_count:,} "
-            "duplicate rows before INSERT."
+            "duplicate rows before UPSERT."
         )
 
         gold_df = (
@@ -2548,32 +2460,43 @@ def load_holdings(gold_df):
         )
 
     # ========================================================
-    # INSERT
+    # UPSERT
     # ========================================================
 
+    conflict_target_sql = (
+        "((rta IS NULL), (COALESCE(rta, '')), "
+        "(folio_number IS NULL), (COALESCE(folio_number, '')), "
+        "(scheme_id IS NULL), (COALESCE(scheme_id, '')))"
+    )
+    update_set_sql = (
+        "pan = EXCLUDED.pan, units = EXCLUDED.units, market_value = EXCLUDED.market_value, "
+        "as_on_date = EXCLUDED.as_on_date, folio_date = EXCLUDED.folio_date, "
+        "arn = EXCLUDED.arn, holding_nature = EXCLUDED.holding_nature, "
+        "nominee_name = EXCLUDED.nominee_name, nominee_relation = EXCLUDED.nominee_relation, "
+        "nominee_pct = EXCLUDED.nominee_pct, kyc_status = EXCLUDED.kyc_status, "
+        "bank_name = EXCLUDED.bank_name, bank_ac_last4 = EXCLUDED.bank_ac_last4, "
+        "demat_flag = EXCLUDED.demat_flag, client_id = EXCLUDED.client_id, "
+        "amc_id = EXCLUDED.amc_id, purchase_date = EXCLUDED.purchase_date, "
+        "arn_id = EXCLUDED.arn_id, avg_cost_nav = EXCLUDED.avg_cost_nav, "
+        "invested_amount = EXCLUDED.invested_amount, current_nav = EXCLUDED.current_nav, "
+        "current_value = EXCLUDED.current_value, nav_date = EXCLUDED.nav_date, "
+        "unrealised_gain = EXCLUDED.unrealised_gain, xirr = EXCLUDED.xirr, "
+        "source_file_id = EXCLUDED.source_file_id, last_synced_at = EXCLUDED.last_synced_at, "
+        "subarn = EXCLUDED.subarn"
+        # id, rta, folio_number, scheme_id, created_at, first_purchase_date excluded:
+        # id/rta/folio_number/scheme_id are the identity, created_at and
+        # first_purchase_date must never be overwritten by a later sync.
+    )
+
     try:
-
-        gold_df.to_sql(
-            name="holdings",
-            con=engine,
-            schema="gold",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=5000
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="holdings",
+            conflict_target_sql=conflict_target_sql, update_set_sql=update_set_sql,
         )
-
         print()
-        print(
-            "Inserted rows:",
-            len(gold_df)
-        )
-
-        print(
-            "Holdings loaded successfully"
-        )
-
-        return True
+        print("Upserted rows:", affected)
+        print("Holdings loaded successfully")
+        return load_result("ok", affected)
 
     except Exception as e:
 
@@ -2594,7 +2517,7 @@ def load_holdings(gold_df):
             e
         )
 
-        return False
+        return load_result("error", 0, str(e))
 
 
 # ============================================================
@@ -2667,7 +2590,7 @@ if __name__ == "__main__":
         print()
         print("=" * 80)
 
-        if status:
+        if status["status"] != "error":
 
             print(
                 "GOLD HOLDINGS ETL "

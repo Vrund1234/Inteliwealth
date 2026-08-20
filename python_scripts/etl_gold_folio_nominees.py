@@ -2,6 +2,8 @@ import pandas as pd
 import traceback
 
 from utils.db import engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # =====================================================
@@ -182,7 +184,9 @@ def transform_folio_nominees(df):
             id AS holding_id,
             rta,
             folio_number,
-            pan
+            pan,
+            arn,
+            subarn
         FROM gold.holdings
         """
     )
@@ -290,7 +294,9 @@ def transform_folio_nominees(df):
                 "holding_id",
                 "rta",
                 "folio_number",
-                "pan"
+                "pan",
+                "arn",
+                "subarn"
             ]
         ],
 
@@ -691,7 +697,13 @@ def transform_folio_nominees(df):
                     None,
 
                 "address":
-                    None
+                    None,
+
+                "arn":
+                    row.get("arn"),
+
+                "sub_arn":
+                    row.get("subarn")
 
             })
 
@@ -715,7 +727,9 @@ def transform_folio_nominees(df):
             "guardian_name",
             "id_type",
             "id_no",
-            "address"
+            "address",
+            "arn",
+            "sub_arn"
 
         ]
 
@@ -902,144 +916,27 @@ def load_folio_nominees(gold_df):
             "No new nominee records found."
         )
 
-        return True
-
-    # =================================================
-    # LOAD EXISTING DATA
-    # =================================================
+        return load_result("skipped", 0)
 
     try:
-
-        existing = pd.read_sql(
-
-            """
-            SELECT
-                holding_id,
-                seq
-            FROM gold.folio_nominees
-            """,
-
-            engine
-
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="folio_nominees",
+            conflict_target_sql="(holding_id, seq)",
+            update_set_sql=(
+                "name = EXCLUDED.name, relationship = EXCLUDED.relationship, "
+                "percentage = EXCLUDED.percentage, dob = EXCLUDED.dob, "
+                "is_minor = EXCLUDED.is_minor, guardian_name = EXCLUDED.guardian_name, "
+                "id_type = EXCLUDED.id_type, id_no = EXCLUDED.id_no, "
+                "address = EXCLUDED.address, arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn"
+            ),
         )
+        print(f"{affected} rows upserted into Gold Folio Nominees.")
+        return load_result("ok", affected)
 
     except Exception as e:
-
-        print(
-            "Could not read existing "
-            "folio nominees:",
-            e
-        )
-
-        existing = pd.DataFrame()
-
-    # =================================================
-    # REMOVE ALREADY EXISTING KEYS
-    #
-    # Natural key:
-    #
-    # holding_id + seq
-    # =================================================
-
-    if not existing.empty:
-
-        old_keys = set(
-            create_row_key(
-                existing
-            )
-        )
-
-        new_keys = create_row_key(
-            gold_df
-        )
-
-        gold_df = gold_df.loc[
-            ~new_keys.isin(
-                old_keys
-            )
-        ]
-
-    if gold_df.empty:
-
-        print(
-            "All nominee records already exist."
-        )
-
-        return True
-
-    # =================================================
-    # FINAL DUPLICATE CHECK
-    # =================================================
-
-    duplicate_count = (
-
-        gold_df
-        .duplicated(
-            subset=[
-                "holding_id",
-                "seq"
-            ]
-        )
-        .sum()
-
-    )
-
-    print(
-        "Duplicate holding_id + seq :",
-        duplicate_count
-    )
-
-    if duplicate_count > 0:
-
-        print(
-            "ERROR: Duplicate nominee keys "
-            "found before insert."
-        )
-
-        return False
-
-    # =================================================
-    # INSERT
-    # =================================================
-
-    try:
-
-        gold_df.to_sql(
-
-            name="folio_nominees",
-
-            schema="gold",
-
-            con=engine,
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
-        )
-
-        print(
-            f"{len(gold_df)} rows inserted "
-            "into Gold Folio Nominees."
-        )
-
-        return True
-
-    except Exception:
-
-        print(
-            "FAILED LOADING GOLD FOLIO NOMINEES"
-        )
-
-        traceback.print_exc(
-            limit=5
-        )
-
-        return False
+        print("FAILED LOADING GOLD FOLIO NOMINEES")
+        traceback.print_exc(limit=5)
+        return load_result("error", 0, str(e))
 
 
 # =====================================================
@@ -1165,7 +1062,7 @@ def main():
         gold_df
     )
 
-    if status:
+    if status["status"] != "error":
 
         print("\n")
 

@@ -8,3 +8,7 @@ tzdata
 pyparsing
 rapidfuzz
 pytest
+boto3
+requests
+python-dotenv
+dbfread

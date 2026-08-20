@@ -5,6 +5,7 @@ from mapping import TRANSACTION_MASTER_MAPPING
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from utils.db import engine
+from utils.upsert import upsert_dataframe
 
 # =====================================================
 # CLEAN COLUMN NAMES
@@ -779,17 +780,17 @@ def process_transactions(cams=None, kfin=None):
     # REMOVE EXACT DUPLICATE ROWS
     # =====================================================
 
-  # before = len(df)
+    before = len(df)
 
-   # df = (
-   #     df
-    #    .drop_duplicates(keep="first")
-    #    .reset_index(drop=True)
-   # )
+    df = (
+        df
+        .drop_duplicates(keep="first")
+        .reset_index(drop=True)
+    )
 
-    #print(
-    #    f"Removed {before - len(df)} exact duplicate rows"
-   # )
+    print(
+        f"Removed {before - len(df)} exact duplicate rows"
+    )
 
     # =====================================================
     # FINAL COLUMN ORDER CHECK
@@ -806,19 +807,24 @@ def process_transactions(cams=None, kfin=None):
     print(f"Rows to insert : {len(df)}")
     print("=" * 80)
 
-    df.to_sql(
-        "transaction_master_new",
-        engine,
-        schema="bronze",
-        if_exists="append",
-        index=False,
-        method="multi",
-        chunksize=50000
+    conflict_target_sql = (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(trxnno IS NULL), (COALESCE(trxnno, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "((NULLIF(btrim(amount), '')::numeric) IS NULL), "
+        "(COALESCE(NULLIF(btrim(amount), '')::numeric, 0)), "
+        "((NULLIF(btrim(units), '')::numeric) IS NULL), "
+        "(COALESCE(NULLIF(btrim(units), '')::numeric, 0)))"
     )
+    inserted = upsert_dataframe(
+        engine, df, schema="bronze", table="transaction_master_new",
+        conflict_target_sql=conflict_target_sql, update_set_sql=None,
+    )
+    print(f"Rows inserted (duplicates skipped): {inserted} of {len(df)} attempted")
 
     print("=" * 80)
     print("Transaction Master Loaded Successfully")
-    print(f"Inserted {len(df)} rows")
+    print(f"Inserted {inserted} rows")
     print("=" * 80)
 
     return len(df)

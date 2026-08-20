@@ -2,6 +2,8 @@ import pandas as pd
 import traceback
 
 from utils.db import engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # =====================================================
@@ -398,127 +400,14 @@ def load_amc(gold_df):
             "No new AMC records found."
         )
 
-        return True
+        return load_result("skipped", 0)
 
-
-    # =================================================
-    # CHECK EXISTING GOLD AMC
-    #
-    # Natural key = amc_code
-    # =================================================
-
-    print()
-    print(
-        "Checking existing gold AMC records"
-    )
-
-
-    existing_amc = safe_read(
-        """
-        SELECT
-            amc_code
-        FROM gold.amc
-        """
-    )
-
-
-    print(
-        "Existing AMC records :",
-        len(existing_amc)
-    )
-
-
-    if not existing_amc.empty:
-
-        existing_amc["amc_code"] = (
-            existing_amc["amc_code"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-
-
-        gold_df["amc_code"] = (
-            gold_df["amc_code"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-
-
-        # =================================================
-        # REMOVE AMC CODES ALREADY IN GOLD
-        # =================================================
-
-        gold_df = gold_df[
-            ~gold_df["amc_code"].isin(
-                existing_amc["amc_code"]
-            )
-        ]
-
-
-    print(
-        "Rows after duplicate check :",
-        len(gold_df)
-    )
-
-
-    if gold_df.empty:
-
-        print(
-            "No new AMC records to insert."
-        )
-
-        return True
-
-
-    # =================================================
-    # FINAL GOLD COLUMNS
-    #
-    # flag intentionally NOT included.
-    # =================================================
 
     gold_columns = [
-
-        "amc_code",
-        "name",
-        "short_name",
-        "rta",
-        "logo_url",
-        "status",
-        "arn",
-        "sub_arn",
-        "created_at"
-
+        "amc_code", "name", "short_name", "rta", "logo_url",
+        "status", "arn", "sub_arn", "created_at",
     ]
-
-
-    gold_df = gold_df[
-        gold_columns
-    ]
-
-
-    print()
-    print(
-        "Rows to insert :",
-        len(gold_df)
-    )
-
-    print()
-    print(
-        "Columns being inserted:"
-    )
-
-    print(
-        list(gold_df.columns)
-    )
-
-
-    # =================================================
-    # FINAL FLAG SAFETY CHECK
-    # =================================================
+    gold_df = gold_df[gold_columns]
 
     if "flag" in gold_df.columns:
 
@@ -530,59 +419,23 @@ def load_amc(gold_df):
             columns=["flag"]
         )
 
-
-    # =================================================
-    # INSERT
-    # =================================================
-
     try:
-
-        gold_df.to_sql(
-
-            name="amc",
-
-            con=engine,
-
-            schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="amc",
+            conflict_target_sql="(amc_code)",
+            update_set_sql=(
+                "name = EXCLUDED.name, short_name = EXCLUDED.short_name, "
+                "rta = EXCLUDED.rta, logo_url = EXCLUDED.logo_url, "
+                "status = EXCLUDED.status, arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn"
+            ),
         )
+        print(f"Upserted rows : {affected}")
+        return load_result("ok", affected)
 
-
-        print()
-        print(
-            f"Inserted Rows : {len(gold_df)}"
-        )
-
-        print(
-            "Silver flag = 0 filter : YES"
-        )
-
-        print(
-            "Flag inserted into Gold : NO"
-        )
-
-        return True
-
-
-    except Exception:
-
-        print(
-            "FAILED LOADING GOLD AMC"
-        )
-
-        traceback.print_exc(
-            limit=5
-        )
-
-        return False
+    except Exception as e:
+        print("FAILED LOADING GOLD AMC")
+        traceback.print_exc(limit=5)
+        return load_result("error", 0, str(e))
 
 
 # =====================================================
@@ -622,7 +475,7 @@ if __name__ == "__main__":
         )
 
 
-        if status:
+        if status["status"] != "error":
 
             print("=" * 80)
             print(

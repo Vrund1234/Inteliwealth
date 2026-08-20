@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from utils.db import engine
+from utils.upsert import upsert_dataframe
 from pyparsing import col
 # from sqlalchemy import create_engine
 # from utils.db import engine, master_engine
@@ -668,19 +669,20 @@ def process_investor_master(cams=None, kfin=None):
     print(f"Rows to insert : {len(df)}")
     print("=" * 80)
 
-    df.to_sql(
-        "investor_master",
-        engine,
-        schema="bronze",
-        if_exists="append",
-        index=False,
-        method="multi",
-        chunksize=5000
+    conflict_target_sql = (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "(product_code IS NULL), (COALESCE(product_code, '')))"
     )
+    inserted = upsert_dataframe(
+        engine, df, schema="bronze", table="investor_master",
+        conflict_target_sql=conflict_target_sql, update_set_sql=None,
+    )
+    print(f"Rows inserted (duplicates skipped): {inserted} of {len(df)} attempted")
 
     print("=" * 80)
     print("Investor Master Loaded Successfully")
-    print(f"Inserted {len(df)} rows")
+    print(f"Inserted {inserted} rows")
     print("=" * 80)
 
     return df

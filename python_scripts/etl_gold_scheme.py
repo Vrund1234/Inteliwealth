@@ -5,6 +5,8 @@ from datetime import datetime
 from sqlalchemy import text
 
 from utils.db import engine, master_engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # =====================================================
@@ -1379,7 +1381,7 @@ def load_scheme(gold_df):
             "No scheme records to process."
         )
 
-        return True
+        return load_result("skipped", 0)
 
     # =================================================
     # FINAL DATABASE COLUMN CHECK
@@ -1458,264 +1460,33 @@ def load_scheme(gold_df):
         gold_df["scheme_code"]
     )
 
-    # =================================================
-    # READ EXISTING GOLD SCHEMES
-    # =================================================
+    insert_columns = [c for c in expected_columns if c != "isin"]
 
-    existing_scheme = pd.read_sql(
-
-        """
-        SELECT
-            id,
-            rta,
-            scheme_code,
-            created_at
-        FROM gold.scheme
-        """,
-
-        engine
-    )
-
-    if not existing_scheme.empty:
-
-        existing_scheme["rta"] = clean_text(
-            existing_scheme["rta"]
+    try:
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="scheme",
+            conflict_target_sql="(rta, scheme_code)",
+            update_set_sql=(
+                "scheme_name = EXCLUDED.scheme_name, category = EXCLUDED.category, "
+                "plan = EXCLUDED.plan, amfi_code = EXCLUDED.amfi_code, "
+                "category_id = EXCLUDED.category_id, plan_type = EXCLUDED.plan_type, "
+                "option_type = EXCLUDED.option_type, rta_scheme_code = EXCLUDED.rta_scheme_code, "
+                "benchmark_id = EXCLUDED.benchmark_id, expense_ratio = EXCLUDED.expense_ratio, "
+                "exit_load_json = EXCLUDED.exit_load_json, lock_in_months = EXCLUDED.lock_in_months, "
+                "riskometer = EXCLUDED.riskometer, status = EXCLUDED.status, "
+                "arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn, amc_id = EXCLUDED.amc_id"
+                # ISIN intentionally excluded — never written or updated by this loader.
+            ),
+            insert_columns=insert_columns,
         )
-
-        existing_scheme["scheme_code"] = clean_text(
-            existing_scheme["scheme_code"]
-        )
-
-    print(
-        "\nExisting schemes :",
-        len(existing_scheme)
-    )
-
-    # =================================================
-    # EXISTING KEYS
-    # =================================================
-
-    existing_keys = set(
-        zip(
-            existing_scheme["rta"],
-            existing_scheme["scheme_code"]
-        )
-    )
-
-    # =================================================
-    # UPDATE COLUMNS
-    #
-    # ISIN IS INTENTIONALLY NOT UPDATED.
-    # =================================================
-
-    update_columns = [
-
-        "scheme_name",
-        "category",
-        "plan",
-
-        # ISIN REMOVED FROM UPDATE
-        # "isin",
-
-        "amfi_code",
-        "category_id",
-        "plan_type",
-        "option_type",
-        "rta_scheme_code",
-        "benchmark_id",
-        "expense_ratio",
-        "exit_load_json",
-        "lock_in_months",
-        "riskometer",
-        "status",
-        "arn",
-        "sub_arn",
-        "amc_id"
-
-    ]
-
-    # =================================================
-    # UPDATE EXISTING
-    # =================================================
-
-    existing_updates = 0
-
-    print(
-        "\nUpdating existing schemes..."
-    )
-
-    print("-" * 80)
-
-    with engine.begin() as connection:
-
-        for _, row in gold_df.iterrows():
-
-            key = (
-                row["rta"],
-                row["scheme_code"]
-            )
-
-            if key not in existing_keys:
-                continue
-
-            set_parts = []
-
-            params = {
-                "id": row["id"]
-            }
-
-            for column in update_columns:
-
-                set_parts.append(
-                    f'"{column}" = :{column}'
-                )
-
-                value = row[column]
-
-                if pd.isna(value):
-                    value = None
-
-                params[column] = value
-
-            sql = text(
-                f"""
-                UPDATE gold.scheme
-                SET
-                    {", ".join(set_parts)}
-                WHERE
-                    id = :id
-                """
-            )
-
-            result = connection.execute(
-                sql,
-                params
-            )
-
-            if result.rowcount > 0:
-                existing_updates += 1
-
-    print(
-        "Existing schemes updated :",
-        existing_updates
-    )
-
-    # =================================================
-    # FIND NEW SCHEMES
-    # =================================================
-
-    new_mask = ~gold_df.apply(
-        lambda row:
-        (
-            row["rta"],
-            row["scheme_code"]
-        ) in existing_keys,
-        axis=1
-    )
-
-    new_gold_df = gold_df[
-        new_mask
-    ].copy()
-
-    print(
-        "\nNew schemes to insert :",
-        len(new_gold_df)
-    )
-
-    # =================================================
-    # INSERT NEW SCHEMES
-    # =================================================
-
-    if not new_gold_df.empty:
-
-        new_gold_df = new_gold_df[
-            expected_columns
-        ].copy()
-
-        # =================================================
-        # FORCE ISIN NULL BEFORE INSERT
-        # =================================================
-
-        new_gold_df["isin"] = None
-
-        bad_columns = [
-            c
-            for c in new_gold_df.columns
-            if c.endswith("_x")
-            or c.endswith("_y")
-        ]
-
-        if bad_columns:
-
-            raise Exception(
-                f"Cannot insert. Unexpected x/y columns: "
-                f"{bad_columns}"
-            )
-
-        print("\nColumns being inserted:")
-        print(list(new_gold_df.columns))
-
-        try:
-
-            new_gold_df.to_sql(
-
-                name="scheme",
-
-                schema="gold",
-
-                con=engine,
-
-                if_exists="append",
-
-                index=False,
-
-                chunksize=1000
-
-            )
-
-            print(
-                "New schemes inserted :",
-                len(new_gold_df)
-            )
-
-        except Exception as e:
-
-            print(
-                "\nERROR WHILE INSERTING NEW SCHEMES"
-            )
-
-            print(
-                type(e).__name__
-            )
-
-            print(e)
-
-            return False
-
-    else:
-
-        print(
-            "No new schemes to insert"
-        )
-
-    # =================================================
-    # FINAL RESULT
-    # =================================================
-
-    print("\nLoad Completed")
-    print("-" * 80)
-
-    print(
-        "Existing Updated :",
-        existing_updates
-    )
-
-    print(
-        "New Inserted     :",
-        len(new_gold_df)
-    )
-
-    return True
+        print(f"Scheme rows upserted : {affected}")
+        return load_result("ok", affected)
+
+    except Exception as e:
+        print("\nERROR WHILE UPSERTING SCHEMES")
+        print(type(e).__name__)
+        print(e)
+        return load_result("error", 0, str(e))
 
 
 # =====================================================
@@ -1755,7 +1526,7 @@ def main():
             gold_scheme
         )
 
-        if status:
+        if status["status"] != "error":
 
             print("\n")
 
