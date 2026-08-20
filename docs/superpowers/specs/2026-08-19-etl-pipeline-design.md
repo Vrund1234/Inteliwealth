@@ -236,9 +236,9 @@ ETL_HOLD_TIMEOUT_MINUTES=240 # example only, tune with ops
 - Gold-loader hardening: existing `python_scripts/tests/` gets new cases asserting re-running `load_*()` twice on identical input produces no duplicate rows (the concrete proof of "no duplication").
 - `pipeline_lock.py`: revive/extend `tests/test_pipeline_lock.py` (currently orphaned — source deleted, test still references it).
 
-## 12. Open assumptions to confirm before implementation
+## 12. Assumptions — confirmed 2026-08-20
 
-1. KFIN trio (`MFSD201/211/243`) held together like CAMS, per §5.1 — confirm or drop.
-2. New `pipeline` schema for the three new tables — confirm, or fold into `bronze` to match the one existing audit-table precedent (`bronze.scheme_mapping_audit`).
-3. `ETL_HOLD_TIMEOUT_MINUTES` default (240 min suggested) — confirm or set your own.
-4. Exact natural-key unique constraints for §7.2 per gold table — will be enumerated concretely in the implementation plan after inspecting each `etl_gold_*.py` insert.
+1. **Confirmed.** KFIN trio (`MFSD201/211/243`) held together like CAMS, per §5.1.
+2. **Confirmed.** New dedicated schema (`pipeline`) holds all three new tracking tables (§4) — not folded into `bronze`.
+3. **Confirmed.** `ETL_HOLD_TIMEOUT_MINUTES` default stays 240 min (4 hours), tunable via env, not hardcoded.
+4. Exact natural-key unique constraints for §7.2 per gold table — to be enumerated concretely in the implementation plan after inspecting each `etl_gold_*.py` insert.
