@@ -121,6 +121,61 @@ def load_state_dimension():
 
 
 # =====================================================
+# LOAD OCCUPATION DIMENSION
+#
+# bronze.occupation_code columns:
+#
+# occupation_id
+# occupation_name
+# created_at
+# updated_at
+#
+# Mapping:
+#
+# investor_master.occupation
+#          ↓
+# bronze.occupation_code.occupation_name
+#          ↓
+# bronze.occupation_code.occupation_id
+#          ↓
+# investor_master.occupation_code
+# =====================================================
+
+def load_occupation_dimension():
+
+    occupation_dim = safe_read(
+        """
+        SELECT
+            occupation_id,
+            occupation_name
+        FROM bronze.occupation_code
+        """
+    )
+
+    if occupation_dim.empty:
+
+        print(
+            "occupation_code : No data found."
+        )
+
+        return occupation_dim
+
+    occupation_dim["occupation_id"] = pd.to_numeric(
+        occupation_dim["occupation_id"],
+        errors="coerce"
+    )
+
+    occupation_dim["occupation_name"] = (
+        occupation_dim["occupation_name"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    return occupation_dim
+
+
+# =====================================================
 # LOAD SCHEME MAPPING
 #
 # IMPORTANT:
@@ -352,7 +407,7 @@ def normalize_for_compare(df):
     # otherwise identical row appear as a new row.
 
     ignore_cols = {
-        "created_at",
+        #"created_at",
         "updated_at",
         "flag",
         "source",
@@ -375,7 +430,7 @@ def normalize_for_compare(df):
                     df[col],
                     errors="coerce"
                 )
-                .dt.strftime("%Y-%m-%d")
+                .dt.strftime("%Y-%m-%d %H:%M:%S")
             )
 
         else:
@@ -483,7 +538,9 @@ def append_new_rows(
 
         return
 
-    # Only Bronze flag = 0 is processed.
+    # -------------------------------------------------
+    # ONLY BRONZE FLAG = 0
+    # -------------------------------------------------
 
     df = df[
         df["flag"] == 0
@@ -504,7 +561,7 @@ def append_new_rows(
         return
 
     # =================================================
-    # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
+    # REMOVE DUPLICATES INSIDE CURRENT BRONZE BATCH
     # =================================================
 
     batch_ignore_cols = {
@@ -584,30 +641,26 @@ def append_new_rows(
 
     if existing.empty:
 
-        df["flag"] = 0
-
         print()
         print(
             "Silver table is empty."
         )
 
         print(
-            "All incoming rows are unique."
+            "All incoming rows are new."
         )
 
         print(
             "All rows assigned flag = 0."
         )
 
+        df["flag"] = 0
+
     # =================================================
     # SILVER HAS DATA
     # =================================================
 
     else:
-
-        # -------------------------------------------------
-        # COLUMNS TO IGNORE DURING DUPLICATE COMPARISON
-        # -------------------------------------------------
 
         ignore_cols = {
             "flag",
@@ -616,10 +669,6 @@ def append_new_rows(
             "source",
             "scheme_id"
         }
-
-        # -------------------------------------------------
-        # COMMON BUSINESS COLUMNS
-        # -------------------------------------------------
 
         compare_cols = [
             col
@@ -645,32 +694,25 @@ def append_new_rows(
 
         print(compare_cols)
 
-        print()
-        print(
-            "Ignored columns:"
-        )
-
-        print(ignore_cols)
-
-        # -------------------------------------------------
-        # NORMALIZE NEW DATA
-        # -------------------------------------------------
+        # =================================================
+        # NORMALIZE INCOMING BRONZE DATA
+        # =================================================
 
         new_compare = normalize_for_compare(
             df[compare_cols]
         )
 
-        # -------------------------------------------------
-        # NORMALIZE EXISTING SILVER
-        # -------------------------------------------------
+        # =================================================
+        # NORMALIZE EXISTING SILVER DATA
+        # =================================================
 
         old_compare = normalize_for_compare(
             existing[compare_cols]
         )
 
-        # -------------------------------------------------
-        # CREATE NEW ROW KEYS
-        # -------------------------------------------------
+        # =================================================
+        # CREATE ROW KEYS
+        # =================================================
 
         new_keys = (
             new_compare
@@ -679,10 +721,6 @@ def append_new_rows(
             .agg("|".join, axis=1)
         )
 
-        # -------------------------------------------------
-        # CREATE EXISTING SILVER KEYS
-        # -------------------------------------------------
-
         old_keys = set(
             old_compare
             .fillna("")
@@ -690,33 +728,103 @@ def append_new_rows(
             .agg("|".join, axis=1)
         )
 
-        # -------------------------------------------------
+        # =================================================
         # DUPLICATE CHECK
-        # -------------------------------------------------
+        # =================================================
 
         duplicate_mask = new_keys.isin(
             old_keys
         )
 
-        # -------------------------------------------------
-        # FLAG ASSIGNMENT
-        # -------------------------------------------------
+        duplicate_count = int(
+            duplicate_mask.sum()
+        )
 
-        df["flag"] = (
-            duplicate_mask
-            .astype(int)
+        new_count = int(
+            (~duplicate_mask).sum()
         )
 
         print()
         print(
-            "Existing rows → flag = 1 :",
-            int(duplicate_mask.sum())
+            "Duplicate rows found :",
+            duplicate_count
         )
 
         print(
-            "Unique rows → flag = 0 :",
-            int((~duplicate_mask).sum())
+            "New rows found :",
+            new_count
         )
+
+        # =================================================
+        # IMPORTANT
+        #
+        # Duplicate rows are NOT inserted into Silver.
+        #
+        # Only genuinely new rows continue.
+        # =================================================
+
+        duplicate_rows = df.loc[
+            duplicate_mask
+        ].copy()
+
+        new_rows = df.loc[
+            ~duplicate_mask
+        ].copy()
+
+        # -------------------------------------------------
+        # DUPLICATES
+        # -------------------------------------------------
+
+        if not duplicate_rows.empty:
+
+            duplicate_rows["flag"] = 1
+
+            print()
+            print(
+                "Duplicate rows marked flag = 1 :",
+                len(duplicate_rows)
+            )
+
+        # -------------------------------------------------
+        # NEW ROWS
+        # -------------------------------------------------
+
+        if not new_rows.empty:
+
+            new_rows["flag"] = 0
+
+            print(
+                "New rows marked flag = 0 :",
+                len(new_rows)
+            )
+
+        # -------------------------------------------------
+        # IMPORTANT:
+        #
+        # Only NEW rows are inserted into Silver.
+        #
+        # Duplicate rows are skipped.
+        # -------------------------------------------------
+
+        df = new_rows
+
+    # =================================================
+    # NOTHING NEW TO INSERT
+    # =================================================
+
+    if df.empty:
+
+        print()
+        print(
+            f"{table_name} : "
+            "All incoming rows already exist in Silver."
+        )
+
+        print(
+            "No duplicate rows inserted into Silver."
+        )
+
+        return
 
     # =================================================
     # SILVER AUDIT TIMESTAMP
@@ -786,12 +894,6 @@ def append_new_rows(
         print("=" * 80)
 
         print(
-            df["flag"]
-            .value_counts()
-            .sort_index()
-        )
-
-        print(
             "flag = 0 :",
             int(
                 (df["flag"] == 0).sum()
@@ -806,13 +908,13 @@ def append_new_rows(
         )
 
     # =================================================
-    # INSERT INTO SILVER
+    # INSERT ONLY NEW ROWS
     # =================================================
 
     print()
     print("=" * 80)
     print(
-        f"INSERTING {len(df)} ROWS "
+        f"INSERTING {len(df)} NEW ROWS "
         f"INTO SILVER.{table_name}"
     )
     print("=" * 80)
@@ -967,6 +1069,86 @@ def transform_investor_master(df):
                 df["state"] = mapped_state
 
     # =================================================
+    # OCCUPATION MAPPING
+    #
+    # occupation
+    # → bronze.occupation_code.occupation_name
+    # → bronze.occupation_code.occupation_id
+    # → occupation_code
+    #
+    # The original occupation text is preserved.
+    # =================================================
+
+    occupation_dim = load_occupation_dimension()
+
+    if not occupation_dim.empty:
+
+        occupation_lookup = dict(
+            zip(
+                occupation_dim["occupation_name"],
+                occupation_dim["occupation_id"]
+            )
+        )
+
+        if "occupation" in df.columns:
+
+            df["occupation"] = (
+                df["occupation"]
+                .astype("string")
+                .str.strip()
+            )
+
+            mapped_occupation_code = (
+                df["occupation"]
+                .str.upper()
+                .map(occupation_lookup)
+            )
+
+            if "occupation_code" in df.columns:
+
+                df["occupation_code"] = (
+                    pd.to_numeric(
+                        df["occupation_code"],
+                        errors="coerce"
+                    )
+                    .fillna(
+                        mapped_occupation_code
+                    )
+                )
+
+            else:
+
+                df["occupation_code"] = (
+                    mapped_occupation_code
+                )
+
+            matched_count = int(
+                mapped_occupation_code
+                .notna()
+                .sum()
+            )
+
+            unmatched_count = int(
+                mapped_occupation_code
+                .isna()
+                .sum()
+            )
+
+            print(
+                "Occupation mapping:"
+            )
+
+            print(
+                "Matched occupation_code :",
+                matched_count
+            )
+
+            print(
+                "Unmatched occupation_code :",
+                unmatched_count
+            )
+
+    # =================================================
     # ACCOUNT TYPE
     # =================================================
 
@@ -1104,6 +1286,28 @@ def transform_investor_master(df):
 
     # =================================================
     # DATE COLUMNS
+    #
+    # FIX:
+    #
+    # Previously these were converted with
+    # pd.to_datetime() only, which kept a full
+    # timestamp (e.g. 1990-05-12 00:00:01).
+    #
+    # transform_transaction() truncates its date
+    # columns with .dt.date, but this function did
+    # not — so identical investors loaded in
+    # different Bronze batches produced DIFFERENT
+    # row keys in normalize_for_compare() whenever
+    # the time portion differed even slightly.
+    #
+    # That made append_new_rows() treat the same
+    # investor as "new" every run, causing repeated
+    # inserts into silver.investor_master.
+    #
+    # Truncating to .dt.date:
+    #   - Standardizes output to yyyy-mm-dd
+    #   - Removes the time-of-day noise that broke
+    #     duplicate detection for this table only
     # =================================================
 
     for col in [
@@ -1114,9 +1318,12 @@ def transform_investor_master(df):
 
         if col in df.columns:
 
-            df[col] = pd.to_datetime(
-                df[col],
-                errors="coerce"
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    errors="coerce"
+                )
+                .dt.date
             )
 
     # =================================================
@@ -1803,43 +2010,6 @@ def load_silver():
         investor_df = transform_investor_master(
             investor_df
         )
-
-        # -------------------------------------------------
-        # OCCUPATION MAPPING
-        # -------------------------------------------------
-
-        occupation_mapping = {
-            "SERVICE": 1,
-            "BUSINESS": 2,
-            "PROFESSIONAL": 3,
-            "AGRICULTURE": 4,
-            "STUDENT": 5,
-            "RETIRED": 6,
-            "HOUSEWIFE": 7,
-            "OTHERS": 8,
-            "PRIVATE SECTOR": 9,
-            "PUBLIC SECTOR": 10,
-            "SELF EMPLOYED": 11,
-            "NOT APPLICABLE": 41
-        }
-
-        if "occupation" in investor_df.columns:
-
-            investor_df["occupation"] = (
-                investor_df["occupation"]
-                .astype("string")
-                .str.upper()
-                .str.strip()
-                .replace(occupation_mapping)
-            )
-
-            investor_df["occupation"] = (
-                pd.to_numeric(
-                    investor_df["occupation"],
-                    errors="coerce"
-                )
-                .astype("Int64")
-            )
 
         investor_df = round_decimal_columns(
             investor_df

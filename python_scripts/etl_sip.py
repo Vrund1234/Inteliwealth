@@ -202,8 +202,8 @@ def clean_value(value):
 
 # =====================================================
 # FORMAT DATE COLUMNS
-# CAMS  -> MM/DD/YYYY HH:MM AM/PM
-# KFIN  -> DD/MM/YYYY
+# COMMON FORMAT FOR CAMS + KFIN
+# OUTPUT: YYYY-MM-DD
 # =====================================================
 
 def format_dates(df, source=None):
@@ -213,32 +213,22 @@ def format_dates(df, source=None):
 
     df = df.copy()
 
-    source = str(source).upper()
-
     for col in DATE_COLUMNS:
 
         if col not in df.columns:
             continue
 
-        if source == "CAMS":
+        df[col] = pd.to_datetime(
+            df[col],
+            errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
 
-            # CAMS : MM/DD/YYYY HH:MM AM/PM
-            df[col] = pd.to_datetime(
-                df[col],
-                format="%m/%d/%Y %I:%M %p",
-                errors="coerce"
-            ).dt.date
-
-        else:
-
-            # KFIN : DD/MM/YYYY
-            df[col] = pd.to_datetime(
-                df[col],
-                format="%d/%m/%Y",
-                errors="coerce"
-            ).dt.date
-
-        df[col] = df[col].where(pd.notnull(df[col]), None)
+        df[col] = df[col].replace({
+            "NaT": None,
+            "nan": None,
+            "NaN": None,
+            "": None
+        })
 
     return df
 
@@ -300,7 +290,7 @@ def apply_sip_mapping(raw_df, mapping, source):
         # =====================================================
 
         if target_col == "scheme_code":
-            source_cols = ["Scheme"] if source == "KFIN" else ["SCHEME_CODE"]
+            source_cols = ["Scheme"] if source == "KFIN" else ["SCHEME_CODE", "SCHEME_COD"]
 
         elif target_col == "scheme_name":
             source_cols = ["Scheme Name"] if source == "KFIN" else ["SCHEME"]

@@ -30,7 +30,7 @@ INVESTOR_MASTER_MAPPING = {
  
     # ================= TAX / PAN =================
     "tax_status": ["tax_status", "status"],
-    "holding_nature": ["holding_nature"],
+    "holding_nature": ["holding_nature", "holding_na"],
     "pan_no": ["pan_no", "pan", "pan_number"],
     "joint1_pan": ["joint1_pan"],
     "joint2_pan": ["joint2_pan"],
@@ -59,15 +59,15 @@ INVESTOR_MASTER_MAPPING = {
     "nominee1_address3": ["nominee1_address3", "nom_addr3", "nominee_address3"],
     "nominee1_city": ["nominee1_city", "nom_city", "nominee_city"],
     "nominee1_state": ["nominee1_state", "nom_state", "nominee_state"],
-    "nominee1_pincode": ["nominee1_pincode", "nom_pincode", "nominee_pin_code"],
+    "nominee1_pincode": ["nominee1_pincode", "nom_pincode", "nominee_pin_code", "nom_pincod"],
     "nominee1_phone": ["nominee1_phone", "nom_ph_off", "nom_ph_res", "nominee_phone_residence"],
     "nominee1_email": ["nominee1_email", "nom_email", "nominee_email"],
-    "nominee1_percentage": ["nominee1_percentage", "nom_percentage", "nominee_ratio"],
+    "nominee1_percentage": ["nominee1_percentage", "nom_percentage", "nominee_ratio", "nom_percen"],
 
     # ================= NOMINEE 2 =================
     "nominee2_name": ["nominee2_name", "nom2_name", "nominee2"],
 
-    "nominee2_relation": ["nominee2_relation", "nom2_relation"],
+    "nominee2_relation": ["nominee2_relation", "nom2_relation", "nom2_relat"],
     "nominee2_address1": ["nominee2_address1", "nom2_addr1"],
     "nominee2_address2": ["nominee2_address2", "nom2_addr2"],
     "nominee2_address3": ["nominee2_address3", "nom2_addr3"],
@@ -76,125 +76,38 @@ INVESTOR_MASTER_MAPPING = {
 
     "nominee2_state": ["nominee2_state", "nom2_state"],
 
-    "nominee2_pincode": [
-        "nominee2_pincode",
-        "nom2_pincode",
-        "nominee2_pin_code"
-    ],
+    "nominee2_pincode": ["nominee2_pincode", "nom2_pincode", "nominee2_pin_code", "nom2_pinco"],
 
-    "nominee2_phone": [
-        "nominee2_phone",
-        "nom2_ph_off",
-        "nom2_ph_res",
-        "nominee2_phone_residence"
-    ],
+    "nominee2_phone": ["nominee2_phone", "nom2_ph_off", "nom2_ph_res", "nominee2_phone_residence", "nom2_ph_re"],
 
-    "nominee2_email": [
-        "nominee2_email",
-        "nom2_email"
-    ],
+    "nominee2_email": ["nominee2_email", "nom2_email"],
 
-    "nominee2_percentage": [
-        "nominee2_percentage",
-        "nom2_percentage",
-        "nominee2_ratio"
-    ],
+    "nominee2_percentage": ["nominee2_percentage", "nom2_percentage", "nominee2_ratio", "nom2_perce"],
 
     # ================= NOMINEE 3 =================
     "nominee3_name": ["nominee3_name", "nom3_name", "nominee3"],
 
-    "nominee3_relation": [
-        "nominee3_relation",
-        "nom3_relation"
-    ],
+    "nominee3_relation": ["nominee3_relation", "nom3_relation", "nom3_relat"],
 
-    "nominee3_address1": [
-        "nominee3_address1",
-        "nom3_addr1"
-    ],
-
-    "nominee3_address2": [
-        "nominee3_address2",
-        "nom3_addr2"
-    ],
-
-    "nominee3_address3": [
-        "nominee3_address3",
-        "nom3_addr3"
-    ],
-
-    "nominee3_city": [
-        "nominee3_city",
-        "nom3_city"
-    ],
-
-    "nominee3_state": [
-        "nominee3_state",
-        "nom3_state"
-    ],
-
-    "nominee3_pincode": [
-        "nominee3_pincode",
-        "nom3_pincode"
-    ],
-
-    "nominee3_phone": [
-        "nominee3_phone",
-        "nom3_ph_off",
-        "nom3_ph_res",
-        "nominee3_phone_residence"
-    ],
-
-    "nominee3_email": [
-        "nominee3_email",
-        "nom3_email"
-    ],
-
-    "nominee3_percentage": [
-        "nominee3_percentage",
-        "nom3_percentage",
-        "nominee3_ratio"
-    ],
+    "nominee3_address1": ["nominee3_address1", "nom3_addr1"],
+    "nominee3_address2": ["nominee3_address2", "nom3_addr2"],
+    "nominee3_address3": ["nominee3_address3", "nom3_addr3"],
+    "nominee3_city": ["nominee3_city", "nom3_city"],
+    "nominee3_state": ["nominee3_state", "nom3_state"],
+    "nominee3_pincode": ["nominee3_pincode", "nom3_pincode", "nom3_pinco"],
+    "nominee3_phone": ["nominee3_phone", "nom3_ph_off", "nom3_ph_res", "nominee3_phone_residence", "nom3_ph_re"],
+    "nominee3_email": ["nominee3_email", "nom3_email"],
+    "nominee3_percentage": ["nominee3_percentage", "nom3_percentage", "nominee3_ratio", "nom3_perce"],
 
         # ================= KYC / BROKER =================
-    "broker_code": [
-        "broker_code",
-        "brokcode",
-        "td_agent",
-        "td_broker"
-    ],
-
+    "broker_code": ["broker_code", "brokcode", "td_agent", "td_broker", "broker_cod"],
     "dp_id": ["dp_id", "dpid"],
-
-    "demat_flag": [
-        "demat_flag",
-        "demat",
-        "demat_folio_flag"
-    ],
-
-    "ckyc_no": [
-        "ckyc_no",
-        "fh_ckyc_no",
-        "fh_ckyc",
-        "fh_ckyc_n"
-    ],
-
+    "demat_flag": ["demat_flag", "demat", "demat_folio_flag"],
+    "ckyc_no": ["ckyc_no", "fh_ckyc_no", "fh_ckyc", "fh_ckyc_n"],
     "jh1_ckyc": ["jh1_ckyc", "jh1_ckyc_no", "jh1_ckyc_n"],
     "jh2_ckyc": ["jh2_ckyc", "jh2_ckyc_no", "jh2_ckyc_n"],
-
-    "guardian_ckyc_no": [
-        "guardian_ckyc_no",
-        "g_ckyc_no",
-        "g_ckyc_n"
-    ],
-
-    "guardian_name": [
-        "guardian_name",
-        "guardian",
-        "guardianname",
-        "guard_name",
-        "GUARD_NAME"
-    ],
+    "guardian_ckyc_no": ["guardian_ckyc_no", "g_ckyc_no", "g_ckyc_n"],
+    "guardian_name": ["guardian_name", "guardian", "guardianname", "guard_name", "GUARD_NAME"],
 
     # ================= SYSTEM =================
     "report_date": ["report_date", "rep_date"],
@@ -204,29 +117,16 @@ INVESTOR_MASTER_MAPPING = {
         "occ_code"
     ],
 
-    "occupation_description": [
-        "occupation_description",
-        "Occupation Description"
-    ],
+    "occupation_description": ["occupation_description", "Occupation Description"],
 
     # ================= PRODUCT / SCHEME =================
     "occupation": ["occupation", "occpn", "occ_code"],
 
     # ================= ADDITIONAL SOURCE COLUMNS =================
     #"product": ["product", "prod"],
-    "product_code": [
-        "product",
-        "product_code"
-    ],
-    "scheme_name": [
-    "scheme_name",
-    "SCH_NAME",
-    "SCHEME",
-    "Scheme Name",
-    "fund_description",
-    "Fund Description",
-    "funddesc"
-    ],
+    "product_code": ["product", "product_code"],
+    "scheme_name": ["scheme_name", "SCH_NAME", "SCHEME", "Scheme Name",
+    "fund_description", "Fund Description", "funddesc"],
 
     "rep_date": ["rep_date"],
 
@@ -245,47 +145,23 @@ INVESTOR_MASTER_MAPPING = {
     "b_pincode": ["b_pincode", "bpin"],
 
     "nom_ph_off": ["nom_ph_off"],
-    "nom2_ph_off": ["nom2_ph_off"],
-    "nom3_ph_off": ["nom3_ph_off"],
+    "nom2_ph_off": ["nom2_ph_off", "nom2_ph_of"],
+    "nom3_ph_off": ["nom3_ph_off", "nom3_ph_of"],
 
     "tpa_linked": ["tpa_linked", "tpa_link"],
 
-    "g_ckyc_no": [
-        "g_ckyc_no",   # CAMS: G_CKYC_NO / G_CKYC_N
-        "g_ckyc_n",
-        "guardian_ckyc_no"  # KFIN: Guardian CKYC NO
-    ],
+    "g_ckyc_no": ["g_ckyc_no", "g_ckyc_n", "guardian_ckyc_no"],
 
     "jh1_dob": ["jh1_dob"],
     "jh2_dob": ["jh2_dob"],
-    "guardian_dob": ["guardian_dob"],
+    "guardian_dob": ["guardian_dob", "guardian_d"],
 
     "amc_code": ["amc_code", "Fund"],
-
-    "gst_state_code": [
-        "gst_state_code",
-        "gst_state_"
-    ],
-
-    "folio_old": [
-        "folio_old",
-        "old_folio"
-    ],
-
-    "scheme_folio_number": [
-        "scheme_folio_number",
-        "scheme_fol"
-    ],
-
-    "fund": [
-        "fund",
-        "td_fund"
-    ],
-
-    "fund_description": [
-        "fund_description",
-        "scheme_name"
-    ],
+    "gst_state_code": ["gst_state_code", "gst_state_"],
+    "folio_old": ["folio_old", "old_folio"],
+    "scheme_folio_number": ["scheme_folio_number", "scheme_fol"],
+    "fund": ["fund", "td_fund"],
+    "fund_description": ["fund_description", "scheme_name"],
         # ================= HOLDER DETAILS =================
     "tpin": ["tpin"],
     "f_name": ["f_name"],
@@ -307,10 +183,7 @@ INVESTOR_MASTER_MAPPING = {
     "investor_id": ["investor_id", "invid"],
     "client_id": ["client_id"],
     "dividend_option": ["dividend_option", "divopt"],
-    "mode_of_holding_description": [
-        "holding_nature",
-        "mode_of_holding_description"
-    ],
+    "mode_of_holding_description": ["holding_nature", "mode_of_holding_description"],
     "mapin_id": ["mapin_id"],
     "pan2": ["pan2"],
     "pan3": ["pan3"],
@@ -339,25 +212,11 @@ INVESTOR_MASTER_MAPPING = {
     "joint_holder_1st_resi_phone_no": [
         "joint_holder_1st_resi_phone_no"
     ],
-    "joint_holder_2nd_resi_phone_no": [
-        "joint_holder_2nd_resi_phone_no"
-    ],
-    "joint_holder_1_contact_number": [
-        "joint_holder_1_contact_number",
-        "jh1_mobile_no"
-    ],
-    "joint_holder_2_contact_number": [
-        "joint_holder_2_contact_number",
-        "jh2_mobile_no"
-    ],
-    "joint_holder_1_email_id": [
-        "joint_holder_1_email_id",
-        "jh1_email"
-    ],
-    "joint_holder_2_email_id": [
-        "joint_holder_2_email_id",
-        "jh2_email"
-    ],
+    "joint_holder_2nd_resi_phone_no": ["joint_holder_2nd_resi_phone_no"],
+    "joint_holder_1_contact_number": ["joint_holder_1_contact_number", "jh1_mobile_no", "jh1_mobile"],
+    "joint_holder_2_contact_number": ["joint_holder_2_contact_number", "jh2_mobile_no", "jh2_mobile"],
+    "joint_holder_1_email_id": ["joint_holder_1_email_id", "jh1_email"],
+    "joint_holder_2_email_id": ["joint_holder_2_email_id", "jh2_email"],
 
     # ================= ADDITIONAL DETAILS =================
     "investors_resi_faxno": [
@@ -406,14 +265,14 @@ TRANSACTION_MASTER_MAPPING = {
     "trxnstat": ["trxnstat", "trnstat"],                # Transaction Status
     "trxntype": ["trxntype", "td_trtype"],              # Transaction Type
     "trxnsubtyp": ["trxnsubtype", "subtrtype", "trxnsubtyp", "trnsub"],         # SubTranType
-    "trxn_nature": ["trxn_nature", "trdesc"],           # Transaction Description
+    "trxn_nature": ["trxn_nature", "trdesc", "trxn_natur"],           # Transaction Description
     "trflag": ["trflag"],
 
     # ================= DATES =================
     "traddate": ["traddate", "navdate", "td_trdt"],                # Nav Date
     "postdate": ["postdate", "td_prdt"],                # Process Date
     "rep_date": ["rep_date", "crdate"],                 # Report Date
-    "sys_regn_date": ["sys_regn_date", "sipregdt"],
+    "sys_regn_date": ["sys_regn_date", "sipregdt", "sys_regn_d"],
 
     # ================= AMOUNT =================
     "units": ["units", "td_units"],
@@ -422,7 +281,7 @@ TRANSACTION_MASTER_MAPPING = {
     "load": ["load", "load1"],
     "stt": ["stt"],
     "stamp_duty": ["stamp_duty"],
-    "trxn_charges": ["trxn_charge", "trcharges", "trxn_charges"],
+    "trxn_charges": ["trxn_charge", "trcharges", "trxn_charges", "trxn_charg"],
     "total_tax": ["total_tds", "tdsamount", "total_tax"],
 
     # ================= DISTRIBUTOR =================
@@ -447,12 +306,12 @@ TRANSACTION_MASTER_MAPPING = {
     "targ_src_scheme": ["targ_src_s", "prcode1", "targ_src_scheme"],
 
     # ================= OTHER =================
-    "scheme_type": ["scheme_type", "assettype"],
+    "scheme_type": ["scheme_type", "assettype", "scheme_typ"],
     "ter_location": ["ter_location", "citycateg5"],
     "euin": ["euin"],
     "euin_valid": ["euin_valid", "evalid"],
     "euin_opted": ["euin_opted", "edeclflag"],
-    "sub_brk_arn": ["sub_brk_arn", "subarncode"],
+    "sub_brk_arn": ["sub_brk_arn", "subarncode", "sub_brk_ar"],
     "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag", "electrxnflag"],
     "remarks": ["remarks"],
     "altfolio": ["altfolio"],
@@ -470,7 +329,7 @@ TRANSACTION_MASTER_MAPPING = {
     "td_purred": ["td_purred"],
     "folio_old": ["folio_old"],
     "old_folio": ["old_folio"],
-    "scheme_folio_number": ["scheme_folio_number"],
+    "scheme_folio_number": ["scheme_folio_number", "scheme_fol"],
     "time1": ["time1"],
     "crdate": ["crdate"],
     "crtime": ["crtime"],
@@ -479,7 +338,7 @@ TRANSACTION_MASTER_MAPPING = {
     "purunits": ["purunits"],
     "brokperc": ["brokperc"],
     "brokcomm": ["brokcomm"],
-    "application_no": ["application_no", "td_appno"],
+    "application_no": ["application_no", "td_appno", "applicatio"],
     "tax": ["tax"],
     "te_15h": ["te_15h"],
     "bank_name": ["bank_name"],
@@ -489,28 +348,28 @@ TRANSACTION_MASTER_MAPPING = {
     "invid": ["invid"],
     "guardpanno": ["guardpanno"],
     "scanrefno": ["scanrefno"],
-    "trxn_type_flag": ["trxn_type_flag"],
-    "ticob_trtype": ["ticob_trtype"],
+    "trxn_type_flag": ["trxn_type_flag", "trxn_type_"],
+    "ticob_trtype": ["ticob_trtype", "ticob_trty"],
     "ticob_trno": ["ticob_trno"],
-    "ticob_posted_date": ["ticob_posted_date"],
+    "ticob_posted_date": ["ticob_posted_date", "ticob_post"],
     "eligib_amt": ["eligib_amt"],
     "src_of_txn": ["src_of_txn"],
-    "trxn_suffix": ["trxn_suffix"],
-    "exch_dc_flag": ["exch_dc_flag"],
-    "src_brk_code": ["src_brk_code"],
-    "ca_initiated_date": ["ca_initiated_date"],
-    "gst_state_code": ["gst_state_code"],
-    "igst_amount": ["igst_amount"],
-    "cgst_amount": ["cgst_amount"],
-    "sgst_amount": ["sgst_amount"],
+    "trxn_suffix": ["trxn_suffix", "trxn_suffi"],
+    "exch_dc_flag": ["exch_dc_flag", "exch_dc_fl"],
+    "src_brk_code": ["src_brk_code", "src_brk_co"],
+    "ca_initiated_date": ["ca_initiated_date", "ca_initiat"],
+    "gst_state_code": ["gst_state_code", "gst_state_"],
+    "igst_amount": ["igst_amount", "igst_amoun"],
+    "cgst_amount": ["cgst_amount", "cgst_amoun"],
+    "sgst_amount": ["sgst_amount", "sgst_amoun"],
     "rev_remark": ["rev_remark"],
-    "original_trxnno": ["original_trxnno"],
+    "original_trxnno": ["original_trxnno","original_t"],
     "amc_ref_no": ["amc_ref_no"],
-    "request_ref_no": ["request_ref_no"],
-    "transmission_flag": ["transmission_flag"],
+    "request_ref_no": ["request_ref_no", "request_re"],
+    "transmission_flag": ["transmission_flag", "transmissi"],
     "swflag": ["swflag"],
     "seq_no": ["seq_no"],
-    "reinvest_flag": ["reinvest_flag"],
+    "reinvest_flag": ["reinvest_flag", "reinvest_f"],
     "mult_brok": ["mult_brok"],
     "location": ["location"],
     "divper": ["divper"],
@@ -540,318 +399,107 @@ SIP_MASTER_MAPPING = {
     # SYSTEM
     # =====================================================
     "source": ["source"],
+    "product_code": ["PRODUCT", "Product Code"],
 
-    # =====================================================
-    # PRODUCT DETAILS
-    # =====================================================
+    "scheme_code": ["SCHEME_CODE", "Scheme", "scheme_cod", "SCHEME_COD"],
 
-    # CAMS: PRODUCT (B331G, B92...)
-    # KFIN: Product Code (RMFLPIG, 117EBRG...)
-    "product_code": [
-        "PRODUCT",
-        "Product Code"
-    ],
-
-    # CAMS: SCHEME_CODE (331G, 92...)
-    # KFIN: Scheme (LP, EB, IO, TS...)
-    "scheme_code": [
-        "SCHEME_CODE",
-        "Scheme"
-    ],
-
-    # Full scheme name
-    "scheme_name": [
-        "SCHEME",
-        "Scheme Name"
-    ],
-
-    # KFIN only
-    "plan": [
-        "Plan"
-    ],
+    "scheme_name": ["SCHEME", "Scheme Name"],
+    "plan": ["Plan"],
 
     # =====================================================
     # INVESTOR
     # =====================================================
 
-    "folio_no": [
-        "FOLIO_NO",
-        "Folio"
-    ],
+    "folio_no": ["FOLIO_NO", "Folio"],
+    "folio_old": ["FOLIO_OLD"],
+    "inv_name": ["INV_NAME", "Investor Name"],
+    "pan": ["PAN"],
 
-    "folio_old": [
-        "FOLIO_OLD"
-    ],
+    "inv_iin": ["INV_IIN", "Ihno"],
 
-    "inv_name": [
-        "INV_NAME",
-        "Investor Name"
-    ],
+    "inv_dp_id": ["InvDpId"],
+    "inv_client_id": ["InvClientId"],
 
-    "pan": [
-        "PAN"
-    ],
-
-    # CAMS INV_IIN = KFIN Ihno
-    "inv_iin": [
-        "INV_IIN",
-        "Ihno"
-    ],
-
-    "inv_dp_id": [
-        "InvDpId"
-    ],
-
-    "inv_client_id": [
-        "InvClientId"
-    ],
-
-    "dp_inv_name": [
-        "DP_InvName"
-    ],
+    "dp_inv_name": ["DP_InvName"],
 
     # =====================================================
     # SIP DETAILS
     # =====================================================
 
-    "aut_trntyp": [
-        "AUT_TRNTYP",
-        "SipType"
-    ],
-
-    "auto_trno": [
-        "AUTO_TRNO"
-    ],
-
-    "ft_sip_regno": [
-        "FT_SIP_REGNO",
-        "RegSlno"
-    ],
-
-    "auto_amount": [
-        "AUTO_AMOUNT",
-        "Amount"
-    ],
-
-    "no_of_installments": [
-        "No Of Installments"
-    ],
-
-    "periodicity": [
-        "PERIODICITY",
-        "Frequency"
-    ],
-
-    "period_day": [
-        "PERIOD_DAY"
-    ],
-
-    "payment_mode": [
-        "PAYMENT_MODE",
-        "SIP Mode"
-    ],
+    "aut_trntyp": ["AUT_TRNTYP", "SipType"],
+    "auto_trno": ["AUTO_TRNO"],
+    "ft_sip_regno": ["FT_SIP_REGNO", "RegSlno", "FT_SIP_REG"],
+    "auto_amount": ["AUTO_AMOUNT", "Amount", "AUTO_AMOUN"],
+    "no_of_installments": ["No Of Installments"],
+    "periodicity": ["PERIODICITY", "Frequency", "PERIODICIT"],
+    "period_day": ["PERIOD_DAY"],
+    "payment_mode": ["PAYMENT_MODE", "SIP Mode", "PAYMENT_MO"],
 
     # =====================================================
     # DATES
     # =====================================================
 
-    "reg_date": [
-        "REG_DATE",
-        "RegistrationDate"
-    ],
+    "reg_date": ["REG_DATE", "RegistrationDate"],
+    "from_date": [ "FROM_DATE", "Start Date"],
+    "to_date": ["TO_DATE", "End Date"],
+    "cease_date": ["CEASE_DATE", "TerminateDate"],
+    "pause_from_date": ["PAUSE_FROM_DATE", "PAUSE_FROM"],
+    "pause_to_date": ["PAUSE_TO_DATE", "PAUSE_TO_D"],
 
-    "from_date": [
-        "FROM_DATE",
-        "Start Date"
-    ],
-
-    "to_date": [
-        "TO_DATE",
-        "End Date"
-    ],
-
-    "cease_date": [
-        "CEASE_DATE",
-        "TerminateDate"
-    ],
-
-    "pause_from_date": [
-        "PAUSE_FROM_DATE"
-    ],
-
-    "pause_to_date": [
-        "PAUSE_TO_DATE"
-    ],
-
-    # =====================================================
-    # TARGET / SWITCH
-    # =====================================================
-
-    # CAMS: TARGET_SCHEME (Scheme Name)
-    # KFIN: To Scheme (Short Code)
-    "target_scheme": [
-        "TARGET_SCHEME",
-        "To Scheme"
-    ],
+    "target_scheme": ["TARGET_SCHEME", "To Scheme"],
 
     # CAMS: TARGET_SCHEME_CODE
     # KFIN: ToProductCode
-    "target_scheme_code": [
-        "TARGET_SCHEME_CODE",
-        "ToProductCode"
-    ],
+    "target_scheme_code": ["TARGET_SCHEME_CODE", "ToProductCode"],
 
-    # KFIN only (Full Scheme Name)
-    "target_scheme_name": [
-        "ToSchemeName"
-    ],
+    "target_scheme_name": ["ToSchemeName"],
 
-    # KFIN only
-    "target_plan": [
-        "To Plan"
-    ],
+    "target_plan": ["To Plan"],
 
     # =====================================================
     # DISTRIBUTOR
     # =====================================================
+    "sub_arn_code": ["SUB_ARN_CODE", "AgentCode", "SUB_ARN_CO"],
+    "agent_name": ["AgentName"],
+    "subbroker": ["SUBBROKER", "Subbroker"],
+    "euin": ["EUIN"],
+    "zone": ["Zone"],
 
-    "sub_arn_code": [
-        "SUB_ARN_CODE",
-        "AgentCode"
-    ],
+    "branch": ["Branch", "BRANCH"],
 
-    "agent_name": [
-        "AgentName"
-    ],
+    "ter_location": ["TER_LOCATION", "Location", "ter_locati"],
 
-    "subbroker": [
-        "SUBBROKER",
-        "Subbroker"
-    ],
+    "bank": ["BANK", "ECSBankName"],
+    "ac_type": ["AC_TYPE"],
+    "instrm_no": ["INSTRM_NO", "ECSNO"],
 
-    "euin": [
-        "EUIN"
-    ],
-
-    "zone": [
-        "Zone"
-    ],
-
-    # IMPORTANT:
-    # DO NOT MAP CAMS BRANCH with KFIN Branch.
-    # They are different business fields.
-    "branch": [
-        "Branch",
-        "BRANCH"
-    ],
-
-    # # CAMS Branch kept separately
-    # "cams_branch": [
-    #     "BRANCH"
-    # ],
-
-    "ter_location": [
-        "TER_LOCATION",
-        "Location"
-    ],
-
-    # =====================================================
-    # BANK
-    # =====================================================
-
-    "bank": [
-        "BANK",
-        "ECSBankName"
-    ],
-
-    "ac_type": [
-        "AC_TYPE"
-    ],
-
-    "instrm_no": [
-        "INSTRM_NO",
-        "ECSNO"
-    ],
-
-    "cheq_micr_no": [
-        "CHEQ_MICR_NO"
-    ],
-
-    "ecs_account_no": [
-        "ECSAcno"
-    ],
-
-    "ac_holder_name": [
-        "AC_HOLDER_NAME",
-        "ECSHolderName"
-    ],
+    "cheq_micr_no": ["CHEQ_MICR_NO", "CHEQ_MICR_"],
+    "ecs_account_no": ["ECSAcno"],
+    "ac_holder_name": ["AC_HOLDER_NAME", "ECSHolderName", "AC_HOLDER_"],
 
     # =====================================================
     # AMC
     # =====================================================
 
-    "amc_code": [
-        "AMC_CODE",
-        "Fund Code"
-    ],
-
-    "user_code": [
-        "USER_CODE"
-    ],
-
-    "package_name": [
-        "PACKAGE_NAME"
-    ],
-
-    "special_product": [
-        "SPECIAL_PRODUCT"
-    ],
-
-    # CAMS SUBTRXNDESC = KFIN Trtype
-    "subtrxndesc": [
-        "SUBTRXNDESC",
-        "Trtype"
-    ],
+    "amc_code": ["AMC_CODE", "Fund Code"],
+    "user_code": ["USER_CODE"],
+    "package_name": ["PACKAGE_NAME", "PACKAGE_NA"],
+    "special_product": ["SPECIAL_PRODUCT", "SPECIAL_PR"],
+    "subtrxndesc": ["SUBTRXNDESC", "Trtype", "SUBTRXNDES"],
 
     # =====================================================
     # EXTRA
     # =====================================================
 
-    "remarks": [
-        "REMARKS"
-    ],
-
-    "top_up_frq": [
-        "TOP_UP_FRQ"
-    ],
-
-    "top_up_amt": [
-        "TOP_UP_AMT"
-    ],
-
-    "top_up_perc": [
-        "TOP_UP_PERC"
-    ],
-
-    "status": [
-        "Status"
-    ],
-
-    "modify_flag": [
-        "ModifyFlag"
-    ],
-
-    "umrn_code": [
-        "umrncode"
-    ],
-
-    "scheme_folio_number": [
-        "SCHEME_FOLIO_NUMBER"
-    ],
-
-    "request_ref_no": [
-        "REQUEST_REF_NO"
-    ],
+    "remarks": ["REMARKS"],
+    "top_up_frq": ["TOP_UP_FRQ"],
+    "top_up_amt": ["TOP_UP_AMT"],
+    "top_up_perc": ["TOP_UP_PERC", "TOP_UP_PER"],
+    "status": ["Status"],
+    "modify_flag": ["ModifyFlag"],
+    "umrn_code": ["umrncode"],
+    "scheme_folio_number": ["SCHEME_FOLIO_NUMBER", "SCHEME_FOL"],
+    "request_ref_no": ["REQUEST_REF_NO", "REQUEST_RE"],
 
     # =====================================================
     # SYSTEM
