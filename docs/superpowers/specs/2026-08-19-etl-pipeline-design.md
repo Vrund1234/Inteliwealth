@@ -119,7 +119,10 @@ CREATE TABLE pipeline.etl_processed_files (
 
 ### 5.1 Grouping key
 
-`group_key = f"{rta}|{arn_code}|{s3_date}"`, where `s3_date` is parsed with a regex (`\d{4}-\d{2}-\d{2}`) out of `source_s3_uri` rather than a hardcoded path index, so it's resilient to the `test/mailback` vs `mailback` base-path difference.
+**Errata (2026-08-20, confirmed against `intelli-wealth-backend/app/modules/etl_handoff/router.py`):** `GET /pending` returns `list[EtlHandoffRead]`, not `EtlHandoffItem` — it has `rta`, `report_code`, `arn_code`, `created_at`, and `id` (not `handoff_id`), but **no `source_s3_uri`**. Only `POST /reservations`'s `EtlHandoffItem` carries `source_s3_uri`. So grouping is necessarily two-stage:
+
+- **Stage 1 (peek, coarse key):** `group_key_coarse = f"{rta}|{arn_code}|{created_at.date()}"` — `created_at` is the enqueue timestamp, a proxy for the S3 partition date (they coincide except in the rare case processing crosses midnight between enqueue and the mailback pipeline's `partition_date`). Used only to decide which groups look complete enough to attempt reserving.
+- **Stage 2 (post-reservation, authoritative key):** once reserved, `EtlHandoffItem.source_s3_uri` is available; `group_key = f"{rta}|{arn_code}|{s3_date}"` with `s3_date` parsed via regex (`\d{4}-\d{2}-\d{2}`) out of the URI. This is the key actually used for `etl_report_group_hold`/`etl_pipeline_log`, and for the final "is this group really complete" decision. If a member's true `s3_date` disagrees with its coarse-stage group (rare skew), it's re-filed under its real `group_key` and held there instead — never processed under the wrong grouping.
 
 Required-set-per-RTA is a config dict, not hardcoded inline:
 ```python
@@ -135,8 +138,9 @@ REQUIRED_REPORT_GROUPS = {
 ```
 1. Acquire pipeline_lock (Postgres advisory lock). If already held → log "skipped: prior run still active", exit.
 2. login() (cached token, 401 triggers re-login).
-3. peek = GET /pending?limit=200
-4. Group `peek` items by group_key. For each group, required - present = missing.
+3. peek = GET /pending?limit=200 — each item's `id` field is treated as its `handoff_id`.
+4. Group `peek` items by group_key_coarse (`rta|arn_code|created_at.date()`, §5.1). For each
+   coarse group, required - present = missing.
      - missing empty  → mark group READY (target reservation set)
      - missing non-empty → upsert etl_report_group_hold (status=HOLDING, merge members),
                              write a HOLDING row per file to etl_pipeline_log, do nothing else.
@@ -147,10 +151,12 @@ REQUIRED_REPORT_GROUPS = {
    results, until either (a) every handoff_id in the READY target set has been reserved,
    or (b) a call returns fewer than `limit` items (queue drained), or (c) a safety cap of
    5 calls/run is hit (bounds worst-case work per tick — logged if hit).
-7. For each reserved item:
+7. For each reserved item (now an `EtlHandoffItem` with `source_s3_uri`):
+     - compute the authoritative `group_key` from its real `s3_date` (§5.1 stage 2) — may
+       differ from the coarse key that got it reserved; file it under the real one.
      - dedup check by content_hash (§6) — if already processed, PATCH COMPLETED immediately
        with the prior rows_extracted, log SKIPPED_DUPLICATE, done.
-     - else update etl_report_group_hold.members for its group_key.
+     - else update etl_report_group_hold.members for its (authoritative) group_key.
 8. For every group now fully reserved (all members present in `members` with a handoff_id):
      - status → PROCESSING
      - download all member files (§ s3_client), run bronze → silver → gold together (§5.3),
