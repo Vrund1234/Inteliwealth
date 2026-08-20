@@ -399,315 +399,107 @@ SIP_MASTER_MAPPING = {
     # SYSTEM
     # =====================================================
     "source": ["source"],
+    "product_code": ["PRODUCT", "Product Code"],
 
-    # =====================================================
-    # PRODUCT DETAILS
-    # =====================================================
+    "scheme_code": ["SCHEME_CODE", "Scheme", "scheme_cod", "SCHEME_COD"],
 
-    # CAMS: PRODUCT (B331G, B92...)
-    # KFIN: Product Code (RMFLPIG, 117EBRG...)
-    "product_code": [
-        "PRODUCT",
-        "Product Code"
-    ],
-
-    # CAMS: SCHEME_CODE (331G, 92...)
-    # KFIN: Scheme (LP, EB, IO, TS...)
-    "scheme_code": [
-        "SCHEME_CODE",
-        "Scheme"
-    ],
-
-    # Full scheme name
-    "scheme_name": [
-        "SCHEME",
-        "Scheme Name"
-    ],
-
-    # KFIN only
-    "plan": [
-        "Plan"
-    ],
+    "scheme_name": ["SCHEME", "Scheme Name"],
+    "plan": ["Plan"],
 
     # =====================================================
     # INVESTOR
     # =====================================================
 
-    "folio_no": [
-        "FOLIO_NO",
-        "Folio"
-    ],
+    "folio_no": ["FOLIO_NO", "Folio"],
+    "folio_old": ["FOLIO_OLD"],
+    "inv_name": ["INV_NAME", "Investor Name"],
+    "pan": ["PAN"],
 
-    "folio_old": [
-        "FOLIO_OLD"
-    ],
+    "inv_iin": ["INV_IIN", "Ihno"],
 
-    "inv_name": [
-        "INV_NAME",
-        "Investor Name"
-    ],
+    "inv_dp_id": ["InvDpId"],
+    "inv_client_id": ["InvClientId"],
 
-    "pan": [
-        "PAN"
-    ],
-
-    # CAMS INV_IIN = KFIN Ihno
-    "inv_iin": [
-        "INV_IIN",
-        "Ihno"
-    ],
-
-    "inv_dp_id": [
-        "InvDpId"
-    ],
-
-    "inv_client_id": [
-        "InvClientId"
-    ],
-
-    "dp_inv_name": [
-        "DP_InvName"
-    ],
+    "dp_inv_name": ["DP_InvName"],
 
     # =====================================================
     # SIP DETAILS
     # =====================================================
 
-    "aut_trntyp": [
-        "AUT_TRNTYP",
-        "SipType"
-    ],
-
-    "auto_trno": [
-        "AUTO_TRNO"
-    ],
-
-    "ft_sip_regno": [
-        "FT_SIP_REGNO",
-        "RegSlno"
-    ],
-
-    "auto_amount": [
-        "AUTO_AMOUNT",
-        "Amount"
-    ],
-
-    "no_of_installments": [
-        "No Of Installments"
-    ],
-
-    "periodicity": [
-        "PERIODICITY",
-        "Frequency"
-    ],
-
-    "period_day": [
-        "PERIOD_DAY"
-    ],
-
-    "payment_mode": [
-        "PAYMENT_MODE",
-        "SIP Mode"
-    ],
+    "aut_trntyp": ["AUT_TRNTYP", "SipType"],
+    "auto_trno": ["AUTO_TRNO"],
+    "ft_sip_regno": ["FT_SIP_REGNO", "RegSlno", "FT_SIP_REG"],
+    "auto_amount": ["AUTO_AMOUNT", "Amount", "AUTO_AMOUN"],
+    "no_of_installments": ["No Of Installments"],
+    "periodicity": ["PERIODICITY", "Frequency", "PERIODICIT"],
+    "period_day": ["PERIOD_DAY"],
+    "payment_mode": ["PAYMENT_MODE", "SIP Mode", "PAYMENT_MO"],
 
     # =====================================================
     # DATES
     # =====================================================
 
-    "reg_date": [
-        "REG_DATE",
-        "RegistrationDate"
-    ],
+    "reg_date": ["REG_DATE", "RegistrationDate"],
+    "from_date": [ "FROM_DATE", "Start Date"],
+    "to_date": ["TO_DATE", "End Date"],
+    "cease_date": ["CEASE_DATE", "TerminateDate"],
+    "pause_from_date": ["PAUSE_FROM_DATE", "PAUSE_FROM"],
+    "pause_to_date": ["PAUSE_TO_DATE", "PAUSE_TO_D"],
 
-    "from_date": [
-        "FROM_DATE",
-        "Start Date"
-    ],
-
-    "to_date": [
-        "TO_DATE",
-        "End Date"
-    ],
-
-    "cease_date": [
-        "CEASE_DATE",
-        "TerminateDate"
-    ],
-
-    "pause_from_date": [
-        "PAUSE_FROM_DATE"
-    ],
-
-    "pause_to_date": [
-        "PAUSE_TO_DATE"
-    ],
-
-    # =====================================================
-    # TARGET / SWITCH
-    # =====================================================
-
-    # CAMS: TARGET_SCHEME (Scheme Name)
-    # KFIN: To Scheme (Short Code)
-    "target_scheme": [
-        "TARGET_SCHEME",
-        "To Scheme"
-    ],
+    "target_scheme": ["TARGET_SCHEME", "To Scheme"],
 
     # CAMS: TARGET_SCHEME_CODE
     # KFIN: ToProductCode
-    "target_scheme_code": [
-        "TARGET_SCHEME_CODE",
-        "ToProductCode"
-    ],
+    "target_scheme_code": ["TARGET_SCHEME_CODE", "ToProductCode"],
 
-    # KFIN only (Full Scheme Name)
-    "target_scheme_name": [
-        "ToSchemeName"
-    ],
+    "target_scheme_name": ["ToSchemeName"],
 
-    # KFIN only
-    "target_plan": [
-        "To Plan"
-    ],
+    "target_plan": ["To Plan"],
 
     # =====================================================
     # DISTRIBUTOR
     # =====================================================
+    "sub_arn_code": ["SUB_ARN_CODE", "AgentCode", "SUB_ARN_CO"],
+    "agent_name": ["AgentName"],
+    "subbroker": ["SUBBROKER", "Subbroker"],
+    "euin": ["EUIN"],
+    "zone": ["Zone"],
 
-    "sub_arn_code": [
-        "SUB_ARN_CODE",
-        "AgentCode"
-    ],
-
-    "agent_name": [
-        "AgentName"
-    ],
-
-    "subbroker": [
-        "SUBBROKER",
-        "Subbroker"
-    ],
-
-    "euin": [
-        "EUIN"
-    ],
-
-    "zone": [
-        "Zone"
-    ],
-
-    # IMPORTANT:
-    # DO NOT MAP CAMS BRANCH with KFIN Branch.
-    # They are different business fields.
-    "branch": [
-        "Branch",
-        "BRANCH"
-    ],
-
-    # # CAMS Branch kept separately
-    # "cams_branch": [
-    #     "BRANCH"
-    # ],
+    "branch": ["Branch", "BRANCH"],
 
     "ter_location": ["TER_LOCATION", "Location", "ter_locati"],
 
-    # =====================================================
-    # BANK
-    # =====================================================
+    "bank": ["BANK", "ECSBankName"],
+    "ac_type": ["AC_TYPE"],
+    "instrm_no": ["INSTRM_NO", "ECSNO"],
 
-    "bank": [
-        "BANK",
-        "ECSBankName"
-    ],
-
-    "ac_type": [
-        "AC_TYPE"
-    ],
-
-    "instrm_no": [
-        "INSTRM_NO",
-        "ECSNO"
-    ],
-
-    "cheq_micr_no": [
-        "CHEQ_MICR_NO"
-    ],
-
-    "ecs_account_no": [
-        "ECSAcno"
-    ],
-
-    "ac_holder_name": [
-        "AC_HOLDER_NAME",
-        "ECSHolderName"
-    ],
+    "cheq_micr_no": ["CHEQ_MICR_NO", "CHEQ_MICR_"],
+    "ecs_account_no": ["ECSAcno"],
+    "ac_holder_name": ["AC_HOLDER_NAME", "ECSHolderName", "AC_HOLDER_"],
 
     # =====================================================
     # AMC
     # =====================================================
 
-    "amc_code": [
-        "AMC_CODE",
-        "Fund Code"
-    ],
-
-    "user_code": [
-        "USER_CODE"
-    ],
-
-    "package_name": [
-        "PACKAGE_NAME"
-    ],
-
-    "special_product": [
-        "SPECIAL_PRODUCT"
-    ],
-
-    # CAMS SUBTRXNDESC = KFIN Trtype
-    "subtrxndesc": [
-        "SUBTRXNDESC",
-        "Trtype"
-    ],
+    "amc_code": ["AMC_CODE", "Fund Code"],
+    "user_code": ["USER_CODE"],
+    "package_name": ["PACKAGE_NAME", "PACKAGE_NA"],
+    "special_product": ["SPECIAL_PRODUCT", "SPECIAL_PR"],
+    "subtrxndesc": ["SUBTRXNDESC", "Trtype", "SUBTRXNDES"],
 
     # =====================================================
     # EXTRA
     # =====================================================
 
-    "remarks": [
-        "REMARKS"
-    ],
-
-    "top_up_frq": [
-        "TOP_UP_FRQ"
-    ],
-
-    "top_up_amt": [
-        "TOP_UP_AMT"
-    ],
-
-    "top_up_perc": [
-        "TOP_UP_PERC"
-    ],
-
-    "status": [
-        "Status"
-    ],
-
-    "modify_flag": [
-        "ModifyFlag"
-    ],
-
-    "umrn_code": [
-        "umrncode"
-    ],
-
-    "scheme_folio_number": [
-        "SCHEME_FOLIO_NUMBER"
-    ],
-
-    "request_ref_no": [
-        "REQUEST_REF_NO"
-    ],
+    "remarks": ["REMARKS"],
+    "top_up_frq": ["TOP_UP_FRQ"],
+    "top_up_amt": ["TOP_UP_AMT"],
+    "top_up_perc": ["TOP_UP_PERC", "TOP_UP_PER"],
+    "status": ["Status"],
+    "modify_flag": ["ModifyFlag"],
+    "umrn_code": ["umrncode"],
+    "scheme_folio_number": ["SCHEME_FOLIO_NUMBER", "SCHEME_FOL"],
+    "request_ref_no": ["REQUEST_REF_NO", "REQUEST_RE"],
 
     # =====================================================
     # SYSTEM
