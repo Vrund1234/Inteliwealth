@@ -4,6 +4,8 @@ import traceback
 from datetime import datetime, timezone
 
 from utils.db import engine, master_engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # ============================================================
@@ -822,6 +824,18 @@ def transform_sip(df):
     )
 
     # ========================================================
+    # ENRICHMENT PENDING TRACKING — client match
+    #
+    # A PAN not present in gold.clients at all means WBR9 (or its
+    # downstream gold.clients row) hasn't arrived yet, NOT that this client
+    # will never exist. Track separately from client_id itself so a later
+    # reconciliation pass can tell "not yet resolved" apart from "resolved
+    # to nothing".
+    # ========================================================
+
+    client_match_found = df["pan_clean"].isin(client_lookup.keys())
+
+    # ========================================================
     # SIP TYPE
     # ========================================================
 
@@ -910,6 +924,20 @@ def transform_sip(df):
         index=df.index,
         dtype="string"
     )
+
+    gold_df["arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    gold_df["sub_arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    txn_match_found = pd.Series(False, index=df.index)  # no transaction table at all yet
 
     # ========================================================
     # PROCESS TRANSACTIONS
@@ -1046,6 +1074,24 @@ def transform_sip(df):
         print(
             "Mapped Sub ARN rows:",
             gold_df["sub_arn"].notna().sum()
+        )
+
+        # ====================================================
+        # ENRICHMENT PENDING TRACKING — transaction match
+        #
+        # A (rta, folio) not present in arn_lookup.index at all means no
+        # transaction data exists yet for this folio (WBR2 hasn't arrived),
+        # NOT that this SIP is structurally distributor-less. A folio THAT
+        # IS present but with a blank brokcode (a genuine direct-plan
+        # investment) is correctly resolved, not pending.
+        # ====================================================
+
+        txn_match_found = pd.Series(
+            [
+                (df.loc[idx, "rta_clean"], df.loc[idx, "folio_clean"]) in arn_lookup.index
+                for idx in df.index
+            ],
+            index=df.index,
         )
 
         # ====================================================
@@ -1388,6 +1434,30 @@ def transform_sip(df):
     )
 
     # ========================================================
+    # ENRICHMENT PENDING SINCE
+    #
+    # Set only when NEITHER the transaction match NOR the client match was
+    # found — i.e. genuinely nothing to enrich from yet, not "matched but
+    # the field happens to be blank" (e.g. a real direct-plan investment
+    # with no ARN). NULL = fully resolved or structurally not applicable.
+    # ========================================================
+
+    gold_load_timestamp_for_pending = datetime.now(timezone.utc)
+
+    enrichment_missing = (~txn_match_found) | (~client_match_found)
+
+    # Initialized with an explicit tz-aware dtype (rather than a bare
+    # `pd.NaT` scalar assign) so the later partial `.loc` assignment of a
+    # tz-aware timestamp below doesn't hit pandas' strict same-dtype
+    # upcasting check.
+    gold_df["enrichment_pending_since"] = pd.Series(
+        pd.NaT,
+        index=df.index,
+        dtype="datetime64[ns, UTC]"
+    )
+    gold_df.loc[enrichment_missing, "enrichment_pending_since"] = gold_load_timestamp_for_pending
+
+    # ========================================================
     # GOLD CREATED AT
     # ========================================================
 
@@ -1432,7 +1502,8 @@ def transform_sip(df):
         "arn_id",
         "arn",
         "sub_arn",
-        "created_at"
+        "created_at",
+        "enrichment_pending_since"
     ]
 
     gold_df = gold_df[columns].copy()
@@ -1682,7 +1753,7 @@ def load_sip(gold_df):
 
         print("No SIP rows received.")
 
-        return True
+        return load_result("skipped", 0)
 
     # ========================================================
     # GOLD.SIP COLUMNS
@@ -1717,7 +1788,8 @@ def load_sip(gold_df):
         "arn_id",
         "arn",
         "sub_arn",
-        "created_at"
+        "created_at",
+        "enrichment_pending_since"
     ]
 
     # ========================================================
@@ -1783,62 +1855,51 @@ def load_sip(gold_df):
     )
 
     # ========================================================
-    # INSERT
+    # UPSERT
     # ========================================================
 
+    conflict_target_sql = (
+        "((rta IS NULL), (COALESCE(rta, '')), "
+        "(folio_number IS NULL), (COALESCE(folio_number, '')), "
+        "(scheme_code IS NULL), (COALESCE(scheme_code, '')), "
+        "(registered_date IS NULL), (COALESCE(registered_date, '0001-01-01'::date)), "
+        "(amount IS NULL), (COALESCE(amount, 0)))"
+    )
+    update_set_sql = (
+        "status = EXCLUDED.status, ceased_date = EXCLUDED.ceased_date, "
+        "ceased_reason = EXCLUDED.ceased_reason, "
+        "completed_installments = EXCLUDED.completed_installments, "
+        "bounced_installments = EXCLUDED.bounced_installments, "
+        "next_due_date = EXCLUDED.next_due_date, mandate_id = EXCLUDED.mandate_id, "
+        "sip_day = EXCLUDED.sip_day, sip_type = EXCLUDED.sip_type, "
+        "registered_installments = EXCLUDED.registered_installments, "
+        "client_id = EXCLUDED.client_id, amc_id = EXCLUDED.amc_id, "
+        "scheme_id = EXCLUDED.scheme_id, arn_id = EXCLUDED.arn_id, "
+        "arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn, isin = EXCLUDED.isin, "
+        "scheme_name = EXCLUDED.scheme_name, amc_code = EXCLUDED.amc_code, "
+        "frequency = EXCLUDED.frequency, start_date = EXCLUDED.start_date, "
+        "end_date = EXCLUDED.end_date, "
+        "enrichment_pending_since = EXCLUDED.enrichment_pending_since"
+    )
+
     try:
-
-        with engine.begin() as connection:
-
-            gold_df.to_sql(
-                name="sip",
-                con=connection,
-                schema="gold",
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=1000
-            )
-
-        # ====================================================
-        # VERIFY
-        # ====================================================
-
-        verification = safe_read(
-            """
-            SELECT
-                COUNT(*) AS total_rows
-            FROM gold.sip
-            """
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="sip",
+            conflict_target_sql=conflict_target_sql, update_set_sql=update_set_sql,
         )
 
-        if not verification.empty:
-
-            total_rows = int(
-                verification.iloc[0]["total_rows"]
-            )
-
-        else:
-
-            total_rows = -1
+        verification = safe_read("SELECT COUNT(*) AS total_rows FROM gold.sip")
+        total_rows = int(verification.iloc[0]["total_rows"]) if not verification.empty else -1
 
         print()
-        print(
-            "Inserted rows:",
-            rows_to_insert
-        )
-
-        print(
-            "Gold SIP rows after load:",
-            total_rows
-        )
-
+        print("Upserted rows:", affected)
+        print("Gold SIP rows after load:", total_rows)
         print()
         print("GOLD SIP LOAD SUCCESSFUL")
 
-        return True
+        return load_result("ok", affected)
 
-    except Exception:
+    except Exception as e:
 
         print()
         print("=" * 80)
@@ -1849,7 +1910,7 @@ def load_sip(gold_df):
             limit=10
         )
 
-        return False
+        return load_result("error", 0, str(e))
 
 
 # ============================================================
@@ -1944,7 +2005,7 @@ if __name__ == "__main__":
 
             print()
 
-            if success:
+            if success["status"] != "error":
 
                 print("=" * 80)
                 print(
