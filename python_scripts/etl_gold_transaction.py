@@ -2,6 +2,8 @@ import pandas as pd
 import traceback
 
 from utils.db import engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # =====================================================
@@ -976,7 +978,7 @@ def load_transactions(gold_df):
             "No new records found."
         )
 
-        return True
+        return load_result("skipped", 0)
 
     # =================================================
     # FINAL SCHEME ID CHECK
@@ -1026,34 +1028,25 @@ def load_transactions(gold_df):
         len(gold_df)
     )
 
-    # =================================================
-    # INSERT
-    # =================================================
+    conflict_target_sql = (
+        "((rta IS NULL), (COALESCE(rta, '')), "
+        "(rta_txn_no IS NULL), (COALESCE(rta_txn_no, '')), "
+        "(folio_number IS NULL), (COALESCE(folio_number, '')), "
+        "(amount IS NULL), (COALESCE(amount, 0)), "
+        "(units IS NULL), (COALESCE(units, 0)))"
+    )
 
     try:
-
-        print(
-            f"Inserting {len(gold_df)} rows..."
+        print(f"Upserting {len(gold_df)} rows...")
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="transactions",
+            conflict_target_sql=conflict_target_sql,
+            update_set_sql=None,  # transactions are immutable once recorded — DO NOTHING on conflict
         )
+        print(f"{affected} new rows inserted into gold.transactions ({len(gold_df) - affected} already existed)")
+        return load_result("ok", affected)
 
-        gold_df.to_sql(
-            name="transactions",
-            con=engine,
-            schema="gold",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=500
-        )
-
-        print(
-            f"{len(gold_df)} rows successfully inserted "
-            f"into gold.transactions"
-        )
-
-        return True
-
-    except Exception:
+    except Exception as e:
 
         print("=" * 80)
         print("FAILED LOADING GOLD TRANSACTIONS")
@@ -1063,7 +1056,7 @@ def load_transactions(gold_df):
             limit=10
         )
 
-        return False
+        return load_result("error", 0, str(e))
 
 
 # =====================================================
@@ -1136,7 +1129,7 @@ if __name__ == "__main__":
 
             print("=" * 80)
 
-            if status:
+            if status["status"] != "error":
 
                 print(
                     "GOLD TRANSACTION ETL COMPLETED SUCCESSFULLY"

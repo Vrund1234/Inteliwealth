@@ -2,6 +2,8 @@ import pandas as pd
 import traceback
 
 from utils.db import engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # ============================================================
@@ -778,46 +780,24 @@ def load_scheme_nav(gold_df):
             "No new records found."
         )
 
-        return True
+        return load_result("skipped", 0)
 
     try:
-
-        gold_df.to_sql(
-
-            name="scheme_nav",
-
-            con=engine,
-
-            schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="scheme_nav",
+            conflict_target_sql="(scheme_id, nav_date)",
+            update_set_sql=(
+                "nav = EXCLUDED.nav, repurchase_nav = EXCLUDED.repurchase_nav, "
+                "source = EXCLUDED.source, arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn"
+            ),
         )
+        print(f"{affected:,} rows upserted into gold.scheme_nav.")
+        return load_result("ok", affected)
 
-        print(
-            f"{len(gold_df):,} rows inserted "
-            "into gold.scheme_nav."
-        )
-
-        return True
-
-    except Exception:
-
-        print(
-            "FAILED LOADING GOLD SCHEME NAV"
-        )
-
-        traceback.print_exc(
-            limit=5
-        )
-
-        return False
+    except Exception as e:
+        print("FAILED LOADING GOLD SCHEME NAV")
+        traceback.print_exc(limit=5)
+        return load_result("error", 0, str(e))
 
 
 # ============================================================
@@ -868,7 +848,7 @@ if __name__ == "__main__":
         print()
         print("=" * 80)
 
-        if status:
+        if status["status"] != "error":
 
             print(
                 "GOLD SCHEME NAV ETL "

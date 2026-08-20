@@ -4,6 +4,7 @@ import pandas as pd
 from utils.db import engine
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
+from utils.upsert import upsert_dataframe
 
 # =====================================================
 # DATE COLUMNS
@@ -685,23 +686,25 @@ def process_sip(
         None
     )
 
-    df.to_sql(
-        "sip_master_new",
-        engine,
-        schema="bronze",
-
-        if_exists="append",
-        index=False,
-        method="multi",
-        chunksize=5000
+    conflict_target_sql = (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "(auto_trno IS NULL), (COALESCE(auto_trno, '')), "
+        "(scheme_code IS NULL), (COALESCE(scheme_code, '')), "
+        "(inv_iin IS NULL), (COALESCE(inv_iin, '')))"
     )
+    inserted = upsert_dataframe(
+        engine, df, schema="bronze", table="sip_master_new",
+        conflict_target_sql=conflict_target_sql, update_set_sql=None,
+    )
+    print(f"Rows inserted (duplicates skipped): {inserted} of {len(df)} attempted")
 
     print("=" * 80)
     print("SIP Master Loaded Successfully")
-    print(f"Inserted {len(df)} rows")
+    print(f"Inserted {inserted} rows")
     print("=" * 80)
 
-    return len(df)
+    return inserted
 
     # # =====================================================
     # # GET DATABASE COLUMN ORDER

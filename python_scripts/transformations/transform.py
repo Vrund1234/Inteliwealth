@@ -1,6 +1,40 @@
 import pandas as pd
 
 from utils.db import engine
+from utils.upsert import upsert_dataframe
+
+
+# =====================================================
+# SILVER ON-CONFLICT TARGETS
+# =====================================================
+# Nullable-safe expression-index conflict targets, one per silver table
+# handled by append_new_rows(). Must match the expression list of each
+# table's unique index verbatim (see sql_scripts/add_constraints.sql).
+
+SILVER_CONFLICT_TARGETS = {
+    "transaction_master_new": (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(trxnno IS NULL), (COALESCE(trxnno, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "((NULLIF(btrim(amount), '')::numeric) IS NULL), "
+        "(COALESCE(NULLIF(btrim(amount), '')::numeric, 0)), "
+        "((NULLIF(btrim(units), '')::numeric) IS NULL), "
+        "(COALESCE(NULLIF(btrim(units), '')::numeric, 0)))"
+    ),
+    "investor_master": (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "(product_code IS NULL), (COALESCE(product_code, '')))"
+    ),
+    "sip_master_new": (
+        "((source IS NULL), (COALESCE(source, '')), "
+        "(folio_no IS NULL), (COALESCE(folio_no, '')), "
+        "(scheme_code IS NULL), (COALESCE(scheme_code, '')), "
+        "(inv_iin IS NULL), (COALESCE(inv_iin, '')), "
+        "(reg_date IS NULL), (COALESCE(reg_date, '0001-01-01'::date)), "
+        "(auto_amount IS NULL), (COALESCE(auto_amount, 0)))"
+    ),
+}
 
 
 # =====================================================
@@ -785,14 +819,10 @@ def append_new_rows(
 
     try:
 
-        df.to_sql(
-            table_name,
-            engine,
-            schema="silver",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=5000
+        inserted = upsert_dataframe(
+            engine, df, schema="silver", table=table_name,
+            conflict_target_sql=SILVER_CONFLICT_TARGETS[table_name],
+            update_set_sql=None,
         )
 
     except Exception as e:
@@ -810,7 +840,8 @@ def append_new_rows(
     print("=" * 80)
     print(
         f"{table_name} : "
-        f"{len(df)} rows inserted into Silver"
+        f"{inserted} rows inserted into Silver (of {len(df)} attempted; "
+        f"{len(df) - inserted} duplicate(s) skipped)"
     )
     print("=" * 80)
 

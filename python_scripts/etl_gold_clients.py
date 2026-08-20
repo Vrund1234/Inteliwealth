@@ -3,6 +3,8 @@ import traceback
 
 from datetime import datetime
 from utils.db import engine, master_engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # ============================================================
@@ -1116,7 +1118,7 @@ def load_clients(gold_df):
 
     if gold_df.empty:
         print("No client rows generated.")
-        return False
+        return load_result("skipped", 0)
 
     gold_df = gold_df.copy()
 
@@ -1174,82 +1176,7 @@ def load_clients(gold_df):
             "No valid client records to load."
         )
 
-        return True
-
-    # ========================================================
-    # GET EXISTING PANS FROM DATABASE
-    # ========================================================
-
-    print()
-    print("Checking existing clients in gold.clients...")
-
-    existing = safe_read(
-        """
-        SELECT
-            pan
-        FROM gold.clients
-        WHERE pan IS NOT NULL
-        """
-    )
-
-    if not existing.empty:
-
-        existing["pan"] = clean_pan(
-            existing["pan"]
-        )
-
-        existing_pans = set(
-            existing["pan"]
-            .dropna()
-            .tolist()
-        )
-
-        before = len(gold_df)
-
-        gold_df = gold_df[
-            ~gold_df["pan"].isin(
-                existing_pans
-            )
-        ].copy()
-
-        print(
-            "Existing client rows skipped:",
-            before - len(gold_df)
-        )
-
-    print(
-        "Rows actually going to database:",
-        len(gold_df)
-    )
-
-    # ========================================================
-    # NOTHING NEW
-    # ========================================================
-
-    if gold_df.empty:
-
-        print()
-        print(
-            "All client records already exist in gold.clients."
-        )
-
-        count_df = safe_read(
-            """
-            SELECT COUNT(*) AS total_clients
-            FROM gold.clients
-            """
-        )
-
-        if not count_df.empty:
-
-            print(
-                "Current Gold Clients:",
-                int(
-                    count_df.iloc[0]["total_clients"]
-                )
-            )
-
-        return True
+        return load_result("skipped", 0)
 
     # ========================================================
     # CHECK TABLE COLUMNS
@@ -1275,7 +1202,7 @@ def load_clients(gold_df):
             "ERROR: gold.clients table was not found."
         )
 
-        return False
+        return load_result("error", 0, "gold.clients table was not found")
 
     database_columns = set(
         table_columns["column_name"]
@@ -1301,7 +1228,10 @@ def load_clients(gold_df):
                 col
             )
 
-        return False
+        return load_result(
+            "error", 0,
+            f"columns missing from gold.clients: {missing_database_columns}"
+        )
 
     # ========================================================
     # KEEP ONLY DATABASE COLUMNS
@@ -1327,146 +1257,53 @@ def load_clients(gold_df):
     )
 
     # ========================================================
-    # INSERT
+    # UPSERT
     #
-    # IMPORTANT:
-    # Use smaller chunks and normal INSERT execution.
-    # This avoids the huge parameter dump/error you are seeing.
+    # gold_df's column set is validated dynamically above, so the
+    # update-column list is built dynamically too, excluding the
+    # conflict key (pan) and the audit timestamp (created_at).
     # ========================================================
 
-    print()
-    print("Starting database insert...")
+    update_columns = [c for c in gold_df.columns if c not in ("pan", "created_at")]
+    update_set_sql = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_columns)
 
-    inserted_rows = 0
+    print()
+    print("Starting upsert...")
 
     try:
-
-        with engine.begin() as connection:
-
-            for start in range(
-                0,
-                len(gold_df),
-                100
-            ):
-
-                batch = gold_df.iloc[
-                    start:start + 100
-                ].copy()
-
-                batch.to_sql(
-                    name="clients",
-                    schema="gold",
-                    con=connection,
-                    if_exists="append",
-                    index=False,
-                    method=None
-                )
-
-                inserted_rows += len(batch)
-
-                print(
-                    f"Inserted {inserted_rows} / "
-                    f"{len(gold_df)} rows"
-                )
-
-        # ====================================================
-        # VERIFY DATABASE
-        # ====================================================
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="clients",
+            conflict_target_sql="(pan) WHERE pan IS NOT NULL",
+            update_set_sql=update_set_sql,
+        )
 
         print()
         print("=" * 80)
         print("VERIFYING GOLD.CLIENTS")
         print("=" * 80)
 
-        count_df = safe_read(
-            """
-            SELECT
-                COUNT(*) AS total_clients
-            FROM gold.clients
-            """
-        )
-
+        count_df = safe_read("SELECT COUNT(*) AS total_clients FROM gold.clients")
         if not count_df.empty:
-
-            total_clients = int(
-                count_df.iloc[0]["total_clients"]
-            )
-
-            print(
-                "Total rows in gold.clients:",
-                total_clients
-            )
-
-        # ====================================================
-        # SHOW ACTUAL DATABASE DATA
-        # ====================================================
-
-        database_preview = safe_read(
-            """
-            SELECT
-                pan,
-                full_name,
-                phone,
-                mobile,
-                arn,
-                sub_arn,
-                email,
-                date_of_birth,
-                investor_type,
-                tax_status,
-                kyc_status,
-                arn_id,
-                onboarded_at,
-                source,
-                created_at
-            FROM gold.clients
-            ORDER BY created_at DESC
-            LIMIT 10
-            """
-        )
-
-        print()
-        print(
-            "Latest 10 rows actually stored "
-            "in PostgreSQL gold.clients:"
-        )
-
-        if database_preview.empty:
-
-            print(
-                "WARNING: Database returned 0 rows."
-            )
-
-        else:
-
-            print(
-                database_preview.to_string(
-                    index=False
-                )
-            )
+            print("Total rows in gold.clients:", int(count_df.iloc[0]["total_clients"]))
 
         print()
         print("=" * 80)
-        print("GOLD.CLIENTS DATABASE INSERT SUCCESSFUL")
+        print("GOLD.CLIENTS UPSERT SUCCESSFUL")
         print("=" * 80)
 
-        return True
+        return load_result("ok", affected)
 
     except Exception as e:
 
         print()
         print("=" * 80)
-        print("GOLD.CLIENTS DATABASE INSERT FAILED")
+        print("GOLD.CLIENTS UPSERT FAILED")
         print("=" * 80)
 
         print(
             "Error type:",
             type(e).__name__
         )
-
-        # IMPORTANT:
-        # Print only the actual error.
-        # Do NOT print the complete SQLAlchemy parameter list.
 
         error_text = str(e)
 
@@ -1478,23 +1315,7 @@ def load_clients(gold_df):
             error_text[:3000]
         )
 
-        print()
-        print(
-            "Rows successfully inserted before failure:",
-            inserted_rows
-        )
-
-        print(
-            "Rows remaining:",
-            len(gold_df) - inserted_rows
-        )
-
-        print()
-        print(
-            "The transaction has been rolled back."
-        )
-
-        return False
+        return load_result("error", 0, error_text[:2000])
 
 #Main Function#
 
@@ -1548,7 +1369,7 @@ def main():
         # FINAL STATUS
         # ====================================================
 
-        if status:
+        if status["status"] != "error":
 
             print()
             print("=" * 80)

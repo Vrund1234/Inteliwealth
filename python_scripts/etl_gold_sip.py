@@ -4,6 +4,8 @@ import traceback
 from datetime import datetime, timezone
 
 from utils.db import engine, master_engine
+from utils.gold_result import load_result
+from utils.upsert import upsert_dataframe
 
 
 # ============================================================
@@ -459,6 +461,185 @@ def extract_sip():
 
 
 # ============================================================
+# EXTRACT PENDING SIP RETRY CANDIDATES
+#
+# Rows in gold.sip whose enrichment (arn/client_id) is still marked
+# pending, re-matched back to their original silver.sip_master_new row via
+# the SAME natural key load_sip()'s ON CONFLICT clause already uses as
+# this row's identity — (rta, folio_number, scheme_code, registered_date,
+# amount). Returns rows in extract_sip()'s exact column shape so they can
+# be fed straight into transform_sip()/load_sip() unchanged.
+# ============================================================
+
+def extract_pending_sip_retry_candidates(limit=200, max_age_days=30):
+
+    print("=" * 80)
+    print("EXTRACTING PENDING SIP RETRY CANDIDATES")
+    print("=" * 80)
+
+    # The inner query's DISTINCT ON collapses the join down to at most one
+    # silver row per gold.sip pending row BEFORE this ever reaches
+    # load_sip(). Without it, multiple silver rows genuinely colliding on
+    # the same natural key (rta, folio_number, scheme_code, registered_date,
+    # amount) — confirmed to exist live in silver.sip_master_new — would
+    # all join to the same gold.sip row and be handed to load_sip()'s
+    # single-statement ON CONFLICT upsert as a duplicate-key batch, raising
+    # CardinalityViolation and silently failing the retry (load_sip()
+    # catches and swallows that error), leaving the row pending forever
+    # instead of reconciling it. DISTINCT ON requires its ORDER BY to start
+    # with its own key columns, so it can't also lead with
+    # enrichment_pending_since for oldest-pending-first prioritization —
+    # the outer query re-sorts the already-deduped rows by
+    # enrichment_pending_since ASC before applying LIMIT, preserving that
+    # original prioritization.
+    query = """
+        SELECT candidate.* FROM (
+            SELECT DISTINCT ON (g.rta, g.folio_number, g.scheme_code, g.registered_date, g.amount)
+
+                s.source,
+                s.zone,
+                s.branch,
+                s.ter_location,
+                s.inv_name,
+                s.pan,
+                s.folio_no,
+                s.folio_old,
+                s.inv_iin,
+                s.inv_dp_id,
+                s.inv_client_id,
+                s.dp_inv_name,
+
+                s.scheme_code,
+
+                s.product_code,
+                s.scheme_name,
+                s.plan,
+                s.sub_arn_code,
+                s.agent_name,
+                s.subbroker,
+                s.euin,
+                s.aut_trntyp,
+                s.payment_mode,
+                s.periodicity,
+                s.auto_amount,
+                s.no_of_installments,
+                s.period_day,
+                s.reg_date,
+                s.from_date,
+                s.to_date,
+                s.cease_date,
+                s.pause_from_date,
+                s.pause_to_date,
+                s.target_scheme,
+                s.target_scheme_code,
+                s.target_scheme_name,
+                s.target_plan,
+                s.bank,
+                s.ac_holder_name,
+                s.ecs_account_no,
+                s.ecsno,
+                s.instrm_no,
+                s.cheq_micr_no,
+                s.umrn_code,
+                s.ac_type,
+                s.amc_code,
+                s.user_code,
+                s.package_name,
+                s.special_product,
+                s.subtrxndesc,
+                s.remarks,
+                s.top_up_frq,
+                s.top_up_amt,
+                s.top_up_perc,
+                s.status,
+                s.modify_flag,
+                s.scheme_folio_number,
+                s.request_ref_no,
+                s.ft_sip_regno,
+
+                s.scheme_id,
+
+                s.created_at,
+                s.updated_at,
+
+                s.flag,
+
+                g.enrichment_pending_since AS _enrichment_pending_since
+
+            FROM silver.sip_master_new s
+
+            JOIN gold.sip g
+                ON UPPER(TRIM(s.source)) = g.rta
+               -- Mirrors clean_folio() exactly (etl_gold_sip.py:93): strip,
+               -- upper, then strip ALL occurrences of the literal ".0"
+               -- substring (str.replace(".0", "", regex=False) in pandas) —
+               -- NOT just a trailing ".0". A regex anchored to the end (\\.0$)
+               -- would silently mismatch any folio with an embedded ".0".
+               AND REPLACE(UPPER(TRIM(CAST(s.folio_no AS TEXT))), '.0', '') = g.folio_number
+               -- Mirrors clean_scheme_code() exactly (etl_gold_sip.py:112):
+               -- strip + upper on scheme_code alone, no product_code fallback
+               -- (transform_sip() never falls back to product_code at the gold
+               -- stage — that fallback only exists in the SILVER scheme_id
+               -- join, a different purpose).
+               AND UPPER(TRIM(CAST(s.scheme_code AS TEXT))) = g.scheme_code
+               AND s.reg_date = g.registered_date
+               AND s.auto_amount = g.amount
+
+            WHERE g.enrichment_pending_since IS NOT NULL
+              AND g.enrichment_pending_since > now() - make_interval(days => %(max_age_days)s)
+
+            ORDER BY g.rta, g.folio_number, g.scheme_code, g.registered_date, g.amount,
+                     s.created_at DESC
+        ) candidate
+
+        ORDER BY candidate._enrichment_pending_since ASC
+
+        LIMIT %(limit)s
+    """
+
+    df = safe_read(query, params={"max_age_days": max_age_days, "limit": limit})
+
+    # Ordering-only helper column, not part of extract_sip()'s column shape.
+    df = df.drop(columns=["_enrichment_pending_since"], errors="ignore")
+
+    print()
+    print("Retry candidates found:", len(df))
+
+    return df
+
+
+# ============================================================
+# RECONCILE PENDING SIP
+#
+# Runs the EXACT same transform_sip()/load_sip() path as a normal load,
+# just fed the bounded retry-candidate batch instead of extract_sip()'s
+# cursor-based selection. Rows whose enrichment still can't be resolved
+# simply get re-stamped with a fresh (or unchanged) enrichment_pending_since
+# by transform_sip() itself and get retried again next run, until either
+# they resolve or age past max_age_days and drop out of the candidate set.
+# ============================================================
+
+def reconcile_pending_sip(limit=200, max_age_days=30):
+
+    print("=" * 80)
+    print("RECONCILING PENDING SIP ENRICHMENT")
+    print("=" * 80)
+
+    df = extract_pending_sip_retry_candidates(limit=limit, max_age_days=max_age_days)
+
+    if df.empty:
+        print("No pending SIP rows to reconcile.")
+        return load_result("skipped", 0)
+
+    gold_df = transform_sip(df)
+
+    if gold_df.empty:
+        return load_result("skipped", 0)
+
+    return load_sip(gold_df)
+
+
+# ============================================================
 # TRANSFORM GOLD SIP
 # ============================================================
 
@@ -822,6 +1003,18 @@ def transform_sip(df):
     )
 
     # ========================================================
+    # ENRICHMENT PENDING TRACKING — client match
+    #
+    # A PAN not present in gold.clients at all means WBR9 (or its
+    # downstream gold.clients row) hasn't arrived yet, NOT that this client
+    # will never exist. Track separately from client_id itself so a later
+    # reconciliation pass can tell "not yet resolved" apart from "resolved
+    # to nothing".
+    # ========================================================
+
+    client_match_found = df["pan_clean"].isin(client_lookup.keys())
+
+    # ========================================================
     # SIP TYPE
     # ========================================================
 
@@ -910,6 +1103,20 @@ def transform_sip(df):
         index=df.index,
         dtype="string"
     )
+
+    gold_df["arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    gold_df["sub_arn"] = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="string"
+    )
+
+    txn_match_found = pd.Series(False, index=df.index)  # no transaction table at all yet
 
     # ========================================================
     # PROCESS TRANSACTIONS
@@ -1046,6 +1253,24 @@ def transform_sip(df):
         print(
             "Mapped Sub ARN rows:",
             gold_df["sub_arn"].notna().sum()
+        )
+
+        # ====================================================
+        # ENRICHMENT PENDING TRACKING — transaction match
+        #
+        # A (rta, folio) not present in arn_lookup.index at all means no
+        # transaction data exists yet for this folio (WBR2 hasn't arrived),
+        # NOT that this SIP is structurally distributor-less. A folio THAT
+        # IS present but with a blank brokcode (a genuine direct-plan
+        # investment) is correctly resolved, not pending.
+        # ====================================================
+
+        txn_match_found = pd.Series(
+            [
+                (df.loc[idx, "rta_clean"], df.loc[idx, "folio_clean"]) in arn_lookup.index
+                for idx in df.index
+            ],
+            index=df.index,
         )
 
         # ====================================================
@@ -1388,6 +1613,30 @@ def transform_sip(df):
     )
 
     # ========================================================
+    # ENRICHMENT PENDING SINCE
+    #
+    # Set when at least one of the transaction match or client match was not
+    # found — i.e. at least one enrichment source is still pending, not just
+    # "matched but the field happens to be blank" (e.g. a real direct-plan
+    # investment with no ARN). NULL = fully resolved or structurally complete.
+    # ========================================================
+
+    gold_load_timestamp_for_pending = datetime.now(timezone.utc)
+
+    enrichment_missing = (~txn_match_found) | (~client_match_found)
+
+    # Initialized with an explicit tz-aware dtype (rather than a bare
+    # `pd.NaT` scalar assign) so the later partial `.loc` assignment of a
+    # tz-aware timestamp below doesn't hit pandas' strict same-dtype
+    # upcasting check.
+    gold_df["enrichment_pending_since"] = pd.Series(
+        pd.NaT,
+        index=df.index,
+        dtype="datetime64[ns, UTC]"
+    )
+    gold_df.loc[enrichment_missing, "enrichment_pending_since"] = gold_load_timestamp_for_pending
+
+    # ========================================================
     # GOLD CREATED AT
     # ========================================================
 
@@ -1432,7 +1681,8 @@ def transform_sip(df):
         "arn_id",
         "arn",
         "sub_arn",
-        "created_at"
+        "created_at",
+        "enrichment_pending_since"
     ]
 
     gold_df = gold_df[columns].copy()
@@ -1682,7 +1932,7 @@ def load_sip(gold_df):
 
         print("No SIP rows received.")
 
-        return True
+        return load_result("skipped", 0)
 
     # ========================================================
     # GOLD.SIP COLUMNS
@@ -1717,7 +1967,8 @@ def load_sip(gold_df):
         "arn_id",
         "arn",
         "sub_arn",
-        "created_at"
+        "created_at",
+        "enrichment_pending_since"
     ]
 
     # ========================================================
@@ -1783,62 +2034,51 @@ def load_sip(gold_df):
     )
 
     # ========================================================
-    # INSERT
+    # UPSERT
     # ========================================================
 
+    conflict_target_sql = (
+        "((rta IS NULL), (COALESCE(rta, '')), "
+        "(folio_number IS NULL), (COALESCE(folio_number, '')), "
+        "(scheme_code IS NULL), (COALESCE(scheme_code, '')), "
+        "(registered_date IS NULL), (COALESCE(registered_date, '0001-01-01'::date)), "
+        "(amount IS NULL), (COALESCE(amount, 0)))"
+    )
+    update_set_sql = (
+        "status = EXCLUDED.status, ceased_date = EXCLUDED.ceased_date, "
+        "ceased_reason = EXCLUDED.ceased_reason, "
+        "completed_installments = EXCLUDED.completed_installments, "
+        "bounced_installments = EXCLUDED.bounced_installments, "
+        "next_due_date = EXCLUDED.next_due_date, mandate_id = EXCLUDED.mandate_id, "
+        "sip_day = EXCLUDED.sip_day, sip_type = EXCLUDED.sip_type, "
+        "registered_installments = EXCLUDED.registered_installments, "
+        "client_id = EXCLUDED.client_id, amc_id = EXCLUDED.amc_id, "
+        "scheme_id = EXCLUDED.scheme_id, arn_id = EXCLUDED.arn_id, "
+        "arn = EXCLUDED.arn, sub_arn = EXCLUDED.sub_arn, isin = EXCLUDED.isin, "
+        "scheme_name = EXCLUDED.scheme_name, amc_code = EXCLUDED.amc_code, "
+        "frequency = EXCLUDED.frequency, start_date = EXCLUDED.start_date, "
+        "end_date = EXCLUDED.end_date, "
+        "enrichment_pending_since = EXCLUDED.enrichment_pending_since"
+    )
+
     try:
-
-        with engine.begin() as connection:
-
-            gold_df.to_sql(
-                name="sip",
-                con=connection,
-                schema="gold",
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=1000
-            )
-
-        # ====================================================
-        # VERIFY
-        # ====================================================
-
-        verification = safe_read(
-            """
-            SELECT
-                COUNT(*) AS total_rows
-            FROM gold.sip
-            """
+        affected = upsert_dataframe(
+            engine, gold_df, schema="gold", table="sip",
+            conflict_target_sql=conflict_target_sql, update_set_sql=update_set_sql,
         )
 
-        if not verification.empty:
-
-            total_rows = int(
-                verification.iloc[0]["total_rows"]
-            )
-
-        else:
-
-            total_rows = -1
+        verification = safe_read("SELECT COUNT(*) AS total_rows FROM gold.sip")
+        total_rows = int(verification.iloc[0]["total_rows"]) if not verification.empty else -1
 
         print()
-        print(
-            "Inserted rows:",
-            rows_to_insert
-        )
-
-        print(
-            "Gold SIP rows after load:",
-            total_rows
-        )
-
+        print("Upserted rows:", affected)
+        print("Gold SIP rows after load:", total_rows)
         print()
         print("GOLD SIP LOAD SUCCESSFUL")
 
-        return True
+        return load_result("ok", affected)
 
-    except Exception:
+    except Exception as e:
 
         print()
         print("=" * 80)
@@ -1849,7 +2089,7 @@ def load_sip(gold_df):
             limit=10
         )
 
-        return False
+        return load_result("error", 0, str(e))
 
 
 # ============================================================
@@ -1944,7 +2184,7 @@ if __name__ == "__main__":
 
             print()
 
-            if success:
+            if success["status"] != "error":
 
                 print("=" * 80)
                 print(
