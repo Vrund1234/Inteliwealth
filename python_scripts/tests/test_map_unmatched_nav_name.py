@@ -49,3 +49,60 @@ class TestLoadRtaNavEmptyGuard:
 
         assert df.empty
         assert sorted(seen_params["codes"]) == ["A1", "B2"]
+
+
+class TestLoadSchemeStructuredAttrs:
+    def test_returns_plan_and_option_type_keyed_by_code(self, monkeypatch):
+        def fake_read_sql(query, conn_engine):
+            assert "plan_type" in query
+            assert "option_type" in query
+            return pd.DataFrame(
+                {
+                    "code": ["120465"],
+                    "plan_type": ["DIRECT"],
+                    "option_type": ["GROWTH"],
+                }
+            )
+
+        monkeypatch.setattr(mod.pd, "read_sql", fake_read_sql)
+
+        attrs = mod.load_scheme_structured_attrs(conn_engine=None)
+
+        assert attrs == {"120465": {"plan_type": "DIRECT", "option_type": "GROWTH"}}
+
+    def test_empty_result_returns_empty_dict(self, monkeypatch):
+        def fake_read_sql(query, conn_engine):
+            return pd.DataFrame(columns=["code", "plan_type", "option_type"])
+
+        monkeypatch.setattr(mod.pd, "read_sql", fake_read_sql)
+
+        assert mod.load_scheme_structured_attrs(conn_engine=None) == {}
+
+
+class TestStructuredMismatchFor:
+    def test_no_candidate_code_returns_none(self):
+        reason = mod.structured_mismatch_for(
+            "Axis Large Cap Fund - Direct Plan - Growth",
+            alias_fn=None,
+            amfi_scheme_code=None,
+            structured_attrs={},
+        )
+        assert reason is None
+
+    def test_agreeing_candidate_returns_none(self):
+        reason = mod.structured_mismatch_for(
+            "Axis Large Cap Fund - Direct Plan - Growth",
+            alias_fn=None,
+            amfi_scheme_code="120465",
+            structured_attrs={"120465": {"plan_type": "DIRECT", "option_type": "GROWTH"}},
+        )
+        assert reason is None
+
+    def test_disagreeing_candidate_is_flagged(self):
+        reason = mod.structured_mismatch_for(
+            "Axis Large Cap Fund - Direct Plan - Growth",
+            alias_fn=None,
+            amfi_scheme_code="120465",
+            structured_attrs={"120465": {"plan_type": "REGULAR", "option_type": "GROWTH"}},
+        )
+        assert reason == "PLAN_MISMATCH(rta=DIRECT,sm=REGULAR)"

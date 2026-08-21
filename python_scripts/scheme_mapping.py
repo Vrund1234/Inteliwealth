@@ -29,6 +29,7 @@ from scheme_matching.scheme_id import (
     derive_scheme_id,
 )
 from scheme_matching.scheme_key import parse_scheme_key
+from scheme_matching.structured_signals import plan_option_mismatch
 
 
 # =====================================================
@@ -51,6 +52,72 @@ def normalize_scheme_name(name):
     name = re.sub(r"\s+", " ", name).strip()
 
     return name
+
+
+# =====================================================
+# LOAD SCHEME_MASTER
+# =====================================================
+
+def load_scheme_master(conn_engine):
+    """scheme_code -> name/category/ISINs/plan_type/option_type, public.scheme_master.
+
+    Covers historical and active schemes (37,764 rows), unlike
+    public.amfi_scheme_master's 16,345 currently-active-only rows -- this is
+    the only master Rule 2.5 (legacy/historical name matching) can reach.
+
+    plan_type/option_type were added to this table in 2026-08; as of
+    2026-08-21 only ~13% of rows have them populated. A blank value here means
+    "no structured signal yet," never a specific plan/option -- see
+    scheme_matching.structured_signals.plan_option_mismatch.
+    """
+    sm_query = """
+        SELECT
+            scheme_code::text AS scheme_code,
+            name              AS scheme_name,
+            name_norm,
+            category,
+            isin_growth,
+            isin_reinvest,
+            plan_type,
+            option_type
+        FROM public.scheme_master
+        WHERE is_deleted = false;
+    """
+    sm_df = pd.read_sql(sm_query, conn_engine)
+    sm_df["scheme_code"] = sm_df["scheme_code"].astype(str).str.strip()
+    return sm_df
+
+
+def resolve_scheme_master_exact(
+    rta_scheme_name, alias_fn, sm_name_to_code, sm_attrs_by_code
+):
+    """Rule 2.5's decision for one RTA scheme name.
+
+    sm_name_to_code: {normalized_name: scheme_code}, built once per run from
+        scheme_master rows whose normalized name is unique (see Rule 2.5).
+    sm_attrs_by_code: {scheme_code: {"plan_type": ..., "option_type": ...}}.
+
+    Returns (scheme_code, mismatch_reason). scheme_code is None when there is
+    no exact normalized-name match. When a name match exists but
+    scheme_master's own plan_type/option_type disagree with the RTA name's
+    parsed plan/option, scheme_code is None and mismatch_reason explains why
+    -- Rule 2.5 must not accept a match its own structured evidence
+    contradicts; downstream rules (NAV_MATCH, Phase-3 tiers) get the chance
+    instead.
+    """
+    norm_name = normalize_scheme_name(rta_scheme_name)
+    matched_code = sm_name_to_code.get(norm_name)
+    if matched_code is None:
+        return None, None
+
+    attrs = sm_attrs_by_code.get(matched_code, {})
+    rta_key = parse_scheme_key(rta_scheme_name, amc_code=None, alias_fn=alias_fn)
+    reason = plan_option_mismatch(
+        rta_key, attrs.get("plan_type"), attrs.get("option_type")
+    )
+    if reason:
+        return None, reason
+    return matched_code, None
 
 
 # =====================================================
@@ -455,28 +522,9 @@ def load_scheme_mapping():
     # =================================================
     # LOAD SCHEME_MASTER (HISTORICAL AMFI MASTER)
     # =================================================
-    # public.scheme_master contains 37,764 scheme codes (both active and
-    # historical/restructured/legacy schemes), whereas public.amfi_scheme_master
-    # only has 16,345 currently active schemes.
-    # When nav_master NAV fingerprinting identifies a valid historical scheme_code,
-    # we verify its existence in scheme_master and map it directly.
-
-    sm_query = """
-        SELECT
-            scheme_code::text AS scheme_code,
-            name              AS scheme_name,
-            name_norm,
-            category,
-            isin_growth,
-            isin_reinvest
-        FROM public.scheme_master
-        WHERE is_deleted = false;
-    """
-
     print("START: Loading scheme_master")
 
-    sm_df = pd.read_sql(sm_query, master_engine)
-    sm_df["scheme_code"] = sm_df["scheme_code"].astype(str).str.strip()
+    sm_df = load_scheme_master(master_engine)
 
     sm_codes = set(sm_df["scheme_code"].dropna().unique())
     sm_names = dict(zip(sm_df["scheme_code"], sm_df["scheme_name"]))
@@ -633,14 +681,26 @@ def load_scheme_mapping():
         .set_index("name_norm_calc")["scheme_code"]
         .to_dict()
     )
+    sm_attrs_by_code = sm_df.set_index("scheme_code")[
+        ["plan_type", "option_type"]
+    ].to_dict(orient="index")
+
+    rule25_mismatches = 0
 
     for idx, row in df.iterrows():
         if pd.notna(df.at[idx, "best_amfi_scheme_code"]):
             continue
 
-        norm_name = row["normalized_scheme_name"]
-        if norm_name in sm_name_to_code:
-            matched_code = sm_name_to_code[norm_name]
+        matched_code, mismatch_reason = resolve_scheme_master_exact(
+            row["rta_scheme_name"],
+            None,
+            sm_name_to_code,
+            sm_attrs_by_code,
+        )
+        if mismatch_reason:
+            rule25_mismatches += 1
+            continue
+        if matched_code:
             update_best_match(
                 df,
                 idx,
@@ -652,6 +712,10 @@ def load_scheme_mapping():
     rule25_matched = df["best_mapping_source"].eq("SCHEME_MASTER_EXACT").sum()
     print(
         f"[DIAG] Rule 2.5 (SCHEME_MASTER_EXACT) total matched: {rule25_matched}"
+    )
+    print(
+        f"[DIAG] Rule 2.5 (SCHEME_MASTER_EXACT) structured mismatches skipped: "
+        f"{rule25_mismatches}"
     )
 
     # =================================================

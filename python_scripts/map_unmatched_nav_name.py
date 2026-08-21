@@ -39,6 +39,8 @@ from scheme_matching.nav_name_match import (
     match_within_candidates,
     nav_candidate_union,
 )
+from scheme_matching.scheme_key import parse_scheme_key
+from scheme_matching.structured_signals import plan_option_mismatch
 from utils.db import engine, master_engine
 
 # Tier 1: key equality inside the NAV-derived candidate set. Two independent
@@ -157,6 +159,36 @@ def load_scheme_names(conn_engine):
     return names
 
 
+def load_scheme_structured_attrs(conn_engine):
+    """scheme_code -> {"plan_type": ..., "option_type": ...}, public.scheme_master.
+
+    Only scheme_master is read here (not amfi_scheme_master): the schemes
+    these fallback tiers reach are, by this module's own design, the ones
+    amfi_scheme_master cannot see at all (see module docstring) -- scheme_master
+    is the only structured signal available to corroborate against.
+    """
+    df = pd.read_sql(
+        "SELECT scheme_code::text AS code, plan_type, option_type "
+        "FROM public.scheme_master WHERE is_deleted = false",
+        conn_engine,
+    )
+    return {
+        row.code: {"plan_type": row.plan_type, "option_type": row.option_type}
+        for row in df.itertuples()
+    }
+
+
+def structured_mismatch_for(rta_scheme_name, alias_fn, amfi_scheme_code, structured_attrs):
+    """mismatch reason for one resolved candidate, or None."""
+    if not amfi_scheme_code:
+        return None
+    attrs = structured_attrs.get(amfi_scheme_code, {})
+    rta_key = parse_scheme_key(rta_scheme_name, amc_code=None, alias_fn=alias_fn)
+    return plan_option_mismatch(
+        rta_key, attrs.get("plan_type"), attrs.get("option_type")
+    )
+
+
 def write_review_rows(conn_engine, rows):
     """Queue matches for approval, replacing this rule's own pending rows.
 
@@ -182,11 +214,11 @@ def write_review_rows(conn_engine, rows):
                 INSERT INTO bronze.scheme_mapping_review
                     (review_id, rta, rta_scheme_code, rta_scheme_name,
                      candidate_rank, candidate_amfi_code, candidate_amfi_name,
-                     candidate_score, rule_name)
+                     candidate_score, rule_name, structured_mismatch)
                 VALUES
                     (:review_id, :rta, :rta_scheme_code, :rta_scheme_name,
                      :candidate_rank, :candidate_amfi_code, :candidate_amfi_name,
-                     :candidate_score, :rule_name)
+                     :candidate_score, :rule_name, :structured_mismatch)
                 ON CONFLICT (rta, rta_scheme_code, candidate_rank) DO NOTHING
                 """
             ),
@@ -229,6 +261,9 @@ def run_fallback_mapping(verbose=True, csv_path=None):
 
     names = load_scheme_names(master_engine)
     say(f"Scheme names in universe     : {len(names)}")
+
+    structured_attrs = load_scheme_structured_attrs(master_engine)
+    say(f"Structured plan/option rows   : {len(structured_attrs)}")
 
     review_rows, report, counts = [], [], {RESOLVED: 0, AMBIGUOUS: 0, NO_MATCH: 0}
     tier_counts = {"NAV+NAME": 0, "NAME_ONLY": 0, "NAV+FUZZY": 0}
@@ -274,6 +309,10 @@ def run_fallback_mapping(verbose=True, csv_path=None):
                     "candidate_amfi_name": names.get(fallback.amfi_scheme_code),
                     "candidate_score": float(CONFIDENCE_TIER2),
                     "rule_name": RULE_NAME_TIER2,
+                    "structured_mismatch": structured_mismatch_for(
+                        row.rta_scheme_name, alias_fn,
+                        fallback.amfi_scheme_code, structured_attrs,
+                    ),
                 })
                 tier_counts["NAME_ONLY"] += 1
                 say(f"  {'NAME_ONLY':9s} {row.rta}/{row.rta_scheme_code:9s} -> "
@@ -336,6 +375,10 @@ def run_fallback_mapping(verbose=True, csv_path=None):
                 "candidate_amfi_name": names.get(result.amfi_scheme_code),
                 "candidate_score": float(confidence),
                 "rule_name": rule,
+                "structured_mismatch": structured_mismatch_for(
+                    row.rta_scheme_name, alias_fn,
+                    result.amfi_scheme_code, structured_attrs,
+                ),
             })
             tier_counts[tier] += 1
             say(f"  {tier:9s} {row.rta}/{row.rta_scheme_code:9s} -> "
