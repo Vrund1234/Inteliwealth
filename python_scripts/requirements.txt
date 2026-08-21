@@ -8,3 +8,5 @@ tzdata
 pyparsing
 rapidfuzz
 pytest
+dbfread
+shapely

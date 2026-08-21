@@ -2,6 +2,11 @@ import pandas as pd
 
 from utils.db import engine
 
+from mapping_wbr import (
+    BROKERAGE_AMOUNT_COLUMNS,
+    BROKERAGE_DATE_COLUMNS
+)
+
 
 # =====================================================
 # SAFE READ
@@ -307,7 +312,7 @@ def map_scheme_id(
 # NORMALIZE DATA FOR DUPLICATE COMPARISON
 # =====================================================
 
-def normalize_for_compare(df):
+def normalize_for_compare(df, ignore_cols=None):
 
     df = df.copy()
 
@@ -316,14 +321,20 @@ def normalize_for_compare(df):
     # scheme_id is specifically ignored so that
     # adding/fixing scheme_id does not make an
     # otherwise identical row appear as a new row.
+    #
+    # A caller whose business key includes one of them
+    # (brokerage_summary needs `source`) passes its own
+    # set.
 
-    ignore_cols = {
-        "created_at",
-        "updated_at",
-        "flag",
-        "source",
-        "scheme_id"
-    }
+    if ignore_cols is None:
+
+        ignore_cols = {
+            "created_at",
+            "updated_at",
+            "flag",
+            "source",
+            "scheme_id"
+        }
 
     df = df.drop(
         columns=list(ignore_cols),
@@ -351,6 +362,25 @@ def normalize_for_compare(df):
                 .astype("string")
                 .str.strip()
             )
+
+        # A missing value must compare equal however it
+        # arrived. Reading a NULL back from Postgres gives
+        # <NA>, while the same NULL held in a pandas float
+        # column stringifies to "nan" - without this they
+        # look like two different values and every row
+        # carrying one is re-inserted as new.
+
+        df[col] = df[col].replace(
+            {
+                "nan": "",
+                "NaN": "",
+                "NaT": "",
+                "None": "",
+                "<NA>": ""
+            }
+        )
+
+        df[col] = df[col].fillna("")
 
     return df
 
@@ -411,8 +441,44 @@ def get_table_columns(table_name):
 
 def append_new_rows(
     df,
-    table_name
+    table_name,
+    ignore_cols=None,
+    numeric_cols=None
 ):
+
+    # =================================================
+    # COLUMNS IGNORED DURING DUPLICATE COMPARISON
+    #
+    # Default keeps the historic behaviour. A caller
+    # whose business key includes one of these columns
+    # passes its own set - brokerage_summary must compare
+    # on `source`, because the same product code and the
+    # same amounts mean different things per RTA.
+    # =================================================
+
+    if ignore_cols is None:
+
+        ignore_cols = {
+            "flag",
+            "created_at",
+            "updated_at",
+            "source",
+            "scheme_id"
+        }
+
+    ignore_cols = set(ignore_cols)
+
+    # =================================================
+    # NUMERIC COLUMNS IN THE DUPLICATE COMPARISON
+    #
+    # A column that is NUMERIC in Silver comes back as
+    # Decimal, so "0.00000000" from the database and
+    # "0.0" from pandas are the same number but two
+    # different strings. Columns named here are compared
+    # on value instead of on spelling.
+    # =================================================
+
+    numeric_cols = set(numeric_cols or [])
 
     if df.empty:
 
@@ -473,13 +539,7 @@ def append_new_rows(
     # REMOVE EXACT DUPLICATES INSIDE CURRENT BATCH
     # =================================================
 
-    batch_ignore_cols = {
-        "flag",
-        "created_at",
-        "updated_at",
-        "source",
-        "scheme_id"
-    }
+    batch_ignore_cols = ignore_cols
 
     batch_compare_cols = [
         col
@@ -572,19 +632,10 @@ def append_new_rows(
     else:
 
         # -------------------------------------------------
-        # COLUMNS TO IGNORE DURING DUPLICATE COMPARISON
-        # -------------------------------------------------
-
-        ignore_cols = {
-            "flag",
-            "created_at",
-            "updated_at",
-            "source",
-            "scheme_id"
-        }
-
-        # -------------------------------------------------
         # COMMON BUSINESS COLUMNS
+        #
+        # ignore_cols comes from the caller (see top of
+        # this function).
         # -------------------------------------------------
 
         compare_cols = [
@@ -623,7 +674,8 @@ def append_new_rows(
         # -------------------------------------------------
 
         new_compare = normalize_for_compare(
-            df[compare_cols]
+            df[compare_cols],
+            ignore_cols
         )
 
         # -------------------------------------------------
@@ -631,8 +683,42 @@ def append_new_rows(
         # -------------------------------------------------
 
         old_compare = normalize_for_compare(
-            existing[compare_cols]
+            existing[compare_cols],
+            ignore_cols
         )
+
+        # -------------------------------------------------
+        # COMPARE NUMERIC COLUMNS ON VALUE
+        # -------------------------------------------------
+
+        for col in numeric_cols:
+
+            if col not in new_compare.columns:
+                continue
+
+            # astype(float) first: to_numeric returns
+            # int64 for a whole-number column, so 0 and
+            # 0.0 would still be two different strings.
+
+            new_compare[col] = (
+                pd.to_numeric(
+                    new_compare[col],
+                    errors="coerce"
+                )
+                .astype(float)
+                .round(8)
+                .astype("string")
+            )
+
+            old_compare[col] = (
+                pd.to_numeric(
+                    old_compare[col],
+                    errors="coerce"
+                )
+                .astype(float)
+                .round(8)
+                .astype("string")
+            )
 
         # -------------------------------------------------
         # CREATE NEW ROW KEYS
@@ -1713,6 +1799,120 @@ def transform_sip_master(df):
 
 
 # =====================================================
+# BROKERAGE SUMMARY TRANSFORMATION
+#
+# bronze.brokerage_summary → silver.brokerage_summary
+#
+# Same shape as bronze plus scheme_id, and the money
+# columns typed as NUMERIC for the first time.
+#
+# product_code is the RTA product code (CAMS D104,
+# FTI970), which is exactly what
+# bronze.scheme_mapping.rta_scheme_code holds, so
+# scheme_id resolves through the existing lookup with no
+# report-specific rule.
+# =====================================================
+
+def transform_brokerage_summary(df):
+
+    df = df.copy()
+
+    # =================================================
+    # REMOVE EXACT DUPLICATES
+    # =================================================
+
+    df = df.drop_duplicates()
+
+    # =================================================
+    # TRIM STRING COLUMNS
+    # =================================================
+
+    object_cols = df.select_dtypes(
+        include="object"
+    ).columns
+
+    for col in object_cols:
+
+        if col in BROKERAGE_DATE_COLUMNS:
+            continue
+
+        df[col] = (
+            df[col]
+            .astype("string")
+            .str.strip()
+        )
+
+    # =================================================
+    # UPPER CASE CODE COLUMNS
+    # =================================================
+
+    for col in [
+        "source",
+        "report_type",
+        "product_code",
+        "amc_code",
+        "broker_code",
+        "sub_broker_code"
+    ]:
+
+        if col in df.columns:
+
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.upper()
+            )
+
+    # =================================================
+    # SCHEME ID MAPPING
+    #
+    # product_code
+    # → scheme_mapping.rta_scheme_code
+    # → scheme_mapping.scheme_id
+    # =================================================
+
+    df = map_scheme_id(
+        df,
+        "product_code"
+    )
+
+    # =================================================
+    # MONEY COLUMNS
+    # =================================================
+
+    for col in BROKERAGE_AMOUNT_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    # =================================================
+    # DATE COLUMNS
+    # =================================================
+
+    for col in BROKERAGE_DATE_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        df[col] = pd.to_datetime(
+            df[col],
+            errors="coerce"
+        ).dt.date
+
+        df[col] = df[col].where(
+            pd.notnull(df[col]),
+            None
+        )
+
+    return df
+
+
+# =====================================================
 # ROUND DECIMAL COLUMNS
 # =====================================================
 
@@ -1911,6 +2111,62 @@ def load_silver():
 
         print(
             "No SIP Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # BROKERAGE SUMMARY (WBR36 / WBR36H / ...)
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("PROCESSING BROKERAGE SUMMARY")
+    print("=" * 80)
+
+    brokerage_df = safe_read(
+        """
+        SELECT *
+        FROM bronze.brokerage_summary
+        WHERE flag = 0
+        """
+    )
+
+    print(
+        "Bronze Brokerage rows :",
+        len(brokerage_df)
+    )
+
+    if not brokerage_df.empty:
+
+        brokerage_df = transform_brokerage_summary(
+            brokerage_df
+        )
+
+        # round_decimal_columns() is deliberately NOT
+        # applied here: it rounds to 4 decimals and the
+        # RTA reports brokerage to 8.
+
+        append_new_rows(
+            brokerage_df,
+            "brokerage_summary",
+
+            # source is part of the brokerage business
+            # key, so it must not be ignored.
+            ignore_cols={
+                "flag",
+                "created_at",
+                "updated_at",
+                "scheme_id"
+            },
+
+            # NUMERIC in Silver, float in pandas.
+            numeric_cols=BROKERAGE_AMOUNT_COLUMNS
+        )
+
+    else:
+
+        print(
+            "No Brokerage Bronze rows "
             "with flag = 0."
         )
 

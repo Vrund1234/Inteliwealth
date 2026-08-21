@@ -91,6 +91,25 @@ except ImportError:
 
 
 # =====================================================
+# OPTIONAL BROKERAGE SUMMARY (WBR36 / WBR36H / ...)
+# =====================================================
+
+try:
+
+    from etl_gold_brokerage_summary import (
+        extract_brokerage_summary,
+        transform_brokerage_summary,
+        load_brokerage_summary
+    )
+
+    BROKERAGE_AVAILABLE = True
+
+except ImportError:
+
+    BROKERAGE_AVAILABLE = False
+
+
+# =====================================================
 # MAIN GOLD LOAD FUNCTION
 # =====================================================
 
@@ -406,6 +425,56 @@ def load_gold():
             )
 
             print(e)
+
+
+    # =====================================================
+    # GOLD BROKERAGE SUMMARY
+    # =====================================================
+
+    if BROKERAGE_AVAILABLE:
+
+        try:
+
+            print("\nLoading Gold Brokerage Summary")
+
+            brokerage_df = extract_brokerage_summary()
+
+            if not brokerage_df.empty:
+
+                brokerage_gold_df = (
+                    transform_brokerage_summary(
+                        brokerage_df
+                    )
+                )
+
+                if not brokerage_gold_df.empty:
+
+                    load_brokerage_summary(
+                        brokerage_gold_df
+                    )
+
+                    print(
+                        "Brokerage Summary "
+                        "loaded successfully"
+                    )
+
+            else:
+
+                print(
+                    "No Brokerage Summary data found"
+                )
+
+        except Exception as e:
+
+            print("Brokerage Summary Gold Failed")
+            print(e)
+
+    else:
+
+        print(
+            "\nGold Brokerage Summary module "
+            "not available"
+        )
 
 
     print("=" * 80)

@@ -17,6 +17,9 @@ from map_unmatched_nav_name import (
 )
 from promote_approved_mappings import RULE_NAMES as REVIEW_RULES
 from promote_approved_mappings import promote_approved
+
+# WBR reports (brokerage summary)
+from mapping_wbr import identify_brokerage_file
 from utils.db import engine
 from sqlalchemy import bindparam, text
 
@@ -69,7 +72,8 @@ if "uploaded_types" not in st.session_state:
     st.session_state.uploaded_types = {
         "investor": False,
         "transaction": False,
-        "sip": False
+        "sip": False,
+        "brokerage": False
     }
 
 
@@ -105,7 +109,7 @@ with col1:
 
     uploaded_files = st.file_uploader(
         "Upload Files",
-        type=["xlsx", "csv", "txt"],
+        type=["xlsx", "xls", "csv", "txt", "dbf"],
         accept_multiple_files=True,
         key=f"uploader_{st.session_state.uploader_key}"
     )
@@ -206,16 +210,26 @@ if extract_btn:
         uploaded_types = {
             "investor": False,
             "transaction": False,
-            "sip": False
+            "sip": False,
+            "brokerage": False
         }
 
         for file in uploaded_files:
 
             name = file.name.lower()
 
+            # ---------- BROKERAGE (WBR36 / WBR36H) ----------
+            #
+            # Same registry raw_ingestion.py uses, so the
+            # banner and the real routing cannot disagree.
+
+            if identify_brokerage_file(name) is not None:
+
+                uploaded_types["brokerage"] = True
+
             # ---------- CAMS ----------
 
-            if name.endswith("r9.csv"):
+            elif name.endswith("r9.csv"):
 
                 uploaded_types["investor"] = True
 
@@ -257,7 +271,8 @@ if extract_btn:
             transaction_count,
             investor_count,
             sip_count,
-            sip_preview
+            sip_preview,
+            brokerage_count
         ) = extract_and_push(
             uploaded_files
         )
@@ -269,7 +284,8 @@ if extract_btn:
             f"✔ Bronze Extraction Complete "
             f"(Transactions: {transaction_count}, "
             f"Investor: {investor_count}, "
-            f"SIP: {sip_count})"
+            f"SIP: {sip_count}, "
+            f"Brokerage: {brokerage_count})"
         )
 
 
@@ -386,6 +402,16 @@ if extract_btn:
             bronze_data["SIP"] = read_table(
                 "bronze",
                 "sip_master_new"
+            )
+
+
+        # ---------- BROKERAGE SUMMARY ----------
+
+        if uploaded_types["brokerage"]:
+
+            bronze_data["Brokerage Summary"] = read_table(
+                "bronze",
+                "brokerage_summary"
             )
 
 
@@ -714,6 +740,18 @@ if transform_btn:
                 )
 
 
+            # ---------- BROKERAGE SUMMARY ----------
+
+            if uploaded.get("brokerage"):
+
+                silver_data["Brokerage Summary"] = (
+                    read_table(
+                        "silver",
+                        "brokerage_summary"
+                    )
+                )
+
+
             # =================================================
             # GOLD PREVIEW
             # =================================================
@@ -782,6 +820,14 @@ if transform_btn:
             gold_data["SIP"] = read_table(
                 "gold",
                 "sip"
+            )
+
+
+            # ---------- BROKERAGE SUMMARY ----------
+
+            gold_data["Brokerage Summary"] = read_table(
+                "gold",
+                "brokerage_summary"
             )
 
 

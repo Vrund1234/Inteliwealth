@@ -10,6 +10,8 @@ from utils.db import engine
 from etl_investor_master import process_investor_master
 from etl_trans import process_transactions
 from etl_sip import process_sip
+from etl_brokerage_summary import process_brokerage_summary
+from mapping_wbr import identify_brokerage_file
 
 
 # =====================================================
@@ -659,6 +661,17 @@ def extract_and_push(uploaded_files):
     kfin_sip = []
 
     # =================================================
+    # BROKERAGE REPORTS (WBR36 / WBR36H / ...)
+    #
+    # One flat list instead of a per-RTA list: which RTA
+    # and which report a file belongs to is decided by
+    # mapping_wbr.BROKERAGE_FILE_PATTERNS, so new RTAs
+    # need no change here.
+    # =================================================
+
+    brokerage_files = []
+
+    # =================================================
     # READ ALL FILES
     # =================================================
 
@@ -672,6 +685,36 @@ def extract_and_push(uploaded_files):
         print("=" * 80)
 
         df = read_file(file)
+
+        # =================================================
+        # BROKERAGE REPORTS
+        #
+        # Checked first because the registry knows every
+        # RTA's brokerage file, whatever its extension.
+        # =================================================
+
+        brokerage_pattern = identify_brokerage_file(name)
+
+        if brokerage_pattern is not None:
+
+            brokerage_files.append(
+                {
+                    "df": df,
+                    "source": brokerage_pattern["source"],
+                    "report_type": (
+                        brokerage_pattern["report_type"]
+                    )
+                }
+            )
+
+            print(
+                "Recognised as "
+                f"{brokerage_pattern['source']} "
+                f"{brokerage_pattern['report_type']} "
+                "brokerage report"
+            )
+
+            continue
 
         # =================================================
         # CAMS FILES
@@ -843,6 +886,14 @@ def extract_and_push(uploaded_files):
         )
 
     # =====================================================
+    # BROKERAGE SUMMARY
+    # =====================================================
+
+    if brokerage_files:
+
+        process_brokerage_summary(brokerage_files)
+
+    # =====================================================
     # RETURN RESULTS
     # =====================================================
 
@@ -859,5 +910,7 @@ def extract_and_push(uploaded_files):
         +
         len(kfin_sip),
 
-        sip_preview
+        sip_preview,
+
+        len(brokerage_files)
     )
