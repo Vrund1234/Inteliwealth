@@ -368,6 +368,31 @@ def clean_scheme_id(series):
 
 
 # ============================================================
+# RESOLVE SCHEME ID
+#
+# Each transaction row already carries its own scheme_id.
+# `mapped_scheme_id` exists only as a fallback for rows whose
+# OWN scheme_id is missing (it is filled in from a same-investor
+# transaction elsewhere, so it is not scoped to this row's real
+# scheme). Preferring `mapped_scheme_id` unconditionally collapses
+# every transaction of a multi-scheme investor onto a single
+# scheme (whichever one happened to be their most recent trade),
+# which then causes drop_duplicates() on (rta, folio_number,
+# scheme_id) to discard their other, real holdings.
+#
+# So: use the row's own scheme_id whenever it is present, and
+# fall back to mapped_scheme_id only when it is genuinely missing.
+# ============================================================
+
+def resolve_scheme_id(raw_scheme_id, mapped_scheme_id):
+
+    raw = clean_scheme_id(raw_scheme_id)
+    mapped = clean_scheme_id(mapped_scheme_id)
+
+    return raw.fillna(mapped)
+
+
+# ============================================================
 # PURCHASE MASK
 # ============================================================
 
@@ -807,7 +832,11 @@ def transform_holdings(df):
         index=df.index
     )
 
-    gold_df["scheme_id"] = clean_scheme_id(
+    gold_df["scheme_id"] = resolve_scheme_id(
+        get_column(
+            df,
+            "scheme_id"
+        ),
         get_column(
             df,
             "mapped_scheme_id"

@@ -10,7 +10,7 @@ import pandas as pd  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from utils.db import engine  # noqa: E402
 from utils.gold_result import load_result  # noqa: E402
-from etl_gold_sip import transform_sip  # noqa: E402
+from etl_gold_sip import transform_sip, load_sip  # noqa: E402
 import gold_loader  # noqa: E402
 
 
@@ -302,3 +302,96 @@ def test_transform_sip_no_pending_marker_when_matched_but_arn_blank():
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM gold.clients WHERE pan = :pan"), {"pan": pan})
             conn.execute(text("DELETE FROM silver.transaction_master_new WHERE pan = :pan"), {"pan": pan})
+
+
+def test_load_sip_dedupes_rows_colliding_on_gold_natural_key():
+    # Reproduces the live CardinalityViolation shape found tonight in production:
+    # two DISTINCT silver.sip_master_new rows collide on gold.sip's natural key
+    # (rta, folio_number, scheme_code, registered_date, amount) once transform_sip()
+    # cleans/normalizes them, even though they differ in other tracked columns (here:
+    # pan and ft_sip_regno). Silver legitimately allows both to coexist -- its OWN
+    # unique index also includes inv_iin, which differs between the two rows.
+    #
+    # Undeduped, handing both rows to upsert_dataframe()'s single-statement
+    # ON CONFLICT ... DO UPDATE raises:
+    #   psycopg2.errors.CardinalityViolation: ON CONFLICT DO UPDATE command
+    #   cannot affect row a second time
+    # load_sip() must dedup on the natural key before upserting so the load
+    # succeeds and exactly one gold.sip row lands.
+    rta = "CAMS"
+    folio = f"FOLIO-{uuid.uuid4().hex[:8].upper()}"
+    scheme_code = f"SCH-{uuid.uuid4().hex[:6].upper()}"
+    reg_date = datetime(2026, 8, 1)
+    amount = 4242
+    pan_a = uuid.uuid4().hex[:10].upper()
+    pan_b = uuid.uuid4().hex[:10].upper()
+
+    row_a = _sip_silver_row(
+        source=rta, pan=pan_a, folio_no=folio, scheme_code=scheme_code,
+        reg_date=reg_date, auto_amount=amount, ft_sip_regno="SIPREG-DUP-A",
+        inv_iin="IIN-DUP-A",
+    )
+    row_b = _sip_silver_row(
+        source=rta, pan=pan_b, folio_no=folio, scheme_code=scheme_code,
+        reg_date=reg_date, auto_amount=amount, ft_sip_regno="SIPREG-DUP-B",
+        inv_iin="IIN-DUP-B",
+    )
+
+    try:
+        with engine.begin() as conn:
+            for row in (row_a, row_b):
+                columns = list(row.keys())
+                col_sql = ", ".join(columns)
+                val_sql = ", ".join(f":{c}" for c in columns)
+                conn.execute(
+                    text(f"INSERT INTO silver.sip_master_new ({col_sql}) VALUES ({val_sql})"),
+                    row,
+                )
+
+        # Real DB round-trip: read the two rows back from silver (rather than
+        # reusing the in-memory dicts) so transform_sip()/load_sip() operate on
+        # what actually persisted. ORDER BY pins the incoming row order so we
+        # can assert on which source row load_sip()'s keep="last" dedup keeps.
+        silver_df = pd.read_sql(
+            text(
+                "SELECT * FROM silver.sip_master_new "
+                "WHERE folio_no = :folio AND source = :rta AND scheme_code = :scheme_code "
+                "ORDER BY ft_sip_regno ASC"
+            ),
+            engine,
+            params={"folio": folio, "rta": rta, "scheme_code": scheme_code},
+        )
+        assert len(silver_df) == 2, "expected both colliding silver rows to be readable back"
+
+        gold_df = transform_sip(silver_df)
+        assert len(gold_df) == 2, (
+            "transform_sip() must not drop rows -- dedup belongs in load_sip()"
+        )
+
+        result = load_sip(gold_df)
+        assert result["status"] == "ok", f"load_sip() failed: {result}"
+
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT sip_reg_no FROM gold.sip WHERE rta = :rta AND folio_number = :folio "
+                    "AND scheme_code = :scheme_code AND registered_date = :reg_date AND amount = :amount"
+                ),
+                {"rta": rta, "folio": folio, "scheme_code": scheme_code,
+                 "reg_date": reg_date.date(), "amount": amount},
+            ).fetchall()
+
+        assert len(rows) == 1, (
+            f"expected exactly one gold.sip row for the colliding natural key, got {len(rows)}"
+        )
+        # ft_sip_regno "B" sorts last in the ORDER BY above, so it's the last row in
+        # gold_df -- keep="last" should retain it.
+        assert rows[0].sip_reg_no == "SIPREG-DUP-B"
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM gold.sip WHERE rta = :rta AND folio_number = :folio "
+                               "AND scheme_code = :scheme_code"),
+                         {"rta": rta, "folio": folio, "scheme_code": scheme_code})
+            conn.execute(text("DELETE FROM silver.sip_master_new WHERE folio_no = :folio "
+                               "AND source = :rta AND scheme_code = :scheme_code"),
+                         {"rta": rta, "folio": folio, "scheme_code": scheme_code})

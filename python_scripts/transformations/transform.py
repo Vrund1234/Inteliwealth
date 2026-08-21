@@ -1,6 +1,7 @@
 import pandas as pd
 
 from utils.db import engine
+from utils.gold_result import load_result
 from utils.upsert import upsert_dataframe
 
 
@@ -509,7 +510,7 @@ def append_new_rows(
             f"{table_name} : No data"
         )
 
-        return
+        return load_result("skipped", 0)
 
     print("=" * 80)
     print(
@@ -536,7 +537,10 @@ def append_new_rows(
             "Bronze flag column is missing."
         )
 
-        return
+        return load_result(
+            "error", 0,
+            f"{table_name}: bronze flag column is missing"
+        )
 
     # -------------------------------------------------
     # ONLY BRONZE FLAG = 0
@@ -558,7 +562,7 @@ def append_new_rows(
             "No Bronze rows with flag = 0."
         )
 
-        return
+        return load_result("skipped", 0)
 
     # =================================================
     # REMOVE DUPLICATES INSIDE CURRENT BRONZE BATCH
@@ -604,7 +608,7 @@ def append_new_rows(
             "No rows after batch duplicate removal."
         )
 
-        return
+        return load_result("skipped", 0)
 
     # =================================================
     # READ EXISTING SILVER DATA
@@ -685,7 +689,11 @@ def append_new_rows(
                 "available for duplicate comparison."
             )
 
-            return
+            return load_result(
+                "error", 0,
+                f"{table_name}: no common business columns "
+                "available for duplicate comparison"
+            )
 
         print()
         print(
@@ -824,7 +832,7 @@ def append_new_rows(
             "No duplicate rows inserted into Silver."
         )
 
-        return
+        return load_result("skipped", 0)
 
     # =================================================
     # SILVER AUDIT TIMESTAMP
@@ -851,7 +859,10 @@ def append_new_rows(
             "Silver table not found."
         )
 
-        return
+        return load_result(
+            "error", 0,
+            f"{table_name}: silver table not found"
+        )
 
     # =================================================
     # ADD MISSING COLUMNS
@@ -937,7 +948,7 @@ def append_new_rows(
         print(e)
         print("=" * 80)
 
-        return
+        return load_result("error", 0, str(e))
 
     print("=" * 80)
     print(
@@ -946,6 +957,8 @@ def append_new_rows(
         f"{len(df) - inserted} duplicate(s) skipped)"
     )
     print("=" * 80)
+
+    return load_result("ok", inserted)
 
 
 # =====================================================
@@ -1983,6 +1996,8 @@ def load_silver():
     print("STARTING BRONZE → SILVER ETL")
     print("=" * 80)
 
+    results = {}
+
     # =================================================
     # INVESTOR MASTER
     # =================================================
@@ -2015,7 +2030,7 @@ def load_silver():
             investor_df
         )
 
-        append_new_rows(
+        results["investor_master"] = append_new_rows(
             investor_df,
             "investor_master"
         )
@@ -2026,6 +2041,8 @@ def load_silver():
             "No Investor Bronze rows "
             "with flag = 0."
         )
+
+        results["investor_master"] = load_result("skipped", 0)
 
     # =================================================
     # TRANSACTION MASTER
@@ -2059,7 +2076,7 @@ def load_silver():
             transaction_df
         )
 
-        append_new_rows(
+        results["transaction_master_new"] = append_new_rows(
             transaction_df,
             "transaction_master_new"
         )
@@ -2070,6 +2087,8 @@ def load_silver():
             "No Transaction Bronze rows "
             "with flag = 0."
         )
+
+        results["transaction_master_new"] = load_result("skipped", 0)
 
     # =================================================
     # SIP MASTER
@@ -2103,7 +2122,7 @@ def load_silver():
             sip_df
         )
 
-        append_new_rows(
+        results["sip_master_new"] = append_new_rows(
             sip_df,
             "sip_master_new"
         )
@@ -2115,10 +2134,14 @@ def load_silver():
             "with flag = 0."
         )
 
+        results["sip_master_new"] = load_result("skipped", 0)
+
     print()
     print("=" * 80)
     print("SILVER LAYER LOADED SUCCESSFULLY")
     print("=" * 80)
+
+    return results
 
 
 # =====================================================

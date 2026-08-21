@@ -1999,7 +1999,7 @@ def load_sip(gold_df):
     rows_to_insert = len(gold_df)
 
     print(
-        "Rows to insert:",
+        "Rows received (pre-dedup):",
         rows_to_insert
     )
 
@@ -2009,6 +2009,42 @@ def load_sip(gold_df):
 
     validate_string_lengths(
         gold_df
+    )
+
+    # ========================================================
+    # DEDUP ON NATURAL KEY BEFORE UPSERT
+    #
+    # Postgres's single-statement multi-row ON CONFLICT ... DO UPDATE
+    # cannot affect the same conflicting row twice within one statement
+    # (CardinalityViolation) -- confirmed live in production. Multiple
+    # silver rows can legitimately collapse to the same gold natural key
+    # (rta, folio_number, scheme_code, registered_date, amount); keep only
+    # one per key. extract_sip() orders its query by silver's created_at
+    # ASC, and transform_sip() preserves that row order into gold_df, so
+    # keep="last" here keeps the most-recently-created SOURCE row per key
+    # -- do NOT sort by gold_df's own "created_at" column first, since
+    # every row in a single transform_sip() call shares one identical
+    # batch timestamp and can't discriminate between duplicates at all.
+    # ========================================================
+
+    before_dedup = len(gold_df)
+
+    gold_df = gold_df.drop_duplicates(
+        subset=["rta", "folio_number", "scheme_code", "registered_date", "amount"],
+        keep="last",
+    ).reset_index(drop=True)
+
+    deduped_count = before_dedup - len(gold_df)
+
+    if deduped_count:
+        print(
+            f"Deduplicated {deduped_count} row(s) sharing the same natural key "
+            f"before upsert (kept the most recently created source row per key)"
+        )
+
+    print(
+        "Rows to insert (post-dedup):",
+        len(gold_df)
     )
 
     # ========================================================
