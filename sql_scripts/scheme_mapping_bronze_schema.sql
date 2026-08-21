@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS bronze.scheme_mapping_review (
     candidate_amfi_name text,
     candidate_score     numeric,
     rule_name           varchar NOT NULL,
+    structured_mismatch varchar,
     reviewer_decision   varchar,
     reviewed_by         varchar,
     reviewed_at         timestamp,
@@ -180,5 +181,15 @@ CREATE INDEX IF NOT EXISTS ix_scheme_mapping_audit_scheme
 ALTER TABLE bronze.scheme_mapping ADD COLUMN IF NOT EXISTS verified_by varchar(100);
 ALTER TABLE bronze.scheme_mapping ADD COLUMN IF NOT EXISTS verified_at timestamp;
 ALTER TABLE bronze.scheme_mapping ADD COLUMN IF NOT EXISTS rta_isin varchar(20);
+
+-- ---------------------------------------------------------------------------
+-- Upgrade path for a database created before structured_mismatch existed.
+-- Carries a PLAN_MISMATCH/OPTION_MISMATCH reason from scheme_master's own
+-- plan_type/option_type onto a Phase-3 fallback candidate queued for review,
+-- so a human reviewer sees the disagreement instead of approving on name
+-- match alone. NULL means either no structured signal was available or the
+-- signal agreed with the parsed name -- both read as "nothing to flag."
+-- ---------------------------------------------------------------------------
+ALTER TABLE bronze.scheme_mapping_review ADD COLUMN IF NOT EXISTS structured_mismatch varchar;
 
 COMMIT;

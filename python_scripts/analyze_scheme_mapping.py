@@ -54,8 +54,8 @@ def load():
     )
     review = pd.read_sql(
         "SELECT rta, rta_scheme_code, count(*) AS n_candidates "
-        "FROM public.scheme_mapping_review GROUP BY rta, rta_scheme_code",
-        master_engine,
+        "FROM bronze.scheme_mapping_review GROUP BY rta, rta_scheme_code",
+        engine,
         dtype=str,
     )
     return mapping, amfi, review
@@ -221,7 +221,7 @@ def audit_matched(matched, amfi):
 
 def main():
     mapping, amfi, review = load()
-    alias_fn = build_alias_fn(load_aliases(master_engine))
+    alias_fn = build_alias_fn(load_aliases(engine))
     amc_map = load_amc_map(master_engine)
 
     mapping = mapping.merge(
