@@ -312,7 +312,7 @@ TRANSACTION_MASTER_MAPPING = {
     "euin_valid": ["euin_valid", "evalid"],
     "euin_opted": ["euin_opted", "edeclflag"],
     "sub_brk_arn": ["sub_brk_arn", "subarncode", "sub_brk_ar"],
-    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag", "electrxnflag"],
+    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag", "electrxnflag", "exch_dc_fl" ],
     "remarks": ["remarks"],
     "altfolio": ["altfolio"],
 

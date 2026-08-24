@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import re
 
 from mapping import TRANSACTION_MASTER_MAPPING
 from datetime import datetime, date
@@ -54,6 +55,7 @@ DATE_COLUMNS = [
 
 IDENTIFIER_COLUMNS = [
     "folio_no",
+    "altfolio",
     "trxnno",
     "usrtrxno",
     "application_no",
@@ -315,12 +317,8 @@ def normalize(df):
 
     return df
 
-
-# =====================================================
-# CLEAN IDENTIFIER COLUMNS
-# =====================================================
-
 def clean_identifier_columns(df):
+
     if df is None:
         return df
 
@@ -331,22 +329,39 @@ def clean_identifier_columns(df):
         if col not in df.columns:
             continue
 
-        df[col] = (
-            df[col]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.replace(r"\.0$", "", regex=True)
-            .replace(
-                {
-                    "": None,
-                    "nan": None,
-                    "None": None,
-                    "<NA>": None,
-                    "NaT": None,
-                }
-            )
-        )
+        def clean_identifier(value):
+
+            if pd.isna(value):
+                return None
+
+            value = str(value).strip()
+
+            # Common null values
+            if value.lower() in {
+                "",
+                "nan",
+                "none",
+                "<na>",
+                "nat",
+                "null",
+            }:
+                return None
+
+            # Remove artificial .0 ONLY when the complete
+            # value is a numeric integer represented as float.
+            #
+            # 12345.0 -> 12345
+            # 00123.0 -> 00123
+            #
+            # But:
+            # ABC.0   -> ABC.0
+            # 123.50  -> 123.50
+            if re.fullmatch(r"\d+\.0", value):
+                value = value[:-2]
+
+            return value
+
+        df[col] = df[col].apply(clean_identifier)
 
     return df
 
