@@ -1,6 +1,8 @@
 from sqlalchemy import text
 from utils.db import engine
 
+from mapping_wbr import WBR_REPORTS
+
 
 def create_triggers():
 
@@ -24,10 +26,18 @@ def create_triggers():
         ("bronze", "sip_master_new"),
         ("silver", "transaction_master_new"),
         ("silver", "investor_master"),
-        ("silver", "sip_master_new"),
-        ("bronze", "brokerage_summary"),
-        ("silver", "brokerage_summary")
+        ("silver", "sip_master_new")
     ]
+
+    # WBR report tables come from the registry, so a
+    # report added to mapping_wbr.WBR_REPORTS gets its
+    # triggers with no change here.
+
+    for spec in WBR_REPORTS.values():
+
+        tables.append(("bronze", spec["table"]))
+
+        tables.append(("silver", spec["table"]))
 
     # One transaction per table, so a table that has not
     # been created yet is skipped instead of aborting the

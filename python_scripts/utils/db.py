@@ -4,21 +4,25 @@ import pandas as pd
 HOST = "localhost"
 PORT = "5432"
 USER = "postgres"
-PASSWORD = "postgres123"
+PASSWORD = "postgres"
 
-PROJECT_DATABASE = "tr_project"
-MASTER_DATABASE = "latest_dump"
+PROJECT_DATABASE = "intelliwealthdb_19_aug"
+MASTER_DATABASE = "intelliwealth_master_19_aug_2026"
+
+# PROJECT_DATABASE = "intelliwealth_master_19_aug_2026"
+# MASTER_DATABASE = "intelliwealthdb_19_aug"
+
 #RESTORE_DATABASE = "Intelliwealth_dump"
 
 # Project Database
 engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}",
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}",
     pool_pre_ping=True
 )
 
 # Master Database
 master_engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
+    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{PROJECT_DATABASE}"
 )
 
 # Restore Database

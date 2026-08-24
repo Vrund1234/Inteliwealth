@@ -110,6 +110,44 @@ except ImportError:
 
 
 # =====================================================
+# OPTIONAL INVESTOR KYC STATUS (WBR56 / ...)
+# =====================================================
+
+try:
+
+    from etl_gold_kyc_status import (
+        extract_kyc_status,
+        transform_kyc_status,
+        load_kyc_status
+    )
+
+    KYC_STATUS_AVAILABLE = True
+
+except ImportError:
+
+    KYC_STATUS_AVAILABLE = False
+
+
+# =====================================================
+# OPTIONAL INVALID EUIN (WBR68 / ...)
+# =====================================================
+
+try:
+
+    from etl_gold_invalid_euin import (
+        extract_invalid_euin,
+        transform_invalid_euin,
+        load_invalid_euin
+    )
+
+    INVALID_EUIN_AVAILABLE = True
+
+except ImportError:
+
+    INVALID_EUIN_AVAILABLE = False
+
+
+# =====================================================
 # MAIN GOLD LOAD FUNCTION
 # =====================================================
 
@@ -473,6 +511,102 @@ def load_gold():
 
         print(
             "\nGold Brokerage Summary module "
+            "not available"
+        )
+
+
+    # =====================================================
+    # GOLD INVESTOR KYC STATUS
+    # =====================================================
+
+    if KYC_STATUS_AVAILABLE:
+
+        try:
+
+            print("\nLoading Gold Investor KYC Status")
+
+            kyc_df = extract_kyc_status()
+
+            if not kyc_df.empty:
+
+                kyc_gold_df = transform_kyc_status(
+                    kyc_df
+                )
+
+                if not kyc_gold_df.empty:
+
+                    load_kyc_status(
+                        kyc_gold_df
+                    )
+
+                    print(
+                        "Investor KYC Status "
+                        "loaded successfully"
+                    )
+
+            else:
+
+                print(
+                    "No Investor KYC Status data found"
+                )
+
+        except Exception as e:
+
+            print("Investor KYC Status Gold Failed")
+            print(e)
+
+    else:
+
+        print(
+            "\nGold Investor KYC Status module "
+            "not available"
+        )
+
+
+    # =====================================================
+    # GOLD INVALID EUIN
+    # =====================================================
+
+    if INVALID_EUIN_AVAILABLE:
+
+        try:
+
+            print("\nLoading Gold Invalid EUIN")
+
+            euin_df = extract_invalid_euin()
+
+            if not euin_df.empty:
+
+                euin_gold_df = transform_invalid_euin(
+                    euin_df
+                )
+
+                if not euin_gold_df.empty:
+
+                    load_invalid_euin(
+                        euin_gold_df
+                    )
+
+                    print(
+                        "Invalid EUIN "
+                        "loaded successfully"
+                    )
+
+            else:
+
+                print(
+                    "No Invalid EUIN data found"
+                )
+
+        except Exception as e:
+
+            print("Invalid EUIN Gold Failed")
+            print(e)
+
+    else:
+
+        print(
+            "\nGold Invalid EUIN module "
             "not available"
         )
 

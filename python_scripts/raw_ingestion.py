@@ -10,8 +10,8 @@ from utils.db import engine
 from etl_investor_master import process_investor_master
 from etl_trans import process_transactions
 from etl_sip import process_sip
-from etl_brokerage_summary import process_brokerage_summary
-from mapping_wbr import identify_brokerage_file
+from etl_wbr_report import process_wbr_reports
+from mapping_wbr import identify_wbr_file
 
 
 # =====================================================
@@ -661,15 +661,15 @@ def extract_and_push(uploaded_files):
     kfin_sip = []
 
     # =================================================
-    # BROKERAGE REPORTS (WBR36 / WBR36H / ...)
+    # WBR REPORTS (WBR36 / WBR36H / WBR56 / WBR68 / ...)
     #
-    # One flat list instead of a per-RTA list: which RTA
-    # and which report a file belongs to is decided by
-    # mapping_wbr.BROKERAGE_FILE_PATTERNS, so new RTAs
-    # need no change here.
+    # One flat list instead of a per-RTA, per-report list:
+    # which RTA and which report a file belongs to is
+    # decided by mapping_wbr.WBR_FILE_PATTERNS, so new
+    # reports and new RTAs need no change here.
     # =================================================
 
-    brokerage_files = []
+    wbr_files = []
 
     # =================================================
     # READ ALL FILES
@@ -687,31 +687,34 @@ def extract_and_push(uploaded_files):
         df = read_file(file)
 
         # =================================================
-        # BROKERAGE REPORTS
+        # WBR REPORTS
         #
         # Checked first because the registry knows every
-        # RTA's brokerage file, whatever its extension.
+        # RTA's WBR files, whatever their extension.
         # =================================================
 
-        brokerage_pattern = identify_brokerage_file(name)
+        wbr_pattern = identify_wbr_file(name)
 
-        if brokerage_pattern is not None:
+        if wbr_pattern is not None:
 
-            brokerage_files.append(
+            wbr_files.append(
                 {
                     "df": df,
-                    "source": brokerage_pattern["source"],
+                    "source": wbr_pattern["source"],
                     "report_type": (
-                        brokerage_pattern["report_type"]
+                        wbr_pattern["report_type"]
+                    ),
+                    "report_key": (
+                        wbr_pattern["report_key"]
                     )
                 }
             )
 
             print(
                 "Recognised as "
-                f"{brokerage_pattern['source']} "
-                f"{brokerage_pattern['report_type']} "
-                "brokerage report"
+                f"{wbr_pattern['source']} "
+                f"{wbr_pattern['report_type']} "
+                "WBR report"
             )
 
             continue
@@ -886,12 +889,16 @@ def extract_and_push(uploaded_files):
         )
 
     # =====================================================
-    # BROKERAGE SUMMARY
+    # WBR REPORTS
+    #
+    # Each report_key is loaded into its own bronze table
+    # by etl_wbr_report.py, driven by the spec in
+    # mapping_wbr.WBR_REPORTS.
     # =====================================================
 
-    if brokerage_files:
+    if wbr_files:
 
-        process_brokerage_summary(brokerage_files)
+        process_wbr_reports(wbr_files)
 
     # =====================================================
     # RETURN RESULTS
@@ -912,5 +919,5 @@ def extract_and_push(uploaded_files):
 
         sip_preview,
 
-        len(brokerage_files)
+        len(wbr_files)
     )

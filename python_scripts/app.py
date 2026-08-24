@@ -18,8 +18,11 @@ from map_unmatched_nav_name import (
 from promote_approved_mappings import RULE_NAMES as REVIEW_RULES
 from promote_approved_mappings import promote_approved
 
-# WBR reports (brokerage summary)
-from mapping_wbr import identify_brokerage_file
+# WBR reports (brokerage summary / KYC status / invalid EUIN)
+from mapping_wbr import (
+    identify_wbr_file,
+    get_report_spec
+)
 from utils.db import engine
 from sqlalchemy import bindparam, text
 
@@ -73,7 +76,11 @@ if "uploaded_types" not in st.session_state:
         "investor": False,
         "transaction": False,
         "sip": False,
-        "brokerage": False
+        # Report keys of every WBR file in this upload
+        # (BROKERAGE_SUMMARY / KYC_STATUS / ...). A set
+        # rather than a flag per report, so a new report
+        # in mapping_wbr.WBR_REPORTS needs no change here.
+        "wbr_reports": []
     }
 
 
@@ -211,21 +218,31 @@ if extract_btn:
             "investor": False,
             "transaction": False,
             "sip": False,
-            "brokerage": False
+            "wbr_reports": []
         }
 
         for file in uploaded_files:
 
             name = file.name.lower()
 
-            # ---------- BROKERAGE (WBR36 / WBR36H) ----------
+            # ---------- WBR REPORTS ----------
             #
             # Same registry raw_ingestion.py uses, so the
             # banner and the real routing cannot disagree.
 
-            if identify_brokerage_file(name) is not None:
+            wbr_pattern = identify_wbr_file(name)
 
-                uploaded_types["brokerage"] = True
+            if wbr_pattern is not None:
+
+                report_key = wbr_pattern["report_key"]
+
+                if report_key not in (
+                    uploaded_types["wbr_reports"]
+                ):
+
+                    uploaded_types["wbr_reports"].append(
+                        report_key
+                    )
 
             # ---------- CAMS ----------
 
@@ -272,7 +289,7 @@ if extract_btn:
             investor_count,
             sip_count,
             sip_preview,
-            brokerage_count
+            wbr_count
         ) = extract_and_push(
             uploaded_files
         )
@@ -285,7 +302,7 @@ if extract_btn:
             f"(Transactions: {transaction_count}, "
             f"Investor: {investor_count}, "
             f"SIP: {sip_count}, "
-            f"Brokerage: {brokerage_count})"
+            f"WBR reports: {wbr_count})"
         )
 
 
@@ -405,13 +422,19 @@ if extract_btn:
             )
 
 
-        # ---------- BROKERAGE SUMMARY ----------
+        # ---------- WBR REPORTS ----------
+        #
+        # Driven by the registry, so a report added to
+        # mapping_wbr.WBR_REPORTS shows up here with no
+        # change to this file.
 
-        if uploaded_types["brokerage"]:
+        for report_key in uploaded_types["wbr_reports"]:
 
-            bronze_data["Brokerage Summary"] = read_table(
+            spec = get_report_spec(report_key)
+
+            bronze_data[spec["label"]] = read_table(
                 "bronze",
-                "brokerage_summary"
+                spec["table"]
             )
 
 
@@ -740,14 +763,19 @@ if transform_btn:
                 )
 
 
-            # ---------- BROKERAGE SUMMARY ----------
+            # ---------- WBR REPORTS ----------
 
-            if uploaded.get("brokerage"):
+            for report_key in uploaded.get(
+                "wbr_reports",
+                []
+            ):
 
-                silver_data["Brokerage Summary"] = (
+                spec = get_report_spec(report_key)
+
+                silver_data[spec["label"]] = (
                     read_table(
                         "silver",
-                        "brokerage_summary"
+                        spec["table"]
                     )
                 )
 
@@ -823,12 +851,19 @@ if transform_btn:
             )
 
 
-            # ---------- BROKERAGE SUMMARY ----------
+            # ---------- WBR REPORTS ----------
 
-            gold_data["Brokerage Summary"] = read_table(
-                "gold",
-                "brokerage_summary"
-            )
+            for report_key in uploaded.get(
+                "wbr_reports",
+                []
+            ):
+
+                spec = get_report_spec(report_key)
+
+                gold_data[spec["label"]] = read_table(
+                    "gold",
+                    spec["gold_table"]
+                )
 
 
             # =================================================

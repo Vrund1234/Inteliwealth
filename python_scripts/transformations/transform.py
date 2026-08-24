@@ -4,7 +4,11 @@ from utils.db import engine
 
 from mapping_wbr import (
     BROKERAGE_AMOUNT_COLUMNS,
-    BROKERAGE_DATE_COLUMNS
+    BROKERAGE_DATE_COLUMNS,
+    KYC_STATUS_DATE_COLUMNS,
+    INVALID_EUIN_AMOUNT_COLUMNS,
+    INVALID_EUIN_DATE_COLUMNS,
+    INVALID_EUIN_SCHEME_CODE_BUILD
 )
 
 
@@ -1913,6 +1917,328 @@ def transform_brokerage_summary(df):
 
 
 # =====================================================
+# KYC STATUS TRANSFORMATION
+#
+# bronze.kyc_status -> silver.kyc_status
+#
+# Same shape as bronze, typed.
+#
+# The file's wide, one-row-per-folio shape is preserved
+# here on purpose: Silver stays a typed copy of the
+# report. The four holder slots are unpivoted to one row
+# per holder in Gold.
+#
+# No scheme_id: WBR56 reports the investor and the folio,
+# never a scheme.
+# =====================================================
+
+def transform_kyc_status(df):
+
+    df = df.copy()
+
+    # =================================================
+    # REMOVE EXACT DUPLICATES
+    # =================================================
+
+    df = df.drop_duplicates()
+
+    # =================================================
+    # TRIM STRING COLUMNS
+    # =================================================
+
+    object_cols = df.select_dtypes(
+        include="object"
+    ).columns
+
+    for col in object_cols:
+
+        if col in KYC_STATUS_DATE_COLUMNS:
+            continue
+
+        df[col] = (
+            df[col]
+            .astype("string")
+            .str.strip()
+        )
+
+    # =================================================
+    # UPPER CASE CODE COLUMNS
+    #
+    # PAN columns are uppercased the same way
+    # investor_master and transaction_master_new do it.
+    # =================================================
+
+    for col in [
+        "source",
+        "report_type",
+        "amc_code",
+        "folio",
+        "brok_dlr_code",
+        "tax_no",
+        "jointpan1",
+        "jointpan2",
+        "guardian_panno"
+    ]:
+
+        if col in df.columns:
+
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.upper()
+            )
+
+    # =================================================
+    # EMAIL
+    # =================================================
+
+    if "email" in df.columns:
+
+        df["email"] = (
+            df["email"]
+            .astype("string")
+            .str.lower()
+        )
+
+    # =================================================
+    # DATE COLUMNS
+    # =================================================
+
+    for col in KYC_STATUS_DATE_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        df[col] = pd.to_datetime(
+            df[col],
+            errors="coerce"
+        ).dt.date
+
+        df[col] = df[col].where(
+            pd.notnull(df[col]),
+            None
+        )
+
+    return df
+
+
+# =====================================================
+# INVALID EUIN TRANSFORMATION
+#
+# bronze.invalid_euin -> silver.invalid_euin
+#
+# Same shape as bronze plus scheme_id, and amount typed
+# as NUMERIC for the first time.
+#
+# sch_code is the RTA scheme code, which is exactly what
+# bronze.scheme_mapping.rta_scheme_code holds, so
+# scheme_id resolves through the existing lookup with no
+# report-specific rule.
+#
+# euin_valid is NOT interpreted here - it is carried
+# verbatim and turned into a boolean in Gold, so the rule
+# lives in one place.
+# =====================================================
+
+def transform_invalid_euin(df):
+
+    df = df.copy()
+
+    # =================================================
+    # REMOVE EXACT DUPLICATES
+    # =================================================
+
+    df = df.drop_duplicates()
+
+    # =================================================
+    # TRIM STRING COLUMNS
+    # =================================================
+
+    object_cols = df.select_dtypes(
+        include="object"
+    ).columns
+
+    for col in object_cols:
+
+        if col in INVALID_EUIN_DATE_COLUMNS:
+            continue
+
+        df[col] = (
+            df[col]
+            .astype("string")
+            .str.strip()
+        )
+
+    # =================================================
+    # UPPER CASE CODE COLUMNS
+    # =================================================
+
+    for col in [
+        "source",
+        "report_type",
+        "trxn_no",
+        "usertxn_no",
+        "auto_trxn_no",
+        "appln_no",
+        "sch_code",
+        "amc_code",
+        "folio_no",
+        "folio",
+        "alt_folio",
+        "folio_old",
+        "scheme_folio_number",
+        "inv_pan",
+        "euin",
+        "euin_valid",
+        "arn_code",
+        "subbrok_arn",
+        "subbrokcod",
+        "user_code",
+        "cons_code",
+        "trxn_type"
+    ]:
+
+        if col in df.columns:
+
+            df[col] = (
+                df[col]
+                .astype("string")
+                .str.upper()
+            )
+
+    # =================================================
+    # EMAIL
+    # =================================================
+
+    if "email" in df.columns:
+
+        df["email"] = (
+            df["email"]
+            .astype("string")
+            .str.lower()
+        )
+
+    # =================================================
+    # REBUILD THE RTA SCHEME CODE
+    #
+    # WBR68 splits the CAMS product code across two
+    # columns, so sch_code on its own matches nothing:
+    #
+    #   amc_code "B" + sch_code "51"    -> "B51"
+    #   amc_code "L" + sch_code "081G"  -> "L081G"
+    #
+    # The parts are listed per RTA in
+    # INVALID_EUIN_SCHEME_CODE_BUILD; an RTA that is not
+    # listed reports the whole code in sch_code and is
+    # used as-is.
+    # =================================================
+
+    df["rta_scheme_code"] = None
+
+    if "source" in df.columns:
+
+        sources = (
+            df["source"]
+            .fillna("")
+            .astype("string")
+            .str.upper()
+        )
+
+        for source in sources.dropna().unique():
+
+            parts = INVALID_EUIN_SCHEME_CODE_BUILD.get(
+                source,
+                ["sch_code"]
+            )
+
+            parts = [
+                col
+                for col in parts
+                if col in df.columns
+            ]
+
+            if not parts:
+                continue
+
+            rows = sources == source
+
+            built = None
+
+            for col in parts:
+
+                piece = (
+                    df.loc[rows, col]
+                    .fillna("")
+                    .astype("string")
+                    .str.strip()
+                    .str.upper()
+                )
+
+                built = (
+                    piece
+                    if built is None
+                    else built + piece
+                )
+
+            df.loc[rows, "rta_scheme_code"] = (
+                built.replace({"": None})
+            )
+
+            print(
+                f"{source} rta_scheme_code built from :",
+                parts
+            )
+
+    # =================================================
+    # SCHEME ID MAPPING
+    #
+    # rta_scheme_code
+    # -> scheme_mapping.rta_scheme_code
+    # -> scheme_mapping.scheme_id
+    # =================================================
+
+    df = map_scheme_id(
+        df,
+        "rta_scheme_code"
+    )
+
+    # =================================================
+    # MONEY COLUMNS
+    # =================================================
+
+    for col in INVALID_EUIN_AMOUNT_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    # =================================================
+    # DATE COLUMNS
+    # =================================================
+
+    for col in INVALID_EUIN_DATE_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        df[col] = pd.to_datetime(
+            df[col],
+            errors="coerce"
+        ).dt.date
+
+        df[col] = df[col].where(
+            pd.notnull(df[col]),
+            None
+        )
+
+    return df
+
+
+# =====================================================
 # ROUND DECIMAL COLUMNS
 # =====================================================
 
@@ -2167,6 +2493,111 @@ def load_silver():
 
         print(
             "No Brokerage Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # KYC STATUS (WBR56 / ...)
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("PROCESSING KYC STATUS")
+    print("=" * 80)
+
+    kyc_df = safe_read(
+        """
+        SELECT *
+        FROM bronze.kyc_status
+        WHERE flag = 0
+        """
+    )
+
+    print(
+        "Bronze KYC Status rows :",
+        len(kyc_df)
+    )
+
+    if not kyc_df.empty:
+
+        kyc_df = transform_kyc_status(
+            kyc_df
+        )
+
+        append_new_rows(
+            kyc_df,
+            "kyc_status",
+
+            # source is part of the KYC business key, so
+            # it must not be ignored. There is no
+            # scheme_id on this table; naming it here is
+            # harmless and keeps the WBR callers uniform.
+            ignore_cols={
+                "flag",
+                "created_at",
+                "updated_at",
+                "scheme_id"
+            }
+        )
+
+    else:
+
+        print(
+            "No KYC Status Bronze rows "
+            "with flag = 0."
+        )
+
+    # =================================================
+    # INVALID EUIN (WBR68 / ...)
+    # =================================================
+
+    print()
+    print("=" * 80)
+    print("PROCESSING INVALID EUIN")
+    print("=" * 80)
+
+    euin_df = safe_read(
+        """
+        SELECT *
+        FROM bronze.invalid_euin
+        WHERE flag = 0
+        """
+    )
+
+    print(
+        "Bronze Invalid EUIN rows :",
+        len(euin_df)
+    )
+
+    if not euin_df.empty:
+
+        euin_df = transform_invalid_euin(
+            euin_df
+        )
+
+        append_new_rows(
+            euin_df,
+            "invalid_euin",
+
+            # source is part of the business key, and
+            # scheme_id is ignored so that fixing a
+            # scheme mapping does not resurface an
+            # otherwise identical row as new.
+            ignore_cols={
+                "flag",
+                "created_at",
+                "updated_at",
+                "scheme_id"
+            },
+
+            # NUMERIC in Silver, float in pandas.
+            numeric_cols=INVALID_EUIN_AMOUNT_COLUMNS
+        )
+
+    else:
+
+        print(
+            "No Invalid EUIN Bronze rows "
             "with flag = 0."
         )
 
