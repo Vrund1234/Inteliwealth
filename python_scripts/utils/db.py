@@ -1,14 +1,17 @@
+import os
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 import pandas as pd
 
-HOST = "localhost"
-PORT = "5432"
-USER = "postgres"
-PASSWORD = "postgres123"
+load_dotenv()
 
-PROJECT_DATABASE = "tr_project"
-MASTER_DATABASE = "latest_dump"
-#RESTORE_DATABASE = "Intelliwealth_dump"
+HOST = os.getenv("DB_HOST")
+PORT = os.getenv("DB_PORT")
+USER = os.getenv("DB_USER")
+PASSWORD = os.getenv("DB_PASSWORD")
+
+PROJECT_DATABASE = os.getenv("PROJECT_DATABASE")
+MASTER_DATABASE = os.getenv("MASTER_DATABASE")
 
 # Project Database
 engine = create_engine(

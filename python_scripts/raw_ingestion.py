@@ -682,7 +682,9 @@ def extract_and_push(uploaded_files):
         if name.endswith(
             (
                 "r2.csv",
-                "r2.dbf"
+                "r2.dbf",
+                "r2.xlsx",
+                "r2.xls"
             )
         ):
 
@@ -691,7 +693,9 @@ def extract_and_push(uploaded_files):
         elif name.endswith(
             (
                 "r9.csv",
-                "r9.dbf"
+                "r9.dbf",
+                "r9.xlsx",
+                "r9.xls"
             )
         ):
 
@@ -700,7 +704,9 @@ def extract_and_push(uploaded_files):
         elif name.endswith(
             (
                 "r49.csv",
-                "r49.dbf"
+                "r49.dbf",
+                "r49.xlsx",
+                "r49.xls"
             )
         ):
 

@@ -105,7 +105,7 @@ with col1:
 
     uploaded_files = st.file_uploader(
         "Upload Files",
-        type=["xlsx", "csv", "txt"],
+        type=["xlsx", "xls", "csv", "txt", "dbf"],
         accept_multiple_files=True,
         key=f"uploader_{st.session_state.uploader_key}"
     )
@@ -214,19 +214,25 @@ if extract_btn:
             name = file.name.lower()
 
             # ---------- CAMS ----------
+            # Support CSV, DBF and Excel files
 
-            if name.endswith("r9.csv"):
+            if name.endswith(
+                ("r9.csv", "r9.dbf", "r9.xlsx", "r9.xls")
+            ):
 
                 uploaded_types["investor"] = True
 
-            elif name.endswith("r2.csv"):
+            elif name.endswith(
+                ("r2.csv", "r2.dbf", "r2.xlsx", "r2.xls")
+            ):
 
                 uploaded_types["transaction"] = True
 
-            elif name.endswith("r49.csv"):
+            elif name.endswith(
+                ("r49.csv", "r49.dbf", "r49.xlsx", "r49.xls")
+            ):
 
                 uploaded_types["sip"] = True
-
             # ---------- KFIN ----------
 
             elif "mfsd211" in name:
