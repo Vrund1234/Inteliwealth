@@ -127,10 +127,10 @@ INVESTOR_MASTER_MAPPING = {
     "product_code": ["product", "product_code"],
     "scheme_name": ["scheme_name", "SCH_NAME", "SCHEME", "Scheme Name",
     "fund_description", "Fund Description", "funddesc"],
-
+    "closing_balance": ["closing_balance", "clos_bal"],
     "rep_date": ["rep_date"],
 
-    "rupee_bal": ["rupee_bal"],
+    "rupee_balance": ["rupee_bal"],
 
     "uin_no": ["uin_no"],
 
