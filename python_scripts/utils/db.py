@@ -10,8 +10,13 @@ PORT = os.getenv("DB_PORT")
 USER = os.getenv("DB_USER")
 PASSWORD = os.getenv("DB_PASSWORD")
 
-PROJECT_DATABASE = os.getenv("PROJECT_DATABASE")
-MASTER_DATABASE = os.getenv("MASTER_DATABASE")
+MasterHOST = os.getenv("MASTER_POSTGRES_HOST")
+MasterPORT = os.getenv("MASTER_POSTGRES_PORT")
+MasterUSER = os.getenv("MASTER_POSTGRES_USER")
+MasterPASSWORD = os.getenv("MASTER_POSTGRES_PASSWORD")
+
+PROJECT_DATABASE = os.getenv("DB_NAME")
+MASTER_DATABASE = os.getenv("MASTER_POSTGRES_DB")
 
 # Project Database
 engine = create_engine(
@@ -21,7 +26,7 @@ engine = create_engine(
 
 # Master Database
 master_engine = create_engine(
-    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{MASTER_DATABASE}"
+    f"postgresql+psycopg2://{MasterUSER}:{MasterPASSWORD}@{MasterHOST}:{MasterPORT}/{MASTER_DATABASE}"
 )
 
 # Restore Database
