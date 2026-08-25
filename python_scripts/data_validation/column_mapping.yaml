@@ -127,11 +127,11 @@ investor_master:
       - F Name
       - M Name
       - Phone Residence
-      - Phone Res#1
-      - Phone Res#2
+      - "Phone Res#1"
+      - "Phone Res#2"
       - Phone Office
-      - Phone Off#1
-      - Phone Off#2
+      - "Phone Off#1"
+      - "Phone Off#2"
       - Fax Residence
       - Fax Office
       - Tax Status
