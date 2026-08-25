@@ -1,0 +1,474 @@
+investor_master:
+
+  R9:
+    source: CAMS
+    columns:
+      - FOLIOCHK
+      - INV_NAME
+      - ADDRESS1
+      - ADDRESS2
+      - ADDRESS3
+      - CITY
+      - PINCODE
+      - PRODUCT
+      - SCH_NAME
+      - REP_DATE
+      - CLOS_BAL
+      - RUPEE_BAL
+      - JNT_NAME1
+      - JNT_NAME2
+      - PHONE_OFF
+      - PHONE_RES
+      - EMAIL
+      - HOLDING_NATURE
+      - UIN_NO
+      - PAN_NO
+      - JOINT1_PAN
+      - JOINT2_PAN
+      - GUARD_PAN
+      - TAX_STATUS
+      - BROKER_CODE
+      - SUBBROKER
+      - REINV_FLAG
+      - BANK_NAME
+      - BRANCH
+      - AC_TYPE
+      - AC_NO
+      - B_ADDRESS1
+      - B_ADDRESS2
+      - B_ADDRESS3
+      - B_CITY
+      - B_PINCODE
+      - INV_DOB
+      - MOBILE_NO
+      - OCCUPATION
+      - INV_IIN
+      - NOM_NAME
+      - RELATION
+      - NOM_ADDR1
+      - NOM_ADDR2
+      - NOM_ADDR3
+      - NOM_CITY
+      - NOM_STATE
+      - NOM_PINCODE
+      - NOM_PH_OFF
+      - NOM_PH_RES
+      - NOM_EMAIL
+      - NOM_PERCENTAGE
+      - NOM2_NAME
+      - NOM2_RELATION
+      - NOM2_ADDR1
+      - NOM2_ADDR2
+      - NOM2_ADDR3
+      - NOM2_CITY
+      - NOM2_STATE
+      - NOM2_PINCODE
+      - NOM2_PH_OFF
+      - NOM2_PH_RES
+      - NOM2_EMAIL
+      - NOM2_PERCENTAGE
+      - NOM3_NAME
+      - NOM3_RELATION
+      - NOM3_ADDR1
+      - NOM3_ADDR2
+      - NOM3_ADDR3
+      - NOM3_CITY
+      - NOM3_STATE
+      - NOM3_PINCODE
+      - NOM3_PH_OFF
+      - NOM3_PH_RES
+      - NOM3_EMAIL
+      - NOM3_PERCENTAGE
+      - IFSC_CODE
+      - DP_ID
+      - DEMAT
+      - GUARD_NAME
+      - BROKCODE
+      - FOLIO_DATE
+      - AADHAAR
+      - TPA_LINKED
+      - FH_CKYC_NO
+      - JH1_CKYC
+      - JH2_CKYC
+      - G_CKYC_NO
+      - JH1_DOB
+      - JH2_DOB
+      - GUARDIAN_DOB
+      - AMC_CODE
+      - GST_STATE_CODE
+      - FOLIO_OLD
+      - SCHEME_FOLIO_NUMBER
+      - REMARKS
+      - COUNTRY
+      - JH1_EMAIL
+      - JH2_EMAIL
+      - JH1_MOBILE_NO
+      - JH2_MOBILE_NO
+
+  MFSD211:
+    source: KFIN
+    columns:
+      - Product Code
+      - Fund
+      - Folio
+      - Fund Description
+      - Investor Name
+      - Joint Name 1
+      - Joint Name 2
+      - "Address #1"
+      - "Address #2"
+      - "Address #3"
+      - City
+      - Pincode
+      - State
+      - Country
+      - TPIN
+      - Date of Birth
+      - F Name
+      - M Name
+      - Phone Residence
+      - Phone Res#1
+      - Phone Res#2
+      - Phone Office
+      - Phone Off#1
+      - Phone Off#2
+      - Fax Residence
+      - Fax Office
+      - Tax Status
+      - Occ Code
+      - Email
+      - BankAccno
+      - Bank Name
+      - Account Type
+      - Branch
+      - "Bank Address #1"
+      - "Bank Address #2"
+      - "Bank Address #3"
+      - Bank City
+      - Bank Phone
+      - Bank State
+      - Bank Country
+      - Investor ID
+      - Broker Code
+      - Report Date
+      - Report Time
+      - PAN Number
+      - Mobile Number
+      - Dividend Option
+      - Occupation Description
+      - Mode of Holding Description
+      - Mapin Id
+      - PAN2
+      - PAN3
+      - Category
+      - GuardianName
+      - Nominee
+      - Client ID
+      - DPID
+      - CategoryDesc
+      - StatusDesc
+      - IFSC Code
+      - Nominee2
+      - Nominee3
+      - Kyc1Flag
+      - Kyc2Flag
+      - Kyc3Flag
+      - GuardPanNo
+      - LastUpdatedDate
+      - CommonAccNo
+      - Nominee Relation
+      - Nominee2 Relation
+      - Nominee3 Relation
+      - Nominee Ratio
+      - Nominee2 Ratio
+      - Nominee3 Ratio
+      - Holder 1 Aadhaar info
+      - Holder 2 Aadhaar info
+      - Holder 3 Aadhaar info
+      - Guardian Aadhaar info
+      - Nominee Address1
+      - Nominee Address2
+      - Nominee Address3
+      - Nominee City
+      - Nominee State
+      - Nominee Pin code
+      - Nominee phone residence
+      - Nominee Email
+      - Nominee2 Address1
+      - Nominee2 Address2
+      - Nominee2 Address3
+      - Nominee2 City
+      - Nominee2 State
+      - Nominee2 Pin code
+      - Nominee2 phone residence
+      - Nominee2 Email
+      - Nominee3 Address1
+      - Nominee3 Address2
+      - Nominee3 Address3
+      - Nominee3 City
+      - Nominee3 State
+      - Nominee3 Pin code
+      - Nominee3 phone residence
+      - Nominee3 Email
+      - CKYC NO
+      - JH1 CKYC
+      - JH2 CKYC
+      - Guardian CKYC NO
+      - Joint Holder 1st Resi Phone No
+      - Joint Holder 2nd Resi Phone No
+      - Investors Resi FaxNo
+      - KycGFlag
+      - Demat Folio flag
+      - Nominee Opt Out flag
+      - Nominee DOB
+      - Joint holder 1 contact number
+      - Joint holder 1 Email id
+      - Joint holder 2 contact number
+      - Joint holder 2 Email id
+      - Nominee Guardian Name
+      - emailconcern
+      - emailrelationship
+      - MobileRelationship
+
+transaction_master:
+
+  R2:
+    source: CAMS
+    columns:
+      - AMC_CODE
+      - FOLIO_NO
+      - PRODCODE
+      - SCHEME
+      - INV_NAME
+      - TRXNTYPE
+      - TRXNNO
+      - TRXNMODE
+      - TRXNSTAT
+      - USERCODE
+      - USRTRXNO
+      - TRADDATE
+      - POSTDATE
+      - PURPRICE
+      - UNITS
+      - AMOUNT
+      - BROKCODE
+      - SUBBROK
+      - BROKPERC
+      - BROKCOMM
+      - ALTFOLIO
+      - REP_DATE
+      - TIME1
+      - TRXNSUBTYP
+      - APPLICATION_NO
+      - TRXN_NATURE
+      - TAX
+      - TOTAL_TAX
+      - TE_15H
+      - MICR_NO
+      - REMARKS
+      - SWFLAG
+      - OLD_FOLIO
+      - SEQ_NO
+      - REINVEST_FLAG
+      - MULT_BROK
+      - STT
+      - LOCATION
+      - SCHEME_TYPE
+      - TAX_STATUS
+      - LOAD
+      - SCANREFNO
+      - PAN
+      - INV_IIN
+      - TARG_SRC_SCHEME
+      - TRXN_TYPE_FLAG
+      - TICOB_TRTYPE
+      - TICOB_TRNO
+      - TICOB_POSTED_DATE
+      - DP_ID
+      - TRXN_CHARGES
+      - ELIGIB_AMT
+      - SRC_OF_TXN
+      - TRXN_SUFFIX
+      - SIPTRXNNO
+      - TER_LOCATION
+      - EUIN
+      - EUIN_VALID
+      - EUIN_OPTED
+      - SUB_BRK_ARN
+      - EXCH_DC_FLAG
+      - SRC_BRK_CODE
+      - SYS_REGN_DATE
+      - AC_NO
+      - BANK_NAME
+      - REVERSAL_CODE
+      - EXCHANGE_FLAG
+      - CA_INITIATED_DATE
+      - GST_STATE_CODE
+      - IGST_AMOUNT
+      - CGST_AMOUNT
+      - SGST_AMOUNT
+      - REV_REMARK
+      - ORIGINAL_TRXNNO
+      - STAMP_DUTY
+      - FOLIO_OLD
+      - SCHEME_FOLIO_NUMBER
+      - AMC_REF_NO
+      - REQUEST_REF_NO
+      - TRANSMISSION_FLAG
+
+  MFSD201:
+    source: KFIN
+    columns:
+      - fmcode
+      - td_fund
+      - td_acno
+      - schpln
+      - divopt
+      - funddesc
+      - td_purred
+      - td_trno
+      - smcode
+      - chqno
+      - invname
+      - trnmode
+      - trnstat
+      - td_branch
+      - isctrno
+      - td_trdt
+      - td_prdt
+      - td_pop
+      - loadper
+      - td_units
+      - td_amt
+      - load1
+      - td_agent
+      - td_broker
+      - brokper
+      - brokcomm
+      - invid
+      - crdate
+      - crtime
+      - trnsub
+      - td_appno
+      - unqno
+      - trdesc
+      - td_trtype
+      - purdate
+      - puramt
+      - purunits
+      - trflag
+      - sfunddt
+      - chqdate
+      - chqbank
+      - td_nav
+      - td_ptrno
+      - STT
+      - IHNo
+      - BranchCode
+      - InwardNo
+      - nctremarks
+      - PAN1
+      - TrCharges
+      - SipRegdt
+      - sipregslno
+      - DivPer
+      - GuardPanNo
+      - CAN
+      - ExchOrgTrtype
+      - ElecTrxnFlag
+      - cleared
+      - InvState
+
+sip_master:
+
+  R49:
+    source: CAMS
+    columns:
+      - PRODUCT
+      - SCHEME
+      - FOLIO_NO
+      - INV_NAME
+      - AUT_TRNTYP
+      - AUTO_TRNO
+      - AUTO_AMOUNT
+      - FROM_DATE
+      - TO_DATE
+      - CEASE_DATE
+      - PERIODICITY
+      - PERIOD_DAY
+      - INV_IIN
+      - PAYMENT_MODE
+      - TARGET_SCHEME
+      - REG_DATE
+      - SUBBROKER
+      - REMARKS
+      - TOP_UP_FRQ
+      - TOP_UP_AMT
+      - AC_TYPE
+      - BANK
+      - BRANCH
+      - INSTRM_NO
+      - CHEQ_MICR_NO
+      - AC_HOLDER_NAME
+      - PAN
+      - TOP_UP_PERC
+      - EUIN
+      - SUB_BROKER_CODE
+      - TER_LOCATION
+      - SCHEME_CODE
+      - TARGET_SCHEME_CODE
+      - AMC_CODE
+      - USER_CODE
+      - PACKAGE_NAME
+      - SPECIAL_PRODUCT
+      - SUBTRXNDESC
+      - PAUSE_FROM_DATE
+      - PAUSE_TO_DATE
+      - FOLIO_OLD
+      - FT_SIP_REGNO
+      - SCHEME_FOLIO_NUMBER
+      - REQUEST_REF_NO
+
+  MFSD243:
+    source: KFIN
+    columns:
+      - Zone
+      - Branch
+      - Location
+      - Ihno
+      - Folio
+      - Investor Name
+      - RegistrationDate
+      - Start Date
+      - End Date
+      - No Of Installments
+      - Amount
+      - Scheme
+      - Plan
+      - AgentCode
+      - AgentName
+      - Subbroker
+      - Scheme Name
+      - PAN
+      - SipType
+      - SIP Mode
+      - Fund Code
+      - Product Code
+      - Frequency
+      - Trtype
+      - To Scheme
+      - To Plan
+      - TerminateDate
+      - Status
+      - ToProductCode
+      - ToSchemeName
+      - ECSNO
+      - ECSBankName
+      - ECSAcno
+      - ECSHolderName
+      - RegSlno
+      - InvDpId
+      - InvClientId
+      - DP_InvName
+      - ModifyFlag
+      - umrncode
