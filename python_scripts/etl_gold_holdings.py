@@ -928,20 +928,7 @@ def transform_holdings(df):
     # ARN
     # ========================================================
 
-    gold_df["arn"] = (
-        get_column(
-            df,
-            "brokcode"
-        )
-        .fillna("")
-        .astype("string")
-        .str.strip()
-    )
-
-    gold_df.loc[
-        gold_df["arn"] == "",
-        "arn"
-    ] = None
+    gold_df["arn"] = None
 
     # ========================================================
     # SUB ARN
@@ -1100,6 +1087,21 @@ def transform_holdings(df):
     # ========================================================
     # CLIENT ID
     # ========================================================
+    #
+    # SIMPLE PAN-BASED MAPPING
+    #
+    # silver.transaction_master_new.pan
+    #              ↓
+    #          clean PAN
+    #              ↓
+    #      gold.clients.pan
+    #              ↓
+    #      gold.clients.user_id
+    #              ↓
+    #   gold.holdings.client_id
+    #
+    # No folio/source/brokcode lookup is used here.
+    # ========================================================
 
     print("Loading gold.clients...")
 
@@ -1115,9 +1117,22 @@ def transform_holdings(df):
         engine
     )
 
+    print(
+        f"Clients fetched: "
+        f"{len(clients):,}"
+    )
+
+    # ========================================================
+    # CLEAN CLIENT PAN
+    # ========================================================
+
     clients["pan_clean"] = clean_pan(
         clients["pan"]
     )
+
+    # ========================================================
+    # KEEP ONLY VALID PAN + USER ID
+    # ========================================================
 
     clients = (
         clients[
@@ -1128,7 +1143,8 @@ def transform_holdings(df):
         ]
         .dropna(
             subset=[
-                "pan_clean"
+                "pan_clean",
+                "user_id"
             ]
         )
         .drop_duplicates(
@@ -1137,6 +1153,10 @@ def transform_holdings(df):
             ]
         )
     )
+
+    # ========================================================
+    # SIMPLE PAN → USER_ID MAPPING
+    # ========================================================
 
     client_lookup = dict(
         zip(
@@ -1152,6 +1172,16 @@ def transform_holdings(df):
 
     print(
         "Client mapping completed"
+    )
+
+    print(
+        f"Client IDs mapped: "
+        f"{gold_df['client_id'].notna().sum():,}"
+    )
+
+    print(
+        f"Client IDs missing: "
+        f"{gold_df['client_id'].isna().sum():,}"
     )
 
     # ========================================================
@@ -1361,68 +1391,7 @@ def transform_holdings(df):
     # ARN ID
     # ========================================================
 
-    print("Loading public.arn...")
-
-    arn_master = pd.read_sql(
-        """
-        SELECT
-            id,
-            arn_code
-
-        FROM public.arn
-
-        WHERE arn_code IS NOT NULL
-        """,
-        master_engine
-    )
-
-    arn_master["arn_code_clean"] = (
-        arn_master["arn_code"]
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
-
-    arn_master = (
-        arn_master[
-            [
-                "id",
-                "arn_code_clean"
-            ]
-        ]
-        .dropna(
-            subset=[
-                "arn_code_clean"
-            ]
-        )
-        .drop_duplicates(
-            subset=[
-                "arn_code_clean"
-            ]
-        )
-    )
-
-    arn_lookup = dict(
-        zip(
-            arn_master["arn_code_clean"],
-            arn_master["id"]
-        )
-    )
-
-    df["brokcode_clean"] = (
-        get_column(
-            df,
-            "brokcode"
-        )
-        .astype("string")
-        .str.strip()
-        .str.upper()
-    )
-
-    gold_df["arn_id"] = (
-        df["brokcode_clean"]
-        .map(arn_lookup)
-    )
+    gold_df["arn_id"] = None
 
     # ========================================================
     # CURRENT NAV
@@ -1863,23 +1832,8 @@ def remove_zero_net_holdings(gold_df):
         return gold_df
 
     # ========================================================
-    # IMPORTANT:
-    #
     # amount in silver.transaction_master_new is TEXT.
-    #
-    # Therefore we NEVER do:
-    #
-    # COALESCE(amount, 0)
-    #
-    # because PostgreSQL sees:
-    #
-    # TEXT + INTEGER
-    #
-    # and throws:
-    #
-    # DatatypeMismatch
-    #
-    # Instead, amount is explicitly converted to NUMERIC.
+    # Therefore explicitly convert amount to NUMERIC.
     # ========================================================
 
     zero_holdings_query = """

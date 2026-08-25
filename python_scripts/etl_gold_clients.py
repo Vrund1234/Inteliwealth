@@ -1,5 +1,6 @@
 import pandas as pd
 import traceback
+import uuid
 
 from datetime import datetime
 from utils.db import engine, master_engine
@@ -143,7 +144,9 @@ def normalize_mobile(series):
         dtype="object"
     )
 
-    # 91 + 10 digits
+    # ========================================================
+    # 91 + 10 DIGITS
+    # ========================================================
 
     mask_91 = (
         (digits.str.len() == 12)
@@ -157,7 +160,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_91] = "91"
 
-    # 10 digits
+    # ========================================================
+    # 10 DIGITS
+    # ========================================================
 
     mask_10 = (
         digits.str.len() == 10
@@ -169,7 +174,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_10] = "91"
 
-    # International
+    # ========================================================
+    # INTERNATIONAL
+    # ========================================================
 
     mask_other = (
         (digits.str.len() > 10)
@@ -1104,6 +1111,194 @@ def transform_clients(df):
 
     return gold
 
+
+# ============================================================
+# ASSIGN STABLE USER IDS
+#
+# IMPORTANT:
+# user_id is the PRIMARY KEY of gold.clients.
+#
+# Existing PAN:
+#     Reuse the existing user_id.
+#
+# New PAN:
+#     Generate a UUID exactly once.
+#
+# Therefore user_id does NOT change when the pipeline
+# is executed again for the same client.
+# ============================================================
+
+def assign_stable_user_ids(gold_df):
+
+    print("=" * 80)
+    print("ASSIGNING STABLE CLIENT USER IDS")
+    print("=" * 80)
+
+    if gold_df.empty:
+
+        return gold_df
+
+    gold_df = gold_df.copy()
+
+    # ========================================================
+    # CLEAN PAN
+    # ========================================================
+
+    gold_df["pan"] = clean_pan(
+        gold_df["pan"]
+    )
+
+    # ========================================================
+    # READ EXISTING CLIENT PAN + USER_ID
+    # ========================================================
+
+    print(
+        "\nReading existing PAN -> user_id mappings "
+        "from gold.clients..."
+    )
+
+    existing = safe_read(
+        """
+        SELECT
+            pan,
+            user_id
+        FROM gold.clients
+        WHERE pan IS NOT NULL
+          AND user_id IS NOT NULL
+        """
+    )
+
+    existing_lookup = {}
+
+    if not existing.empty:
+
+        existing["pan"] = clean_pan(
+            existing["pan"]
+        )
+
+        existing = existing[
+            existing["pan"].notna()
+            &
+            existing["user_id"].notna()
+        ].copy()
+
+        # ====================================================
+        # NORMALIZE USER ID AS STRING
+        # ====================================================
+
+        existing["user_id"] = (
+            existing["user_id"]
+            .astype(str)
+            .str.strip()
+        )
+
+        # ====================================================
+        # CREATE PAN -> USER_ID LOOKUP
+        # ====================================================
+
+        existing_lookup = (
+            existing
+            .drop_duplicates(
+                subset=["pan"],
+                keep="last"
+            )
+            .set_index("pan")["user_id"]
+            .to_dict()
+        )
+
+    print(
+        "Existing PAN -> user_id mappings:",
+        len(existing_lookup)
+    )
+
+    # ========================================================
+    # ASSIGN USER IDS
+    # ========================================================
+
+    user_ids = []
+
+    existing_count = 0
+    new_count = 0
+
+    # ========================================================
+    # IMPORTANT:
+    # A new UUID is generated only once per PAN within
+    # this current batch.
+    #
+    # Existing PAN always gets the UUID already stored
+    # in gold.clients.
+    # ========================================================
+
+    new_pan_user_ids = {}
+
+    for pan in gold_df["pan"]:
+
+        if pd.isna(pan):
+
+            user_ids.append(None)
+
+            continue
+
+        pan = str(pan).strip().upper()
+
+        # ====================================================
+        # EXISTING CLIENT
+        # ====================================================
+
+        if pan in existing_lookup:
+
+            user_id = existing_lookup[pan]
+
+            user_ids.append(user_id)
+
+            existing_count += 1
+
+        # ====================================================
+        # NEW CLIENT
+        # ====================================================
+
+        else:
+
+            if pan not in new_pan_user_ids:
+
+                new_pan_user_ids[pan] = str(
+                    uuid.uuid4()
+                )
+
+            user_ids.append(
+                new_pan_user_ids[pan]
+            )
+
+            new_count += 1
+
+    gold_df["user_id"] = user_ids
+
+    print("\nUser ID Mapping")
+    print("-" * 80)
+
+    print(
+        "Existing user_ids reused:",
+        existing_count
+    )
+
+    print(
+        "New user_ids generated:",
+        len(new_pan_user_ids)
+    )
+
+    print(
+        "Total rows with user_id:",
+        gold_df["user_id"].notna().sum()
+    )
+
+    print(
+        "Rows without user_id:",
+        gold_df["user_id"].isna().sum()
+    )
+
+    return gold_df
+
+
 # ============================================================
 # LOAD CLIENTS INTO DATABASE
 # ============================================================
@@ -1115,7 +1310,9 @@ def load_clients(gold_df):
     print("=" * 80)
 
     if gold_df.empty:
+
         print("No client rows generated.")
+
         return False
 
     gold_df = gold_df.copy()
@@ -1177,6 +1374,29 @@ def load_clients(gold_df):
         return True
 
     # ========================================================
+    # ASSIGN STABLE USER IDS
+    #
+    # THIS MUST HAPPEN BEFORE THE INSERT.
+    # ========================================================
+
+    gold_df = assign_stable_user_ids(
+        gold_df
+    )
+
+    # ========================================================
+    # VALIDATE USER IDS
+    # ========================================================
+
+    if gold_df["user_id"].isna().any():
+
+        print()
+        print(
+            "ERROR: Some clients do not have a user_id."
+        )
+
+        return False
+
+    # ========================================================
     # GET EXISTING PANS FROM DATABASE
     # ========================================================
 
@@ -1186,7 +1406,8 @@ def load_clients(gold_df):
     existing = safe_read(
         """
         SELECT
-            pan
+            pan,
+            user_id
         FROM gold.clients
         WHERE pan IS NOT NULL
         """
@@ -1296,6 +1517,7 @@ def load_clients(gold_df):
         )
 
         for col in missing_database_columns:
+
             print(
                 " -",
                 col
@@ -1330,8 +1552,7 @@ def load_clients(gold_df):
     # INSERT
     #
     # IMPORTANT:
-    # Use smaller chunks and normal INSERT execution.
-    # This avoids the huge parameter dump/error you are seeing.
+    # Smaller chunks prevent huge parameter dumps/errors.
     # ========================================================
 
     print()
@@ -1404,6 +1625,7 @@ def load_clients(gold_df):
         database_preview = safe_read(
             """
             SELECT
+                user_id,
                 pan,
                 full_name,
                 phone,
@@ -1464,10 +1686,6 @@ def load_clients(gold_df):
             type(e).__name__
         )
 
-        # IMPORTANT:
-        # Print only the actual error.
-        # Do NOT print the complete SQLAlchemy parameter list.
-
         error_text = str(e)
 
         print(
@@ -1496,7 +1714,10 @@ def load_clients(gold_df):
 
         return False
 
-#Main Function#
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
 
 def main():
 
