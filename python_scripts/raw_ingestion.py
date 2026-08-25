@@ -196,20 +196,39 @@ def clean_value(value):
     if value is None:
         return ""
 
-    # UUID -> string
-    if isinstance(value, uuid.UUID):
+    # --------------------------------------------------------
+    # UUID
+    # --------------------------------------------------------
+
+    if isinstance(
+        value,
+        uuid.UUID
+    ):
+
         return str(value)
 
-    # bytes -> decode safely
-    if isinstance(value, bytes):
+    # --------------------------------------------------------
+    # Bytes
+    # --------------------------------------------------------
+
+    if isinstance(
+        value,
+        bytes
+    ):
 
         value = value.decode(
             "utf-8",
             errors="replace"
         )
 
-    # strings
-    if isinstance(value, str):
+    # --------------------------------------------------------
+    # Strings
+    # --------------------------------------------------------
+
+    if isinstance(
+        value,
+        str
+    ):
 
         value = (
             value
@@ -219,7 +238,134 @@ def clean_value(value):
 
         return value.strip()
 
+    # --------------------------------------------------------
+    # Pandas NULL values
+    # --------------------------------------------------------
+
+    try:
+
+        if pd.isna(value):
+
+            return ""
+
+    except Exception:
+
+        pass
+
     return value
+
+
+# ============================================================
+# COMPLETELY NULL / BLANK ROW
+#
+# A row is considered empty ONLY when every field is empty.
+#
+# Examples:
+#
+# ["", "", "", ""]       -> REMOVE
+# [None, None, None]     -> REMOVE
+# ["", "", "ABC", ""]    -> KEEP
+# ["123", "", "", ""]    -> KEEP
+# ============================================================
+
+def is_completely_blank_row(row):
+
+    for value in row:
+
+        value = clean_value(value)
+
+        if value is None:
+            continue
+
+        if isinstance(
+            value,
+            str
+        ):
+
+            if value.strip() != "":
+                return False
+
+        else:
+
+            try:
+
+                if not pd.isna(value):
+                    return False
+
+            except Exception:
+
+                return False
+
+    return True
+
+
+# ============================================================
+# REMOVE COMPLETELY BLANK ROWS
+#
+# IMPORTANT:
+# This is used for ALL headerless file formats:
+#
+# CSV
+# Excel
+# DBF
+#
+# No row number is skipped blindly.
+# ============================================================
+
+def remove_completely_blank_rows(
+    df,
+    file_name=""
+):
+
+    if df is None:
+        return df
+
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    blank_mask = df.apply(
+        lambda row:
+        is_completely_blank_row(
+            row.tolist()
+        ),
+        axis=1
+    )
+
+    removed_count = int(
+        blank_mask.sum()
+    )
+
+    if removed_count > 0:
+
+        print()
+        print(
+            f"Removed {removed_count} "
+            f"completely NULL/blank row(s)."
+        )
+
+        removed_indexes = (
+            df.index[
+                blank_mask
+            ].tolist()
+        )
+
+        print(
+            "Removed row positions:",
+            [
+                index + 1
+                for index in removed_indexes
+            ]
+        )
+
+    df = df.loc[
+        ~blank_mask
+    ].reset_index(
+        drop=True
+    )
+
+    return df
 
 
 # ============================================================
@@ -234,7 +380,7 @@ def clean_dataframe(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # Clean every cell
+    # Clean cells
     # --------------------------------------------------------
 
     for column in df.columns:
@@ -244,13 +390,13 @@ def clean_dataframe(df):
         )
 
     # --------------------------------------------------------
-    # Replace missing values
+    # Replace NaN / None
     # --------------------------------------------------------
 
     df = df.fillna("")
 
     # --------------------------------------------------------
-    # UUID / object safety
+    # Clean object columns again
     # --------------------------------------------------------
 
     for column in df.columns:
@@ -259,6 +405,34 @@ def clean_dataframe(df):
 
             df[column] = df[column].map(
                 clean_value
+            )
+
+    return df
+
+
+# ============================================================
+# ARROW / STREAMLIT SAFE DATAFRAME
+# ============================================================
+
+def make_dataframe_arrow_safe(df):
+
+    if df is None:
+        return df
+
+    df = df.copy()
+
+    for column in df.columns:
+
+        if df[column].dtype == "object":
+
+            df[column] = df[column].map(
+                lambda value:
+                    str(value)
+                    if isinstance(
+                        value,
+                        uuid.UUID
+                    )
+                    else value
             )
 
     return df
@@ -280,10 +454,14 @@ def check_for_nul(
 
         for index, value in df[column].items():
 
-            if isinstance(
-                value,
-                str
-            ) and "\x00" in value:
+            if (
+                isinstance(
+                    value,
+                    str
+                )
+                and
+                "\x00" in value
+            ):
 
                 raise ValueError(
                     f"NUL CHARACTER FOUND\n\n"
@@ -296,12 +474,18 @@ def check_for_nul(
 # ============================================================
 # ASSIGN VIRTUAL HEADERS
 #
-# IMPORTANT:
-# The input files are HEADERLESS.
+# HEADERLESS FILES
 #
-# First row = DATA.
+# The source does not provide the business headers.
+# Therefore the configured headers are assigned strictly
+# according to column POSITION.
 #
-# Headers are assigned by POSITION.
+# Example:
+#
+# Source column 1 -> AMC_CODE
+# Source column 2 -> FOLIO_NO
+# Source column 3 -> PRODCODE
+# ...
 # ============================================================
 
 def assign_virtual_headers(
@@ -357,7 +541,7 @@ def assign_virtual_headers(
     )
 
     print(
-        "First row preserved as DATA."
+        "Headers assigned by column position."
     )
 
     return df
@@ -365,10 +549,6 @@ def assign_virtual_headers(
 
 # ============================================================
 # ACTUAL FILE FORMAT DETECTION
-#
-# DO NOT TRUST ONLY THE EXTENSION.
-#
-# This prevents XLSX binary content from being read as CSV.
 # ============================================================
 
 def detect_physical_format(file):
@@ -380,26 +560,27 @@ def detect_physical_format(file):
     file.seek(0)
 
     # --------------------------------------------------------
-    # ZIP / XLSX
+    # XLSX
     # --------------------------------------------------------
 
-    if raw.startswith(b"PK\x03\x04"):
+    if raw.startswith(
+        b"PK\x03\x04"
+    ):
+
         return "xlsx"
 
     # --------------------------------------------------------
-    # Old Excel OLE format
+    # XLS
     # --------------------------------------------------------
 
     if raw.startswith(
         b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
     ):
+
         return "xls"
 
     # --------------------------------------------------------
     # DBF
-    #
-    # DBF version byte is commonly:
-    # 02, 03, 04, 05, 30, 31, 32, 43, 63, 83, 8B, 8E, CB, F5, FB
     # --------------------------------------------------------
 
     if len(raw) >= 1:
@@ -425,10 +606,6 @@ def detect_physical_format(file):
         if raw[0] in dbf_versions:
 
             return "dbf"
-
-    # --------------------------------------------------------
-    # Otherwise text
-    # --------------------------------------------------------
 
     return "text"
 
@@ -488,11 +665,9 @@ def detect_delimiter(text):
 
 
 # ============================================================
-# READ TEXT FILE
+# READ CSV
 #
-# HEADERLESS
-#
-# FIRST ROW IS DATA
+# CSV IS HEADERLESS.
 # ============================================================
 
 def read_csv_file(
@@ -509,7 +684,10 @@ def read_csv_file(
 
     raw = file.read()
 
-    if isinstance(raw, str):
+    if isinstance(
+        raw,
+        str
+    ):
 
         raw = raw.encode(
             "utf-8"
@@ -520,10 +698,6 @@ def read_csv_file(
         raise ValueError(
             f"File is empty:\n{file.name}"
         )
-
-    # --------------------------------------------------------
-    # Encoding detection
-    # --------------------------------------------------------
 
     encodings = [
         "utf-8-sig",
@@ -563,10 +737,6 @@ def read_csv_file(
         detected_encoding
     )
 
-    # --------------------------------------------------------
-    # Remove NULs
-    # --------------------------------------------------------
-
     text = (
         text
         .replace("\x00", "")
@@ -574,7 +744,9 @@ def read_csv_file(
         .replace("\r", "\n")
     )
 
-    delimiter = detect_delimiter(text)
+    delimiter = detect_delimiter(
+        text
+    )
 
     print(
         "Delimiter:",
@@ -599,14 +771,6 @@ def read_csv_file(
         start=1
     ):
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Empty physical line is allowed.
-        #
-        # If it is a completely empty first data row,
-        # represent it as 101 empty values.
-        # ----------------------------------------------------
-
         if not row:
 
             row = [""]
@@ -618,21 +782,9 @@ def read_csv_file(
 
         actual_count = len(row)
 
-        # ----------------------------------------------------
-        # Exact
-        # ----------------------------------------------------
-
         if actual_count == expected_count:
 
             rows.append(row)
-
-        # ----------------------------------------------------
-        # Fewer fields
-        #
-        # PAD WITH EMPTY VALUES.
-        #
-        # This fixes your 100 vs 101 problem.
-        # ----------------------------------------------------
 
         elif actual_count < expected_count:
 
@@ -653,10 +805,6 @@ def read_csv_file(
                 f"padded to {expected_count}"
             )
 
-        # ----------------------------------------------------
-        # More fields
-        # ----------------------------------------------------
-
         else:
 
             raise ValueError(
@@ -669,13 +817,11 @@ def read_csv_file(
                 f"{row[:20]}"
             )
 
-    # --------------------------------------------------------
-    # DataFrame
-    # --------------------------------------------------------
-
     temp_columns = [
         f"_SOURCE_{i + 1}"
-        for i in range(expected_count)
+        for i in range(
+            expected_count
+        )
     ]
 
     df = pd.DataFrame(
@@ -684,18 +830,23 @@ def read_csv_file(
     )
 
     print(
-        "Rows read:",
+        "Rows read before blank-row removal:",
         len(df)
     )
 
-    print(
-        "Columns:",
-        len(df.columns)
+    # --------------------------------------------------------
+    # Remove ONLY completely blank rows.
+    # --------------------------------------------------------
+
+    df = remove_completely_blank_rows(
+        df,
+        file.name
     )
 
-    # --------------------------------------------------------
-    # Virtual headers
-    # --------------------------------------------------------
+    print(
+        "Rows after blank-row removal:",
+        len(df)
+    )
 
     df = assign_virtual_headers(
         df,
@@ -709,9 +860,7 @@ def read_csv_file(
 # ============================================================
 # READ EXCEL
 #
-# HEADERLESS
-#
-# FIRST ROW IS DATA
+# Excel is also treated as HEADERLESS.
 # ============================================================
 
 def read_excel_file(
@@ -748,7 +897,7 @@ def read_excel_file(
     )
 
     # --------------------------------------------------------
-    # Remove trailing empty columns only
+    # Remove extra completely blank trailing columns.
     # --------------------------------------------------------
 
     while len(df.columns) > expected_count:
@@ -770,25 +919,40 @@ def read_excel_file(
             break
 
     # --------------------------------------------------------
-    # Pad if Excel has fewer columns
+    # Pad missing columns.
     # --------------------------------------------------------
 
     while len(df.columns) < expected_count:
 
         df[len(df.columns)] = ""
 
-    # --------------------------------------------------------
-    # Temporary names
-    # --------------------------------------------------------
-
     df.columns = [
         f"_SOURCE_{i + 1}"
-        for i in range(len(df.columns))
+        for i in range(
+            len(df.columns)
+        )
     ]
 
     # --------------------------------------------------------
-    # Virtual headers
+    # Remove ONLY completely blank rows.
+    #
+    # If row 1 is completely blank:
+    #     row 1 -> removed
+    #     row 2 -> becomes first data row
+    #
+    # If row 1 contains data:
+    #     row 1 -> kept
     # --------------------------------------------------------
+
+    df = remove_completely_blank_rows(
+        df,
+        file.name
+    )
+
+    print(
+        "Rows after blank-row removal:",
+        len(df)
+    )
 
     df = assign_virtual_headers(
         df,
@@ -800,7 +964,7 @@ def read_excel_file(
 
 
 # ============================================================
-# DBF HEADER VALIDATION
+# DBF HEADER INSPECTION
 # ============================================================
 
 def inspect_dbf_header(
@@ -832,10 +996,6 @@ def inspect_dbf_header(
     )
 
     file_size = len(raw)
-
-    # --------------------------------------------------------
-    # Basic validation
-    # --------------------------------------------------------
 
     if header_length < 33:
 
@@ -879,12 +1039,14 @@ def inspect_dbf_header(
             "valid": False,
             "reason": (
                 f"Header length {header_length} "
-                f"does not describe complete 32-byte "
-                f"DBF field descriptors."
+                f"does not describe complete "
+                f"32-byte DBF field descriptors."
             )
         }
 
-    field_count = descriptor_bytes // 32
+    field_count = (
+        descriptor_bytes // 32
+    )
 
     if field_count <= 0:
 
@@ -906,11 +1068,16 @@ def inspect_dbf_header(
             offset + 32
         ]
 
-        name_bytes = descriptor[0:11]
+        name_bytes = descriptor[
+            0:11
+        ]
 
         field_name = (
             name_bytes
-            .split(b"\x00", 1)[0]
+            .split(
+                b"\x00",
+                1
+            )[0]
             .decode(
                 "latin1",
                 errors="replace"
@@ -933,7 +1100,9 @@ def inspect_dbf_header(
             "decimal": decimal_count
         })
 
-        calculated_record_length += field_length
+        calculated_record_length += (
+            field_length
+        )
 
         offset += 32
 
@@ -959,10 +1128,6 @@ def inspect_dbf_header(
             "fields": fields
         }
 
-    # --------------------------------------------------------
-    # Record length check
-    # --------------------------------------------------------
-
     if (
         calculated_record_length
         !=
@@ -987,6 +1152,15 @@ def inspect_dbf_header(
             "fields": fields
         }
 
+    physical_bytes = max(
+        0,
+        file_size - header_length
+    )
+
+    physical_records = (
+        physical_bytes // record_length
+    )
+
     return {
         "valid": True,
         "version": version,
@@ -996,15 +1170,45 @@ def inspect_dbf_header(
         "field_count": field_count,
         "calculated_record_length":
             calculated_record_length,
+        "physical_bytes":
+            physical_bytes,
+        "physical_records":
+            physical_records,
         "fields": fields
     }
 
 
 # ============================================================
+# CREATE EMPTY DBF DATAFRAME
+# ============================================================
+
+def create_empty_dbf_dataframe(
+    expected_columns,
+    file_name
+):
+
+    temp_columns = [
+        f"_SOURCE_{i + 1}"
+        for i in range(
+            len(expected_columns)
+        )
+    ]
+
+    df = pd.DataFrame(
+        columns=temp_columns
+    )
+
+    df = assign_virtual_headers(
+        df,
+        expected_columns,
+        file_name
+    )
+
+    return df
+
+
+# ============================================================
 # MANUAL DBF READER
-#
-# Used only when dbfread cannot read the file but the DBF
-# header itself is structurally valid.
 # ============================================================
 
 def read_dbf_manual(
@@ -1016,48 +1220,16 @@ def read_dbf_manual(
 
     raw = file.read()
 
-    info = inspect_dbf_header(raw)
+    info = inspect_dbf_header(
+        raw
+    )
 
     if not info["valid"]:
 
-        details = [
-            f"File: {file.name}",
-            "",
-            f"Reason: {info.get('reason')}",
-        ]
-
-        if "header_length" in info:
-            details.append(
-                f"Header length: "
-                f"{info['header_length']}"
-            )
-
-        if "record_length" in info:
-            details.append(
-                f"Record length: "
-                f"{info['record_length']}"
-            )
-
-        if "field_count" in info:
-            details.append(
-                f"Field count: "
-                f"{info['field_count']}"
-            )
-
-        if "calculated_record_length" in info:
-            details.append(
-                f"Calculated record length: "
-                f"{info['calculated_record_length']}"
-            )
-
         raise ValueError(
-            "INVALID / CORRUPTED DBF FILE\n\n"
-            + "\n".join(details)
-            + "\n\n"
-            "The DBF header is internally inconsistent. "
-            "This is not caused by the first data row. "
-            "The file itself must be regenerated/exported "
-            "as a valid DBF."
+            f"INVALID / CORRUPTED DBF FILE\n\n"
+            f"File: {file.name}\n"
+            f"Reason: {info.get('reason')}"
         )
 
     fields = info["fields"]
@@ -1086,8 +1258,7 @@ def read_dbf_manual(
             f"File: {file.name}\n"
             f"Expected: {len(expected_columns)}\n"
             f"Found: {len(source_columns)}\n\n"
-            f"DBF fields:\n"
-            f"{source_columns}"
+            f"DBF fields:\n{source_columns}"
         )
 
     header_length = info[
@@ -1098,27 +1269,53 @@ def read_dbf_manual(
         "record_length"
     ]
 
-    num_records = info[
+    declared_records = info[
         "records"
     ]
+
+    physical_records = info.get(
+        "physical_records",
+        0
+    )
+
+    print()
+    print("=" * 80)
+    print("DBF RECORD ANALYSIS")
+    print("=" * 80)
+
+    print(
+        "Records declared in header:",
+        declared_records
+    )
+
+    print(
+        "Physical records available:",
+        physical_records
+    )
+
+    if physical_records <= 0:
+
+        print(
+            "DBF contains zero physical records."
+        )
+
+        return create_empty_dbf_dataframe(
+            expected_columns,
+            file.name
+        )
 
     rows = []
 
     data_start = header_length
 
-    # --------------------------------------------------------
-    # Read records
-    # --------------------------------------------------------
-
     for record_number in range(
-        num_records
+        physical_records
     ):
 
         start = (
             data_start
             +
-            record_number
-            *
+            record_number *
             record_length
         )
 
@@ -1129,23 +1326,27 @@ def read_dbf_manual(
         )
 
         if end > len(raw):
+
             break
 
         record = raw[
             start:end
         ]
 
+        if not record:
+            continue
+
         # ----------------------------------------------------
         # Deleted record
         # ----------------------------------------------------
 
-        if not record:
-            continue
+        if record[0] == 0x2A:
 
-        deletion_flag = record[0]
+            print(
+                f"Skipping deleted DBF record "
+                f"{record_number + 1}"
+            )
 
-        # "*" = deleted
-        if deletion_flag == 0x2A:
             continue
 
         position = 1
@@ -1165,10 +1366,6 @@ def read_dbf_manual(
 
             field_type = field["type"]
 
-            # ------------------------------------------------
-            # Character
-            # ------------------------------------------------
-
             if field_type in (
                 "C",
                 "V"
@@ -1179,59 +1376,18 @@ def read_dbf_manual(
                     errors="replace"
                 ).strip()
 
-            # ------------------------------------------------
-            # Date
-            # ------------------------------------------------
-
-            elif field_type == "D":
-
-                value = value_bytes.decode(
-                    "ascii",
-                    errors="ignore"
-                ).strip()
-
-            # ------------------------------------------------
-            # Logical
-            # ------------------------------------------------
-
-            elif field_type == "L":
-
-                value = value_bytes.decode(
-                    "ascii",
-                    errors="ignore"
-                ).strip()
-
-            # ------------------------------------------------
-            # Numeric
-            # ------------------------------------------------
-
             elif field_type in (
+                "D",
+                "L",
                 "N",
-                "F"
+                "F",
+                "M"
             ):
 
                 value = value_bytes.decode(
                     "ascii",
                     errors="ignore"
                 ).strip()
-
-            # ------------------------------------------------
-            # Memo
-            #
-            # The value is a pointer. Without the DBT/FPT file
-            # the actual memo text cannot be recovered.
-            # ------------------------------------------------
-
-            elif field_type == "M":
-
-                value = value_bytes.decode(
-                    "ascii",
-                    errors="ignore"
-                ).strip()
-
-            # ------------------------------------------------
-            # Other types
-            # ------------------------------------------------
 
             else:
 
@@ -1244,20 +1400,41 @@ def read_dbf_manual(
                 clean_value(value)
             )
 
-        rows.append(row)
+        if len(row) == len(
+            expected_columns
+        ):
 
-    # --------------------------------------------------------
-    # DataFrame
-    # --------------------------------------------------------
+            rows.append(row)
+
+    print(
+        "Physical rows extracted:",
+        len(rows)
+    )
+
+    temp_columns = [
+        f"_SOURCE_{i + 1}"
+        for i in range(
+            len(expected_columns)
+        )
+    ]
 
     df = pd.DataFrame(
         rows,
-        columns=[
-            f"_SOURCE_{i + 1}"
-            for i in range(
-                len(expected_columns)
-            )
-        ]
+        columns=temp_columns
+    )
+
+    # --------------------------------------------------------
+    # Remove ONLY completely blank rows.
+    # --------------------------------------------------------
+
+    df = remove_completely_blank_rows(
+        df,
+        file.name
+    )
+
+    print(
+        "Rows after blank-row removal:",
+        len(df)
     )
 
     df = assign_virtual_headers(
@@ -1272,10 +1449,13 @@ def read_dbf_manual(
 # ============================================================
 # READ DBF
 #
-# DBF does NOT use the first row as a header.
+# IMPORTANT:
 #
-# The DBF internal field descriptors are the schema.
-# We replace those physical names with our virtual names.
+# The DBF internal field names are NOT used as the
+# application's final headings.
+#
+# We read records by their physical position and then
+# assign expected_columns by position.
 # ============================================================
 
 def read_dbf_file(
@@ -1290,13 +1470,13 @@ def read_dbf_file(
 
     file.seek(0)
 
-    # --------------------------------------------------------
-    # Copy uploaded file to temporary file
-    # --------------------------------------------------------
-
     temp_path = None
 
     try:
+
+        # ----------------------------------------------------
+        # Save uploaded file to temporary DBF
+        # ----------------------------------------------------
 
         with tempfile.NamedTemporaryFile(
             suffix=".dbf",
@@ -1310,8 +1490,94 @@ def read_dbf_file(
             temp_path = temp.name
 
         # ----------------------------------------------------
-        # Try dbfread
+        # Inspect physical DBF
         # ----------------------------------------------------
+
+        file.seek(0)
+
+        raw = file.read()
+
+        info = inspect_dbf_header(
+            raw
+        )
+
+        if not info["valid"]:
+
+            raise ValueError(
+                f"INVALID / CORRUPTED DBF FILE\n\n"
+                f"File: {file.name}\n"
+                f"Reason: {info.get('reason')}"
+            )
+
+        source_columns = [
+            field["name"]
+            for field in info["fields"]
+        ]
+
+        physical_records = info.get(
+            "physical_records",
+            0
+        )
+
+        declared_records = info.get(
+            "records",
+            0
+        )
+
+        print(
+            "DBF internal fields:",
+            len(source_columns)
+        )
+
+        print(
+            "Expected virtual columns:",
+            len(expected_columns)
+        )
+
+        print(
+            "DBF declared records:",
+            declared_records
+        )
+
+        print(
+            "Physical DBF records:",
+            physical_records
+        )
+
+        # ----------------------------------------------------
+        # Field count
+        # ----------------------------------------------------
+
+        if len(source_columns) != len(
+            expected_columns
+        ):
+
+            raise ValueError(
+                f"DBF FIELD COUNT MISMATCH\n\n"
+                f"File: {file.name}\n"
+                f"Expected: {len(expected_columns)}\n"
+                f"Found: {len(source_columns)}\n\n"
+                f"DBF fields:\n{source_columns}"
+            )
+
+        # ====================================================
+        # EMPTY DBF
+        # ====================================================
+
+        if physical_records <= 0:
+
+            print(
+                "DBF has valid structure but zero records."
+            )
+
+            return create_empty_dbf_dataframe(
+                expected_columns,
+                file.name
+            )
+
+        # ====================================================
+        # DBFREAD
+        # ====================================================
 
         try:
 
@@ -1322,39 +1588,24 @@ def read_dbf_file(
                 ignore_missing_memofile=True
             )
 
-            source_columns = list(
+            dbf_columns = list(
                 dbf.field_names
             )
 
             print(
-                "DBF fields:",
-                len(source_columns)
+                "DBF fields from dbfread:",
+                len(dbf_columns)
             )
 
-            print(
-                "Expected:",
-                len(expected_columns)
-            )
-
-            # ------------------------------------------------
-            # DBF field count must match mapping.
-            #
-            # Do NOT treat the first record as a header.
-            # ------------------------------------------------
-
-            if len(source_columns) != len(
+            if len(dbf_columns) != len(
                 expected_columns
             ):
 
                 raise ValueError(
                     f"DBF FIELD COUNT MISMATCH\n\n"
                     f"File: {file.name}\n"
-                    f"Expected: "
-                    f"{len(expected_columns)}\n"
-                    f"Found: "
-                    f"{len(source_columns)}\n\n"
-                    f"Actual DBF fields:\n"
-                    f"{source_columns}"
+                    f"Expected: {len(expected_columns)}\n"
+                    f"Found: {len(dbf_columns)}"
                 )
 
             records = []
@@ -1363,7 +1614,14 @@ def read_dbf_file(
 
                 row = []
 
-                for source_column in source_columns:
+                # ------------------------------------------------
+                # IMPORTANT:
+                #
+                # Read fields according to DBF physical order.
+                # Do NOT use the DBF field names as final headers.
+                # ------------------------------------------------
+
+                for source_column in dbf_columns:
 
                     value = record.get(
                         source_column
@@ -1373,27 +1631,66 @@ def read_dbf_file(
                         clean_value(value)
                     )
 
+                if len(row) != len(
+                    expected_columns
+                ):
+
+                    raise ValueError(
+                        f"DBF RECORD COLUMN COUNT ERROR\n\n"
+                        f"File: {file.name}\n"
+                        f"Expected: {len(expected_columns)}\n"
+                        f"Found: {len(row)}"
+                    )
+
                 records.append(row)
+
+            print(
+                "dbfread rows:",
+                len(records)
+            )
+
+            # ------------------------------------------------
+            # Create DataFrame from records.
+            # ------------------------------------------------
+
+            temp_columns = [
+                f"_SOURCE_{i + 1}"
+                for i in range(
+                    len(expected_columns)
+                )
+            ]
 
             df = pd.DataFrame(
                 records,
-                columns=[
-                    f"_SOURCE_{i + 1}"
-                    for i in range(
-                        len(expected_columns)
-                    )
-                ]
+                columns=temp_columns
             )
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # No first-row skip.
+            #
+            # Only completely blank rows are removed.
+            # ------------------------------------------------
+
+            df = remove_completely_blank_rows(
+                df,
+                file.name
+            )
+
+            print(
+                "DBF rows after blank-row removal:",
+                len(df)
+            )
+
+            # ------------------------------------------------
+            # Assign virtual business headers.
+            # ------------------------------------------------
 
             df = assign_virtual_headers(
                 df,
                 expected_columns,
                 file.name
-            )
-
-            print(
-                "DBF rows:",
-                len(df)
             )
 
             return df
@@ -1402,7 +1699,7 @@ def read_dbf_file(
 
             print()
             print(
-                "dbfread could not parse DBF."
+                "dbfread could not read usable records."
             )
 
             print(
@@ -1411,42 +1708,8 @@ def read_dbf_file(
             )
 
             print(
-                "Checking DBF binary structure..."
+                "Using manual DBF reader."
             )
-
-            # ------------------------------------------------
-            # Fallback manual parser
-            # ------------------------------------------------
-
-            file.seek(0)
-
-            raw = file.read()
-
-            info = inspect_dbf_header(
-                raw
-            )
-
-            if not info["valid"]:
-
-                reason = info.get(
-                    "reason",
-                    "Unknown DBF structure error."
-                )
-
-                raise ValueError(
-                    f"INVALID DBF FILE\n\n"
-                    f"File: {file.name}\n\n"
-                    f"{reason}\n\n"
-                    f"Expected fields: "
-                    f"{len(expected_columns)}\n\n"
-                    f"This is NOT caused by whether "
-                    f"the first row is empty or contains data.\n\n"
-                    f"A DBF stores its field names in its "
-                    f"binary header. The first record is "
-                    f"always data.\n\n"
-                    f"The supplied DBF header is "
-                    f"internally inconsistent/corrupt."
-                ) from dbf_error
 
             return read_dbf_manual(
                 file,
@@ -1462,9 +1725,13 @@ def read_dbf_file(
         ):
 
             try:
-                os.remove(temp_path)
+
+                os.remove(
+                    temp_path
+                )
 
             except Exception:
+
                 pass
 
 
@@ -1504,10 +1771,6 @@ def read_file(file):
         file_type,
         master_type
     )
-
-    # --------------------------------------------------------
-    # Detect actual physical format
-    # --------------------------------------------------------
 
     physical_format = detect_physical_format(
         file
@@ -1609,11 +1872,21 @@ def read_file(file):
         )
 
     # ========================================================
-    # CLEAN
+    # FINAL CLEANING
     # ========================================================
 
     df = clean_dataframe(
         df
+    )
+
+    # --------------------------------------------------------
+    # Remove completely blank rows one more time after
+    # cleaning, so None / NaN / "" are treated consistently.
+    # --------------------------------------------------------
+
+    df = remove_completely_blank_rows(
+        df,
+        file_name
     )
 
     check_for_nul(
@@ -1632,10 +1905,43 @@ def read_file(file):
         raise ValueError(
             f"FINAL COLUMN COUNT MISMATCH\n\n"
             f"File: {file_name}\n"
-            f"Expected: "
-            f"{len(expected_columns)}\n"
-            f"Found: "
-            f"{len(df.columns)}"
+            f"Expected: {len(expected_columns)}\n"
+            f"Found: {len(df.columns)}"
+        )
+
+    # ========================================================
+    # FINAL PREVIEW DATA
+    #
+    # This is the actual data with the virtual headers.
+    # ========================================================
+
+    print()
+    print("=" * 80)
+    print("DATA PREVIEW")
+    print("=" * 80)
+
+    print(
+        "Rows:",
+        len(df)
+    )
+
+    print(
+        "Columns:",
+        len(df.columns)
+    )
+
+    if not df.empty:
+
+        print(
+            df.head(10).to_string(
+                index=False
+            )
+        )
+
+    else:
+
+        print(
+            "No data rows available."
         )
 
     # ========================================================
@@ -1660,6 +1966,20 @@ def read_file(file):
         error_df
     )
 
+    # --------------------------------------------------------
+    # Do not allow completely blank rows into database.
+    # --------------------------------------------------------
+
+    valid_df = remove_completely_blank_rows(
+        valid_df,
+        f"{file_name} - VALID"
+    )
+
+    error_df = remove_completely_blank_rows(
+        error_df,
+        f"{file_name} - ERROR"
+    )
+
     check_for_nul(
         valid_df,
         file_name
@@ -1668,6 +1988,18 @@ def read_file(file):
     check_for_nul(
         error_df,
         file_name
+    )
+
+    # ========================================================
+    # ARROW SAFETY
+    # ========================================================
+
+    valid_df = make_dataframe_arrow_safe(
+        valid_df
+    )
+
+    error_df = make_dataframe_arrow_safe(
+        error_df
     )
 
     print()
@@ -1722,9 +2054,15 @@ def combine_dataframes(
         ignore_index=True
     )
 
-    return clean_dataframe(
+    df = clean_dataframe(
         df
     )
+
+    df = remove_completely_blank_rows(
+        df
+    )
+
+    return df
 
 
 # ============================================================
@@ -1860,6 +2198,37 @@ def extract_and_push(
         kfin_df is not None
     ):
 
+        print()
+        print(
+            "TRANSACTION DATA BEFORE DATABASE INSERT"
+        )
+
+        if cams_df is not None:
+
+            print(
+                "CAMS transaction rows:",
+                len(cams_df)
+            )
+
+            print(
+                cams_df.head(10).to_string(
+                    index=False
+                )
+            )
+
+        if kfin_df is not None:
+
+            print(
+                "KFIN transaction rows:",
+                len(kfin_df)
+            )
+
+            print(
+                kfin_df.head(10).to_string(
+                    index=False
+                )
+            )
+
         process_transactions(
             cams=cams_df,
             kfin=kfin_df
@@ -1883,26 +2252,62 @@ def extract_and_push(
         kfin_df is not None
     ):
 
-        cams_df = clean_dataframe(
-            cams_df
-        ) if cams_df is not None else None
+        cams_df = (
+            clean_dataframe(cams_df)
+            if cams_df is not None
+            else None
+        )
 
-        kfin_df = clean_dataframe(
-            kfin_df
-        ) if kfin_df is not None else None
+        kfin_df = (
+            clean_dataframe(kfin_df)
+            if kfin_df is not None
+            else None
+        )
 
         if cams_df is not None:
+
+            cams_df = remove_completely_blank_rows(
+                cams_df,
+                "CAMS INVESTOR"
+            )
 
             check_for_nul(
                 cams_df,
                 "CAMS INVESTOR"
             )
 
+            print(
+                "CAMS INVESTOR ROWS BEFORE DATABASE INSERT:",
+                len(cams_df)
+            )
+
+            print(
+                cams_df.head(10).to_string(
+                    index=False
+                )
+            )
+
         if kfin_df is not None:
+
+            kfin_df = remove_completely_blank_rows(
+                kfin_df,
+                "KFIN INVESTOR"
+            )
 
             check_for_nul(
                 kfin_df,
                 "KFIN INVESTOR"
+            )
+
+            print(
+                "KFIN INVESTOR ROWS BEFORE DATABASE INSERT:",
+                len(kfin_df)
+            )
+
+            print(
+                kfin_df.head(10).to_string(
+                    index=False
+                )
             )
 
         process_investor_master(
@@ -1930,13 +2335,31 @@ def extract_and_push(
         kfin_df is not None
     ):
 
-        cams_df = clean_dataframe(
-            cams_df
-        ) if cams_df is not None else None
+        cams_df = (
+            clean_dataframe(cams_df)
+            if cams_df is not None
+            else None
+        )
 
-        kfin_df = clean_dataframe(
-            kfin_df
-        ) if kfin_df is not None else None
+        kfin_df = (
+            clean_dataframe(kfin_df)
+            if kfin_df is not None
+            else None
+        )
+
+        if cams_df is not None:
+
+            cams_df = remove_completely_blank_rows(
+                cams_df,
+                "CAMS SIP"
+            )
+
+        if kfin_df is not None:
+
+            kfin_df = remove_completely_blank_rows(
+                kfin_df,
+                "KFIN SIP"
+            )
 
         process_sip(
             cams=cams_df,
@@ -1954,6 +2377,10 @@ def extract_and_push(
         )
 
         sip_preview = clean_dataframe(
+            sip_preview
+        )
+
+        sip_preview = make_dataframe_arrow_safe(
             sip_preview
         )
 
