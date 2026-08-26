@@ -782,22 +782,16 @@ def load_scheme_nav(gold_df):
 
     try:
 
-        gold_df.to_sql(
+        from utils.db import upsert_dataframe
 
-            name="scheme_nav",
-
-            con=engine,
-
+        upsert_dataframe(
+            gold_df,
             schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+            table="scheme_nav",
+            conflict_columns=["scheme_id", "nav_date"],
+            chunksize=2000,
+            # gold.scheme_nav has no updated_at (or equivalent) column.
+            updated_at_column=None,
         )
 
         print(

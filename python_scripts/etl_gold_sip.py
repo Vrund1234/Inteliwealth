@@ -543,11 +543,27 @@ def transform_sip(df):
 
     gold_df["rta"] = df["rta_clean"]
 
-    gold_df["sip_reg_no"] = (
+    # sip_reg_no falls back to request_ref_no when ft_sip_regno is blank or
+    # the literal placeholder "0" that KFIN sends for "no reg number".
+    # Without this fallback, two genuinely different SIP registrations that
+    # share folio/scheme/date/amount (only distinguished by ft_sip_regno or
+    # request_ref_no) both come out blank here and look like duplicates to
+    # everything downstream -- confirmed live on folio 1019044785.
+    ft_sip_regno = (
         get_column(df, "ft_sip_regno")
         .astype("string")
         .str.strip()
+        .replace({"0": pd.NA, "": pd.NA})
     )
+
+    request_ref_no = (
+        get_column(df, "request_ref_no")
+        .astype("string")
+        .str.strip()
+        .replace({"": pd.NA})
+    )
+
+    gold_df["sip_reg_no"] = ft_sip_regno.fillna(request_ref_no)
 
     gold_df["folio_number"] = df["folio_clean"]
 
@@ -1772,33 +1788,34 @@ def load_sip(gold_df):
     print("Silver flag update: DISABLED")
 
     # ========================================================
-    # CONVERT PANDAS NULLS TO DATABASE NULL
-    # ========================================================
-
-    gold_df = gold_df.astype(object)
-
-    gold_df = gold_df.where(
-        pd.notna(gold_df),
-        None
-    )
-
-    # ========================================================
     # INSERT
+    #
+    # NOTE: pandas NULL -> database NULL conversion is handled inside
+    # upsert_dataframe() itself (astype(object).where(pd.notnull(...), None)
+    # applied right before building the insert records), so no pre-
+    # conversion is needed here.
     # ========================================================
 
     try:
 
-        with engine.begin() as connection:
+        from utils.db import upsert_dataframe
 
-            gold_df.to_sql(
-                name="sip",
-                con=connection,
-                schema="gold",
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=1000
-            )
+        # uq_gold_sip_natural_key is on an expression (COALESCE-normalized
+        # sip_reg_no), not plain columns -- Postgres cannot promote an
+        # expression index to a table CONSTRAINT at all (confirmed live on
+        # the analogous silver SIP index), so it can't be targeted by name.
+        upsert_dataframe(
+            gold_df,
+            schema="gold",
+            table="sip",
+            conflict_index_expr=(
+                '"rta", "folio_number", "scheme_code", "registered_date", "amount", '
+                '(COALESCE(NULLIF("sip_reg_no", \'\'), \'\'))'
+            ),
+            chunksize=500,
+            # gold.sip has no updated_at (or equivalent) column.
+            updated_at_column=None,
+        )
 
         # ====================================================
         # VERIFY

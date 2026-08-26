@@ -2553,14 +2553,16 @@ def load_holdings(gold_df):
 
     try:
 
-        gold_df.to_sql(
-            name="holdings",
-            con=engine,
+        from utils.db import upsert_dataframe
+
+        upsert_dataframe(
+            gold_df,
             schema="gold",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=5000
+            table="holdings",
+            conflict_columns=["rta", "pan", "folio_number", "scheme_id"],
+            chunksize=500,
+            # gold.holdings has last_synced_at instead of updated_at.
+            updated_at_column="last_synced_at",
         )
 
         print()

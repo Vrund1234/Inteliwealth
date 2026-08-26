@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
+import backfill_bronze_row_hash
 from utils.db import engine
 from backfill_bronze_row_hash import backfill_table, _normalize_transaction
 
@@ -74,6 +75,47 @@ def test_byte_identical_rows_get_the_same_hash():
         ), {"s": SENTINEL, "t": txn})]
     assert len(hashes) == 2
     assert hashes[0] == hashes[1]
+
+
+def test_backfill_issues_one_update_per_chunk_not_per_row(monkeypatch):
+    """Regression guard: a naive backfill that issues one UPDATE per row
+    doesn't scale as bronze grows into millions of rows, and per the
+    2026-08-26 dedup-performance spec this backfill must be re-run after
+    every future bronze schema change -- so its own cost must stay
+    O(batches), not O(rows). Writes go through psycopg2.extras.execute_values
+    (see backfill_table's docstring), which SQLAlchemy's own statement
+    events can't see since it runs on the raw DBAPI cursor -- so this counts
+    calls to execute_values itself instead."""
+    for i in range(7):
+        _insert(f"t{i}", str(i))
+
+    calls = []
+    real_execute_values = backfill_bronze_row_hash.execute_values
+
+    def _counting_execute_values(cursor, sql, argslist, **kwargs):
+        calls.append(argslist)
+        return real_execute_values(cursor, sql, argslist, **kwargs)
+
+    monkeypatch.setattr(backfill_bronze_row_hash, "execute_values", _counting_execute_values)
+
+    backfill_table(
+        TEST_SCHEMA, TEST_TABLE,
+        compare_cols=["trxnno", "td_ptrno"],
+        normalize_fn=_normalize_transaction,
+        sentinel_source=SENTINEL,
+        chunk_size=3,
+    )
+
+    # 7 rows at chunk_size=3 -> ceil(7/3) = 3 execute_values calls, not 7.
+    assert len(calls) == 3
+    assert [len(c) for c in calls] == [3, 3, 1]
+
+    with engine.begin() as conn:
+        hashes = [r[0] for r in conn.execute(text(
+            f"SELECT row_hash FROM {TEST_SCHEMA}.{TEST_TABLE} WHERE source = :s"
+        ), {"s": SENTINEL})]
+    assert len(hashes) == 7
+    assert all(h is not None for h in hashes)
 
 
 def test_rows_sharing_a_natural_key_but_differing_in_another_column_get_different_hashes():

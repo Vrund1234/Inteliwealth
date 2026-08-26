@@ -32,6 +32,7 @@ columns rather than from the table's full column list.
 import sys
 
 import pandas as pd
+from psycopg2.extras import execute_values
 from sqlalchemy import text
 
 from utils.db import engine
@@ -98,14 +99,25 @@ def _normalize_sip(df, compare_cols):
     return df
 
 
-def backfill_table(schema, table, compare_cols, normalize_fn, sentinel_source=None):
+def backfill_table(schema, table, compare_cols, normalize_fn, sentinel_source=None, chunk_size=5000):
     """Compute and store row_hash for every existing row in schema.table.
     `normalize_fn` is one of _normalize_transaction/_normalize_investor/
     _normalize_sip above (tests may pass any callable with the same
     (df, compare_cols) -> df shape against a throwaway table).
     `sentinel_source`, when given, restricts the backfill to that source
     value -- used only by tests against throwaway tables; production calls
-    (see __main__ below) omit it to cover every row."""
+    (see __main__ below) omit it to cover every row.
+
+    Writes go through psycopg2.extras.execute_values in chunks of
+    `chunk_size`, not one UPDATE per row: a plain per-row
+    conn.execute(text(...)) loop is one round trip PER ROW, which is fine
+    at today's ~130k rows but does not scale as bronze grows into millions
+    -- and per dedupe_hash.py's SCHEMA-CHANGE CONTRACT, this backfill must
+    be re-run in full after every future bronze schema change, not just
+    once. execute_values rewrites one UPDATE ... FROM (VALUES %s) per
+    chunk into a single statement, the same technique (and the same
+    ~2,070 -> ~65,000 rows/sec win) upsert_dataframe() already uses in
+    utils/db.py."""
     where_clause = ""
     params = {}
     if sentinel_source is not None:
@@ -123,12 +135,21 @@ def backfill_table(schema, table, compare_cols, normalize_fn, sentinel_source=No
     normalized = normalize_fn(df, compare_cols)
     row_hash = hash_normalized_rows(normalized, compare_cols)
 
+    sql = f"""
+        UPDATE {schema}.{table} AS t
+        SET row_hash = v.row_hash
+        FROM (VALUES %s) AS v (ctid, row_hash)
+        WHERE t.ctid = v.ctid::tid
+    """
+
+    pairs = list(zip(df["_ctid"], row_hash))
+
     with engine.begin() as conn:
-        for ctid, h in zip(df["_ctid"], row_hash):
-            conn.execute(
-                text(f"UPDATE {schema}.{table} SET row_hash = :h WHERE ctid = :c"),
-                {"h": h, "c": ctid},
-            )
+        cursor = conn.connection.cursor()
+        for start in range(0, len(pairs), chunk_size):
+            batch = pairs[start:start + chunk_size]
+            execute_values(cursor, sql, batch, page_size=len(batch))
+
     return len(df)
 
 

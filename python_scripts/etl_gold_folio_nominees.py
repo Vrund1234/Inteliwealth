@@ -1004,22 +1004,16 @@ def load_folio_nominees(gold_df):
 
     try:
 
-        gold_df.to_sql(
+        from utils.db import upsert_dataframe
 
-            name="folio_nominees",
-
+        upsert_dataframe(
+            gold_df,
             schema="gold",
-
-            con=engine,
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+            table="folio_nominees",
+            conflict_columns=["holding_id", "seq"],
+            chunksize=500,
+            # gold.folio_nominees has no updated_at (or equivalent) column.
+            updated_at_column=None,
         )
 
         print(

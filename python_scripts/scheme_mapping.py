@@ -280,18 +280,19 @@ UPSERT_MAPPING_SQL = text("""
     INSERT INTO bronze.scheme_mapping (
         mapping_id, scheme_id, rta, rta_amc_code, rta_scheme_code,
         rta_scheme_name, normalized_scheme_name, amfi_scheme_code,
-        mapping_source, mapping_confidence, mapping_status
+        mapping_source, mapping_confidence, mapping_status, rta_isin
     )
     VALUES (
         :mapping_id, :scheme_id, :rta, :rta_amc_code, :rta_scheme_code,
         :rta_scheme_name, :normalized_scheme_name, :amfi_scheme_code,
-        :mapping_source, :mapping_confidence, :mapping_status
+        :mapping_source, :mapping_confidence, :mapping_status, :rta_isin
     )
     ON CONFLICT (rta, rta_scheme_code)
     DO UPDATE SET
         rta_amc_code           = EXCLUDED.rta_amc_code,
         rta_scheme_name        = EXCLUDED.rta_scheme_name,
         normalized_scheme_name = EXCLUDED.normalized_scheme_name,
+        rta_isin                = EXCLUDED.rta_isin,
         scheme_id = CASE
             WHEN bronze.scheme_mapping.verified_at IS NOT NULL
                  AND (EXCLUDED.amfi_scheme_code IS NULL
@@ -331,6 +332,60 @@ UPSERT_MAPPING_SQL = text("""
 
 
 # =====================================================
+# LOAD DISTINCT RTA SCHEMES
+# =====================================================
+
+def load_rta_scheme_candidates():
+    """Distinct (source, prodcode) scheme candidates from
+    bronze.transaction_master_new, one row per RTA scheme code.
+
+    A given RTA scheme code can appear on many transaction rows, and only
+    some of them may carry an ISIN (not every source file has one -- e.g.
+    today's CAMS files don't, KFIN's do). `ORDER BY ... isin NULLS LAST`
+    makes DISTINCT ON prefer an ISIN-bearing row over a null one for the
+    same code, so the scheme resolves to its ISIN whenever the data exists
+    anywhere, not just on whichever row happened to sort first.
+    """
+
+    query = """
+        SELECT DISTINCT ON (source, prodcode)
+            source,
+            amc_code,
+            prodcode,
+            scheme,
+            isin
+        FROM bronze.transaction_master_new
+        WHERE source IS NOT NULL
+          AND scheme IS NOT NULL
+          AND NULLIF(TRIM(prodcode), '') IS NOT NULL
+        ORDER BY source, prodcode, isin NULLS LAST;
+    """
+
+    df = pd.read_sql(query, engine)
+
+    df.rename(
+        columns={
+            "source": "rta",
+            "amc_code": "rta_amc_code",
+            "prodcode": "rta_scheme_code",
+            "scheme": "rta_scheme_name",
+            "isin": "rta_isin",
+        },
+        inplace=True,
+    )
+
+    df["rta_isin"] = (
+        df["rta_isin"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .replace("", pd.NA)
+    )
+
+    return df
+
+
+# =====================================================
 # MAIN FUNCTION
 # =====================================================
 
@@ -345,37 +400,9 @@ def load_scheme_mapping():
     # LOAD DISTINCT RTA SCHEMES
     # =================================================
 
-    query = """
-        SELECT DISTINCT ON (source, prodcode)
-            source,
-            amc_code,
-            prodcode,
-            scheme
-        FROM bronze.transaction_master_new
-        WHERE source IS NOT NULL
-          AND scheme IS NOT NULL
-          AND NULLIF(TRIM(prodcode), '') IS NOT NULL
-        ORDER BY source, prodcode;
-    """
-
-    df = pd.read_sql(query, engine)
+    df = load_rta_scheme_candidates()
 
     print(f"Distinct Schemes Found : {len(df)}")
-
-
-    # =================================================
-    # RENAME RTA COLUMNS
-    # =================================================
-
-    df.rename(
-        columns={
-            "source": "rta",
-            "amc_code": "rta_amc_code",
-            "prodcode": "rta_scheme_code",
-            "scheme": "rta_scheme_name",
-        },
-        inplace=True,
-    )
 
 
     # =================================================
@@ -438,12 +465,7 @@ def load_scheme_mapping():
     )
 
 
-    # =================================================
-    # RTA ISIN
-    # =================================================
-
-    # Placeholder until RTA starts providing ISIN
-    df["rta_isin"] = None
+    # rta_isin is already populated by load_rta_scheme_candidates() above.
 
 
     # =================================================
