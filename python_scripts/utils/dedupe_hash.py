@@ -19,8 +19,19 @@ from sqlalchemy import bindparam, text
 
 def hash_normalized_rows(normalized_df, compare_cols):
     """One SHA-256 hex digest per row, from `compare_cols` values the
-    caller has already normalized into plain strings."""
-    joined = normalized_df[compare_cols].astype(str).agg("|".join, axis=1)
+    caller has already normalized into plain strings.
+
+    Fields are length-prefixed (netstring-style: "<len>:<value>" per field,
+    concatenated) rather than joined with a plain delimiter -- a bare
+    "|".join is ambiguous across a column boundary (e.g. a="X|Y", b="Z" and
+    a="X", b="Y|Z" would join to the identical string), which could
+    silently violate full-row duplicate semantics if a "|" ever appears in
+    a free-text bronze column (an investor name/address, for instance).
+    Length-prefixing removes the ambiguity regardless of field content."""
+    def _encode_row(values):
+        return "".join(f"{len(v)}:{v}" for v in values)
+
+    joined = normalized_df[compare_cols].astype(str).agg(_encode_row, axis=1)
     return joined.apply(lambda s: hashlib.sha256(s.encode("utf-8")).hexdigest())
 
 

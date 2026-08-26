@@ -104,3 +104,14 @@ def test_compute_flag_via_row_hash_handles_empty_dataframe():
     )
     assert len(row_hash) == 0
     assert len(flag) == 0
+
+
+def test_join_boundary_ambiguity_does_not_produce_a_collision():
+    """Regression for the join-ambiguity finding: different (a, b) pairs
+    that would collide under a bare "|".join must NOT hash the same."""
+    df = pd.DataFrame([
+        {"a": "X|Y", "b": "Z"},
+        {"a": "X", "b": "Y|Z"},
+    ])
+    hashes = hash_normalized_rows(df, ["a", "b"])
+    assert hashes.iloc[0] != hashes.iloc[1]
