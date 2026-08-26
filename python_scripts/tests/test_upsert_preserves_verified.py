@@ -35,6 +35,7 @@ def _row(code, **overrides):
         "mapping_source": None,
         "mapping_confidence": None,
         "mapping_status": "UNMATCHED",
+        "rta_isin": None,
     }
     params.update(overrides)
     return params

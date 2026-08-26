@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from utils.db import engine
+from utils.dedupe_hash import compute_flag_via_row_hash
 from pyparsing import col
 # from sqlalchemy import create_engine
 # from utils.db import engine, master_engine
@@ -232,6 +233,30 @@ def format_dates(df):
     return df
 
 # =====================================================
+# NORMALIZE FOR HASH
+# =====================================================
+
+def normalize_for_hash(df, compare_cols):
+    """Verbatim extraction of this module's existing per-column comparison
+    normalization (previously inline in process_investor_master()'s
+    DUPLICATE FLAG section). Deliberately unchanged, including its current
+    ambiguous pd.to_datetime handling of `dob` -- see the 2026-08-26 spec's
+    Global Constraints; that bug is the same class already fixed for SIP,
+    but fixing it here is out of scope for this performance change."""
+    df = df[compare_cols].copy()
+    for col in compare_cols:
+        if col in DATE_COLUMNS:
+            df[col] = (
+                pd.to_datetime(df[col], errors="coerce")
+                .dt.strftime("%Y-%m-%d")
+                .fillna("")
+            )
+        else:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+    return df
+
+
+# =====================================================
 # APPLY INVESTOR MAPPING
 # =====================================================
 
@@ -394,116 +419,61 @@ def process_investor_master(cams=None, kfin=None):
     df["created_at"] = now
     df["updated_at"] = now
 
-    try:
-
-        existing = pd.read_sql(
-            "SELECT * FROM bronze.investor_master",
-            engine
-        )
-
-        existing = normalize(existing)
-
-        # CLEAN ALL IDENTIFIER COLUMNS
-        existing = clean_identifier_columns(existing)
-
-        existing = format_dates(existing)
-
-    except Exception:
-
-        existing = pd.DataFrame()
-
     # =====================================================
-    # DUPLICATE FLAG
-    # =====================================================   
+    # DUPLICATE FLAG -- hashed, indexed lookup (2026-08-26 spec).
+    # Same full-row semantics as before (including clean_identifier_columns
+    # + normalize_for_hash's own normalization). Only the new batch is
+    # read/normalized -- bronze.investor_master is never read in full.
+    # =====================================================
+
+    db_columns_preflight = pd.read_sql(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'bronze'
+          AND table_name = 'investor_master'
+        ORDER BY ordinal_position
+        """,
+        engine,
+    )["column_name"].tolist()
+
     ignore_cols = {
         "flag",
         "created_at",
         "updated_at",
-        "source"
+        "source",
+        "row_hash",
     }
 
-    if existing.empty:
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
+    compare_cols = [
+        c
+        for c in db_columns_preflight
+        if c not in ignore_cols
+    ]
 
-        df["flag"] = 0
+    # The mapping may not populate every bronze column (e.g. product);
+    # those still take part in the hash, as NULL, exactly as they do in the
+    # stored rows the backfill hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
 
-    else:
+    new_df = clean_identifier_columns(df[compare_cols].copy())
+    new_df = normalize_for_hash(new_df, compare_cols)
 
-        compare_cols = [
-
-            c
-
-            for c in df.columns
-
-            if c in existing.columns
-
-            and c not in ignore_cols
-
-        ]
-
-        new_df = df[compare_cols].copy()
-
-        old_df = existing[compare_cols].copy()
-
-        # =====================================================
-        # CLEAN IDENTIFIER COLUMNS BEFORE COMPARISON
-        # =====================================================
-
-        new_df = clean_identifier_columns(new_df)
-        old_df = clean_identifier_columns(old_df)
-
-        # =====================================================
-        # NORMALIZE VALUES
-        # =====================================================
-
-        for col in compare_cols:
-
-            if col in DATE_COLUMNS:
-
-                new_df[col] = (
-                    pd.to_datetime(
-                        new_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
-
-                old_df[col] = (
-                    pd.to_datetime(
-                        old_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
-
-            else:
-
-                new_df[col] = (
-                    new_df[col]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
-
-                old_df[col] = (
-                    old_df[col]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
-
-        # =====================================================
-        # COMPARE COMPLETE ROW
-        # =====================================================
-
-        new_keys = new_df.astype(str).agg("|".join, axis=1)
-
-        old_keys = set(
-            old_df.astype(str).agg("|".join, axis=1)
-        )
-
-        df["flag"] = new_keys.isin(old_keys).astype(int)
+    df["row_hash"], df["flag"] = compute_flag_via_row_hash(
+        new_df,
+        compare_cols,
+        "bronze",
+        "investor_master",
+        engine,
+    )
 
     # =====================================================
     # CLEAN IDENTIFIER COLUMNS AGAIN BEFORE INSERT

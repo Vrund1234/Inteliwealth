@@ -259,6 +259,7 @@ TRANSACTION_MASTER_MAPPING = {
     "scheme": ["scheme", "funddesc"],                   # Fund Description
     "trxnno": ["trxnno", "td_trno"],                    # Transaction Number
     "inv_name": ["inv_name", "invname"],                # Investor Name
+    "isin": ["isin"],                                   # ISIN (present in some source files, e.g. KFIN; absent in others -- stays NULL there)
 
     # ================= TRANSACTION =================
     "trxnmode": ["trxnmode", "trnmode"],                # Transaction Mode

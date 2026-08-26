@@ -359,74 +359,6 @@ def map_scheme_id(
 
 
 # =====================================================
-# NORMALIZE DATA FOR DUPLICATE COMPARISON
-# =====================================================
-
-def normalize_for_compare(df):
-
-    df = df.copy()
-
-    # These columns are NOT business fields.
-    #
-    # scheme_id is specifically ignored so that
-    # adding/fixing scheme_id does not make an
-    # otherwise identical row appear as a new row.
-
-    ignore_cols = {
-        #"created_at",
-        "updated_at",
-        "flag",
-        "source",
-        "scheme_id"
-    }
-
-    df = df.drop(
-        columns=list(ignore_cols),
-        errors="ignore"
-    )
-
-    for col in df.columns:
-
-        if pd.api.types.is_datetime64_any_dtype(
-            df[col]
-        ):
-
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce"
-                )
-                .dt.strftime("%Y-%m-%d %H:%M:%S")
-            )
-
-        else:
-
-            df[col] = (
-                df[col]
-                .astype("string")
-                .str.strip()
-            )
-
-    return df
-
-
-# =====================================================
-# CREATE FULL ROW KEY
-# =====================================================
-
-def create_row_key(df):
-
-    normalized = normalize_for_compare(df)
-
-    return (
-        normalized
-        .fillna("")
-        .astype(str)
-        .agg("|".join, axis=1)
-    )
-
-
-# =====================================================
 # GET SILVER TABLE COLUMNS
 # =====================================================
 
@@ -573,227 +505,22 @@ def append_new_rows(
         return
 
     # =================================================
-    # READ EXISTING SILVER DATA
-    # =================================================
-
-    try:
-
-        existing = pd.read_sql(
-            f"""
-            SELECT *
-            FROM silver.{table_name}
-            """,
-            engine
-        )
-
-    except Exception as e:
-
-        print(
-            f"Could not read silver.{table_name}"
-        )
-
-        print(e)
-
-        existing = pd.DataFrame()
-
-    print(
-        "Existing Silver rows :",
-        len(existing)
-    )
-
-    # =================================================
-    # SILVER EMPTY
-    # =================================================
-
-    if existing.empty:
-
-        print()
-        print(
-            "Silver table is empty."
-        )
-
-        print(
-            "All incoming rows are new."
-        )
-
-        print(
-            "All rows assigned flag = 0."
-        )
-
-        df["flag"] = 0
-
-    # =================================================
-    # SILVER HAS DATA
-    # =================================================
-
-    else:
-
-        ignore_cols = {
-            "flag",
-            "created_at",
-            "updated_at",
-            "source",
-            "scheme_id"
-        }
-
-        compare_cols = [
-            col
-            for col in df.columns
-            if col in existing.columns
-            and col not in ignore_cols
-        ]
-
-        if not compare_cols:
-
-            print(
-                f"{table_name} : "
-                "No common business columns "
-                "available for duplicate comparison."
-            )
-
-            return
-
-        print()
-        print(
-            "Columns used for duplicate comparison:"
-        )
-
-        print(compare_cols)
-
-        # =================================================
-        # NORMALIZE INCOMING BRONZE DATA
-        # =================================================
-
-        new_compare = normalize_for_compare(
-            df[compare_cols]
-        )
-
-        # =================================================
-        # NORMALIZE EXISTING SILVER DATA
-        # =================================================
-
-        old_compare = normalize_for_compare(
-            existing[compare_cols]
-        )
-
-        # =================================================
-        # CREATE ROW KEYS
-        # =================================================
-
-        new_keys = (
-            new_compare
-            .fillna("")
-            .astype(str)
-            .agg("|".join, axis=1)
-        )
-
-        old_keys = set(
-            old_compare
-            .fillna("")
-            .astype(str)
-            .agg("|".join, axis=1)
-        )
-
-        # =================================================
-        # DUPLICATE CHECK
-        # =================================================
-
-        duplicate_mask = new_keys.isin(
-            old_keys
-        )
-
-        duplicate_count = int(
-            duplicate_mask.sum()
-        )
-
-        new_count = int(
-            (~duplicate_mask).sum()
-        )
-
-        print()
-        print(
-            "Duplicate rows found :",
-            duplicate_count
-        )
-
-        print(
-            "New rows found :",
-            new_count
-        )
-
-        # =================================================
-        # IMPORTANT
-        #
-        # Duplicate rows are NOT inserted into Silver.
-        #
-        # Only genuinely new rows continue.
-        # =================================================
-
-        duplicate_rows = df.loc[
-            duplicate_mask
-        ].copy()
-
-        new_rows = df.loc[
-            ~duplicate_mask
-        ].copy()
-
-        # -------------------------------------------------
-        # DUPLICATES
-        # -------------------------------------------------
-
-        if not duplicate_rows.empty:
-
-            duplicate_rows["flag"] = 1
-
-            print()
-            print(
-                "Duplicate rows marked flag = 1 :",
-                len(duplicate_rows)
-            )
-
-        # -------------------------------------------------
-        # NEW ROWS
-        # -------------------------------------------------
-
-        if not new_rows.empty:
-
-            new_rows["flag"] = 0
-
-            print(
-                "New rows marked flag = 0 :",
-                len(new_rows)
-            )
-
-        # -------------------------------------------------
-        # IMPORTANT:
-        #
-        # Only NEW rows are inserted into Silver.
-        #
-        # Duplicate rows are skipped.
-        # -------------------------------------------------
-
-        df = new_rows
-
-    # =================================================
-    # NOTHING NEW TO INSERT
-    # =================================================
-
-    if df.empty:
-
-        print()
-        print(
-            f"{table_name} : "
-            "All incoming rows already exist in Silver."
-        )
-
-        print(
-            "No duplicate rows inserted into Silver."
-        )
-
-        return
-
-    # =================================================
     # SILVER AUDIT TIMESTAMP
+    #
+    # Duplicate handling is delegated entirely to
+    # upsert_dataframe()'s INSERT ... ON CONFLICT ... DO
+    # UPDATE against each table's real unique natural-key
+    # index below -- a genuinely new natural key inserts, a
+    # key that already exists in Silver updates in place, and
+    # either way the constraint makes a duplicate row
+    # impossible. There used to be a pre-check here that read
+    # `SELECT * FROM silver.{table_name}` in full and diffed
+    # it against the incoming batch in pandas -- an O(entire
+    # Silver history) read on every single run (the same class
+    # of bottleneck already fixed on the Bronze side, see
+    # docs/superpowers/plans/2026-08-26-bronze-dedup-performance.md).
+    # It bought nothing the constraint doesn't already
+    # guarantee, so it's gone.
     # =================================================
 
     load_time = pd.Timestamp.now()
@@ -887,15 +614,40 @@ def append_new_rows(
 
     try:
 
-        df.to_sql(
-            table_name,
-            engine,
-            schema="silver",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=5000
-        )
+        from utils.db import upsert_dataframe
+
+        SILVER_CONFLICT_COLUMNS = {
+            "transaction_master_new": ["source", "trxnno", "folio_no", "amount", "units"],
+            "investor_master": ["source", "folio_no", "product_code"],
+        }
+
+        if table_name in SILVER_CONFLICT_COLUMNS:
+            upsert_dataframe(
+                df,
+                schema="silver",
+                table=table_name,
+                conflict_columns=SILVER_CONFLICT_COLUMNS[table_name],
+                chunksize=2000,
+            )
+        elif table_name == "sip_master_new":
+            # uq_silver_sip_natural_key is on an expression (COALESCE-
+            # normalized reg-no), not plain columns -- Postgres cannot
+            # promote an expression index to a table CONSTRAINT at all
+            # (confirmed live), so it can't be targeted by name either.
+            # Pass its exact expression list instead.
+            upsert_dataframe(
+                df,
+                schema="silver",
+                table=table_name,
+                conflict_index_expr=(
+                    '"source", "folio_no", "scheme_code", "reg_date", "auto_amount", '
+                    '(COALESCE(NULLIF(NULLIF(BTRIM("ft_sip_regno"), \'\'), \'0\'), '
+                    'NULLIF(BTRIM("request_ref_no"), \'\'), \'\'))'
+                ),
+                chunksize=2000,
+            )
+        else:
+            raise ValueError(f"No conflict key defined for silver.{table_name}")
 
     except Exception as e:
 

@@ -1316,22 +1316,13 @@ def load_clients(gold_df):
     ].copy()
 
     # ========================================================
-    # CONVERT PANDAS NULLS TO NONE
-    # ========================================================
-
-    gold_df = gold_df.astype(object)
-
-    gold_df = gold_df.where(
-        pd.notna(gold_df),
-        None
-    )
-
-    # ========================================================
     # INSERT
     #
-    # IMPORTANT:
-    # Use smaller chunks and normal INSERT execution.
-    # This avoids the huge parameter dump/error you are seeing.
+    # NOTE: pandas NULL -> database NULL conversion and chunking are both
+    # handled inside upsert_dataframe() itself (it takes a chunksize
+    # parameter and applies astype(object).where(pd.notnull(...), None)
+    # right before building the insert records), so no pre-conversion or
+    # manual batching loop is needed here.
     # ========================================================
 
     print()
@@ -1341,33 +1332,22 @@ def load_clients(gold_df):
 
     try:
 
-        with engine.begin() as connection:
+        from utils.db import upsert_dataframe
 
-            for start in range(
-                0,
-                len(gold_df),
-                100
-            ):
+        inserted_rows = upsert_dataframe(
+            gold_df,
+            schema="gold",
+            table="clients",
+            conflict_columns=["pan"],
+            chunksize=100,
+            # gold.clients has no updated_at (or equivalent) column.
+            updated_at_column=None,
+        )
 
-                batch = gold_df.iloc[
-                    start:start + 100
-                ].copy()
-
-                batch.to_sql(
-                    name="clients",
-                    schema="gold",
-                    con=connection,
-                    if_exists="append",
-                    index=False,
-                    method=None
-                )
-
-                inserted_rows += len(batch)
-
-                print(
-                    f"Inserted {inserted_rows} / "
-                    f"{len(gold_df)} rows"
-                )
+        print(
+            f"Inserted {inserted_rows} / "
+            f"{len(gold_df)} rows"
+        )
 
         # ====================================================
         # VERIFY DATABASE

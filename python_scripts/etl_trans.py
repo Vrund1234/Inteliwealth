@@ -5,6 +5,7 @@ import re
 from mapping import TRANSACTION_MASTER_MAPPING
 from datetime import datetime, date
 from utils.db import engine
+from utils.dedupe_hash import compute_flag_via_row_hash
 
 
 # =====================================================
@@ -660,108 +661,9 @@ def process_transactions(cams=None, kfin=None):
     df["updated_at"] = now
 
     # =====================================================
-    # READ EXISTING BRONZE TABLE
-    # =====================================================
-
-    try:
-
-        existing = pd.read_sql(
-            "SELECT * FROM bronze.transaction_master_new",
-            engine,
-        )
-
-        existing = clean_columns(existing)
-
-        existing = normalize(existing)
-
-        existing = clean_identifier_columns(existing)
-
-        # Existing database DATE values are converted using the
-        # same deterministic parser.
-        existing = format_dates(existing)
-
-        validate_date_columns(
-            existing,
-            "EXISTING BRONZE DATA",
-        )
-
-    except Exception as exc:
-
-        print(
-            "Could not read existing bronze.transaction_master_new."
-        )
-        print("Reason:", exc)
-
-        existing = pd.DataFrame()
-
-    # =====================================================
-    # DUPLICATE FLAG
-    # =====================================================
-
-    ignore_cols = {
-        "flag",
-        "created_at",
-        "updated_at",
-        "source",
-    }
-
-    if existing.empty:
-
-        df["flag"] = 0
-
-    else:
-
-        compare_cols = [
-            c
-            for c in df.columns
-            if c in existing.columns
-            and c not in ignore_cols
-        ]
-
-        if not compare_cols:
-            raise ValueError(
-                "No columns available for duplicate comparison."
-            )
-
-        # Prepare both sides using deterministic normalization.
-        new_df = prepare_for_comparison(
-            df,
-            compare_cols,
-        )
-
-        old_df = prepare_for_comparison(
-            existing,
-            compare_cols,
-        )
-
-        # Complete-row comparison.
-        new_keys = (
-            new_df
-            .astype(str)
-            .agg("|".join, axis=1)
-        )
-
-        old_keys = set(
-            old_df
-            .astype(str)
-            .agg("|".join, axis=1)
-        )
-
-        df["flag"] = (
-            new_keys
-            .isin(old_keys)
-            .astype(int)
-        )
-
-        print("=" * 80)
-        print("DUPLICATE CHECK")
-        print(f"Rows checked : {len(df)}")
-        print(f"Already seen : {(df['flag'] == 1).sum()}")
-        print(f"New rows     : {(df['flag'] == 0).sum()}")
-        print("=" * 80)
-
-    # =====================================================
     # GET DATABASE COLUMN ORDER
+    # (moved earlier: also used below to derive compare_cols, now that
+    # duplicate detection no longer reads the whole existing table)
     # =====================================================
 
     db_columns = pd.read_sql(
@@ -779,6 +681,66 @@ def process_transactions(cams=None, kfin=None):
         raise ValueError(
             "Could not find bronze.transaction_master_new columns."
         )
+
+    # =====================================================
+    # DUPLICATE FLAG -- hashed, indexed lookup (2026-08-26 spec).
+    # Same full-row semantics as before: compares every column except
+    # flag/created_at/updated_at/source/row_hash. Only the new batch is
+    # ever read or normalized -- bronze.transaction_master_new itself is
+    # never read in full.
+    # =====================================================
+
+    ignore_cols = {
+        "flag",
+        "created_at",
+        "updated_at",
+        "source",
+        "row_hash",
+    }
+
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
+    compare_cols = [
+        c
+        for c in db_columns
+        if c not in ignore_cols
+    ]
+
+    if not compare_cols:
+        raise ValueError(
+            "No columns available for duplicate comparison."
+        )
+
+    # The mapping may not populate every bronze column (e.g. reversal_code);
+    # those still take part in the hash, as NULL, exactly as they do in the
+    # stored rows the backfill hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    new_df = prepare_for_comparison(
+        df,
+        compare_cols,
+    )
+
+    df["row_hash"], df["flag"] = compute_flag_via_row_hash(
+        new_df,
+        compare_cols,
+        "bronze",
+        "transaction_master_new",
+        engine,
+    )
+
+    print("=" * 80)
+    print("DUPLICATE CHECK")
+    print(f"Rows checked : {len(df)}")
+    print(f"Already seen : {(df['flag'] == 1).sum()}")
+    print(f"New rows     : {(df['flag'] == 0).sum()}")
+    print("=" * 80)
 
     # =====================================================
     # ADD MISSING DATABASE COLUMNS

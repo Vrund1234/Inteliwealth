@@ -143,6 +143,7 @@ def extract_transactions():
                 sgst_amount,
                 stamp_duty,
                 td_purred,
+                isin,
                 created_at,
                 flag
 
@@ -203,6 +204,7 @@ def extract_transactions():
                 sgst_amount,
                 stamp_duty,
                 td_purred,
+                isin,
                 created_at,
                 flag
 
@@ -678,6 +680,25 @@ def transform_transactions(df):
     gold_df["status"] = df["trxnstat"]
 
     # =================================================
+    # ISIN
+    #
+    # Not every source file carries this (e.g. today's CAMS files don't) --
+    # stays null when absent, same as pan/arn below when blank.
+    # =================================================
+
+    gold_df["isin"] = (
+        df["isin"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+
+    gold_df.loc[
+        gold_df["isin"] == "",
+        "isin"
+    ] = None
+
+    # =================================================
     # SOURCE
     # =================================================
 
@@ -818,6 +839,7 @@ def transform_transactions(df):
             "euin",
             "sip_ref",
             "status",
+            "isin",
             "client_id",
             "amc_id",
             "scheme_id",
@@ -923,6 +945,12 @@ def transform_transactions(df):
         .str[:10]
     )
 
+    gold_df["isin"] = (
+        gold_df["isin"]
+        .astype("string")
+        .str[:20]
+    )
+
     # =================================================
     # ROW COUNT
     # =================================================
@@ -954,15 +982,17 @@ def transform_transactions(df):
     return gold_df
 
 
-# =====================================================
+# =================================================
 # LOAD GOLD TRANSACTIONS
 #
-# IMPORTANT:
-# NO DUPLICATE COMPARISON HERE.
-#
-# Timestamp comparison already happened during
-# extraction from Silver.
-# =====================================================
+# The timestamp watermark in extract_transactions() is a performance
+# pre-filter only, NOT the safety net -- it can (and on 2026-08-24, did)
+# return a false "gold is empty" result and re-extract the entire silver
+# table. The real safety net is the (rta, rta_txn_no, folio_number,
+# amount, units) unique constraint on gold.transactions: upsert_dataframe
+# below turns any such re-extraction into a no-op UPDATE instead of a
+# second copy of every row.
+# =================================================
 
 def load_transactions(gold_df):
 
@@ -1036,14 +1066,20 @@ def load_transactions(gold_df):
             f"Inserting {len(gold_df)} rows..."
         )
 
-        gold_df.to_sql(
-            name="transactions",
-            con=engine,
+        from utils.db import upsert_dataframe
+
+        upsert_dataframe(
+            gold_df,
             schema="gold",
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=500
+            table="transactions",
+            conflict_columns=["rta", "rta_txn_no", "folio_number", "amount", "units"],
+            chunksize=500,
+            # gold.transactions has no updated_at (or equivalent) column --
+            # confirmed via information_schema; passing the default here
+            # raises psycopg2.errors.UndefinedColumn on the first real
+            # conflict (hit live against gold.holdings during the Task 8
+            # functional test, same underlying cause).
+            updated_at_column=None,
         )
 
         print(

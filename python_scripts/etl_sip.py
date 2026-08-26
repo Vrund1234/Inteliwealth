@@ -4,6 +4,8 @@ import pandas as pd
 from utils.db import engine
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
+from utils.dedupe_hash import compute_flag_via_row_hash
+from etl_trans import parse_source_date
 
 # =====================================================
 # DATE COLUMNS
@@ -206,6 +208,20 @@ def clean_value(value):
 # =====================================================
 
 def format_dates(df, source=None):
+    """
+    Parse DATE_COLUMNS with the same deterministic, day-first parser
+    etl_trans.py already uses for transaction dates (parse_source_date):
+    commits to DD-MM-YYYY only when unambiguous (first component > 12),
+    and returns None rather than guessing when a value could be read either
+    way -- e.g. "05-09-2017" is refused, not silently read as MM-DD-YYYY.
+
+    Previously this used bare pd.to_datetime(df[col], errors="coerce"),
+    which has no such rule: pandas' US-style default (no dayfirst) silently
+    resolves an ambiguous DD-MM-YYYY value as MM-DD-YYYY. Confirmed live:
+    KFIN regno 232086 (folio 7776062333) is stored in bronze with
+    reg_date=2017-05-09, but re-parsing the identical source file with the
+    old code produced 2017-09-05 for the same row -- day and month swapped.
+    """
 
     if df is None or df.empty:
         return df
@@ -217,18 +233,37 @@ def format_dates(df, source=None):
         if col not in df.columns:
             continue
 
-        df[col] = pd.to_datetime(
-            df[col],
-            errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
+        df[col] = df[col].apply(parse_source_date).apply(
+            lambda d: d.strftime("%Y-%m-%d") if d is not None else None
+        )
 
-        df[col] = df[col].replace({
-            "NaT": None,
-            "nan": None,
-            "NaN": None,
-            "": None
-        })
+    return df
 
+
+def dedupe_compare_date(value):
+    """Same deterministic day-first parsing as format_dates(), but blank or
+    unparseable values become "" rather than None -- process_sip()'s
+    duplicate-flag check joins every compared column straight into one
+    string key (`.astype(str).agg("|".join, ...)`), where "" is the
+    established "no value" representation (matching non-date columns in
+    that same comparison)."""
+
+    parsed = parse_source_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
+
+
+def normalize_for_hash(df, compare_cols):
+    """Verbatim extraction of this module's existing per-column comparison
+    normalization (previously inline in process_sip()'s DUPLICATE FLAG
+    section). Deliberately unchanged, including .str.upper() -- this
+    module's comparison has always been case-insensitive, unlike
+    etl_trans.py's; that difference is preserved on purpose."""
+    df = df[compare_cols].copy()
+    for col in compare_cols:
+        if col in DATE_COLUMNS:
+            df[col] = df[col].apply(dedupe_compare_date)
+        else:
+            df[col] = df[col].fillna("").astype(str).str.strip().str.upper()
     return df
 
 
@@ -470,146 +505,67 @@ def process_sip(
     df["updated_at"] = now
 
     # =====================================================
-    # READ EXISTING BRONZE TABLE
+    # DUPLICATE FLAG -- hashed, indexed lookup (2026-08-26 spec).
+    # Same full-row, case-insensitive semantics as before. Only the new
+    # batch is read/normalized -- bronze.sip_master_new is never read in
+    # full.
     # =====================================================
 
-    try:
-
-        existing = pd.read_sql(
-            "SELECT * FROM bronze.sip_master_new",
-            engine
-        )
-
-        if not existing.empty:
-
-            existing = normalize(existing)
-
-            existing = clean_identifier_columns(existing)
-            # existing = format_dates(existing)
-
-        print(f"Existing Bronze Rows : {len(existing)}")
-
-    except Exception:
-
-        existing = pd.DataFrame()
-
-        print("Bronze table not found. Initial Load.")
-
-    # =====================================================
-    # DUPLICATE FLAG
-    # =====================================================
-
-    # =====================================================
-    # DUPLICATE FLAG
-    # COMPARE ALL COLUMNS EXCEPT ignore_cols
-    # =====================================================
+    db_columns_preflight = pd.read_sql(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='bronze'
+        AND table_name='sip_master_new'
+        ORDER BY ordinal_position
+        """,
+        engine
+    )["column_name"].tolist()
 
     ignore_cols = {
         "flag",
         "created_at",
         "updated_at",
-        "source"
+        "source",
+        "row_hash",
     }
 
-    if existing.empty:
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
+    compare_cols = [
+        col
+        for col in db_columns_preflight
+        if col not in ignore_cols
+    ]
 
-        df["flag"] = 0
+    print("Columns used for duplicate check:")
+    print(compare_cols)
 
-    else:
+    # Any bronze column the mapping does not populate still takes part in
+    # the hash, as NULL, exactly as it does in the stored rows the backfill
+    # hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
 
-        existing = clean_columns(existing)
-        existing = normalize(existing)
-        existing = clean_identifier_columns(existing)
+    new_df = normalize_for_hash(df, compare_cols)
 
-        # -------------------------------------------------
-        # TAKE COMMON COLUMNS EXCEPT IGNORE COLUMNS
-        # -------------------------------------------------
+    df["row_hash"], df["flag"] = compute_flag_via_row_hash(
+        new_df,
+        compare_cols,
+        "bronze",
+        "sip_master_new",
+        engine,
+    )
 
-        compare_cols = [
-            col
-            for col in df.columns
-            if col in existing.columns
-            and col not in ignore_cols
-        ]
-
-        print("Columns used for duplicate check:")
-        print(compare_cols)
-
-
-        new_df = df[compare_cols].copy()
-        old_df = existing[compare_cols].copy()
-
-
-        # -------------------------------------------------
-        # NORMALIZE BOTH DATASETS SAME WAY
-        # -------------------------------------------------
-
-        for col in compare_cols:
-
-            if col in DATE_COLUMNS:
-
-                new_df[col] = (
-                    pd.to_datetime(
-                        new_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
-
-                old_df[col] = (
-                    pd.to_datetime(
-                        old_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
-
-            else:
-
-                new_df[col] = (
-                    new_df[col]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                    .str.upper()
-                )
-
-                old_df[col] = (
-                    old_df[col]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                    .str.upper()
-                )
-
-
-        # -------------------------------------------------
-        # CREATE COMPLETE ROW KEY
-        # -------------------------------------------------
-
-        new_keys = new_df.astype(str).agg("|".join, axis=1)
-
-        old_keys = set(
-            old_df.astype(str).agg("|".join, axis=1)
-        )
-
-
-        # -------------------------------------------------
-        # FLAG
-        # -------------------------------------------------
-
-        df["flag"] = (
-            new_keys.isin(old_keys)
-            .astype(int)
-        )
-
-
-        print("=" * 80)
-        print("Duplicate Check Result")
-        print(df["flag"].value_counts(dropna=False))
-        print("=" * 80)
+    print("=" * 80)
+    print("Duplicate Check Result")
+    print(df["flag"].value_counts(dropna=False))
+    print("=" * 80)
 
     # =====================================================
     # INSERT INTO BRONZE

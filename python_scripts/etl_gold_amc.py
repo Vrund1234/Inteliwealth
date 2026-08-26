@@ -537,22 +537,16 @@ def load_amc(gold_df):
 
     try:
 
-        gold_df.to_sql(
+        from utils.db import upsert_dataframe
 
-            name="amc",
-
-            con=engine,
-
+        upsert_dataframe(
+            gold_df,
             schema="gold",
-
-            if_exists="append",
-
-            index=False,
-
-            method="multi",
-
-            chunksize=5000
-
+            table="amc",
+            conflict_columns=["rta", "amc_code"],
+            chunksize=200,
+            # gold.amc has no updated_at (or equivalent) column.
+            updated_at_column=None,
         )
 
 
