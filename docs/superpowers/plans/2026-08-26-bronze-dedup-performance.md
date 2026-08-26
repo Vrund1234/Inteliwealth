@@ -707,16 +707,19 @@ from sqlalchemy import text
 from utils.db import engine
 from etl_trans import process_transactions
 
-SENTINEL_SOURCE = "__TEST_ETL_TRANS_ROW_HASH__"
+# process_transactions(cams=...) hardcodes source="CAMS" internally (not
+# caller-controllable) -- these tests scope cleanup/assertions by a random
+# trxnno per test instead of a sentinel source value.
 
 
-@pytest.fixture(autouse=True)
-def cleanup():
-    yield
+@pytest.fixture
+def trxnno():
+    t = uuid.uuid4().hex[:10]
+    yield t
     with engine.begin() as conn:
         conn.execute(text(
-            "DELETE FROM bronze.transaction_master_new WHERE source = :s"
-        ), {"s": SENTINEL_SOURCE})
+            "DELETE FROM bronze.transaction_master_new WHERE trxnno = :t"
+        ), {"t": t})
 
 
 def _cams_row(trxnno, folio_no, amount, units, td_ptrno=""):
@@ -726,94 +729,68 @@ def _cams_row(trxnno, folio_no, amount, units, td_ptrno=""):
     }
 
 
-def _seed(rows):
-    df = pd.DataFrame(rows)
-    df.columns = df.columns.str.lower()
-    df["source"] = SENTINEL_SOURCE
-    df["flag"] = 0
-    df["created_at"] = pd.Timestamp.now(tz="Asia/Kolkata")
-    df["updated_at"] = df["created_at"]
-    db_columns = pd.read_sql(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema='bronze' AND table_name='transaction_master_new' "
-        "ORDER BY ordinal_position",
-        engine,
-    )["column_name"].tolist()
-    for col in db_columns:
-        if col not in df.columns:
-            df[col] = None
-    df = df[db_columns]
-    df.to_sql("transaction_master_new", engine, schema="bronze", if_exists="append", index=False)
-
-
-def test_exact_duplicate_of_an_existing_row_is_flagged_1():
-    trxnno = uuid.uuid4().hex[:10]
-    _seed([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
-
+def test_exact_duplicate_of_an_existing_row_is_flagged_1(trxnno):
     cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
-    process_transactions(cams=cams)
+    process_transactions(cams=cams)  # first insert: flag=0
+
+    cams_again = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
+    process_transactions(cams=cams_again)  # exact resend: flag=1
 
     result = pd.read_sql(
-        "SELECT flag FROM bronze.transaction_master_new "
-        "WHERE source = :s AND trxnno = :t AND td_ptrno = '111'",
-        engine, params={"s": SENTINEL_SOURCE, "t": trxnno},
+        "SELECT flag FROM bronze.transaction_master_new WHERE trxnno = :t ORDER BY created_at",
+        engine, params={"t": trxnno},
     )
-    assert (result["flag"] == 1).all()
+    assert result["flag"].tolist() == [0, 1]
 
 
-def test_same_natural_key_but_different_non_key_column_is_flagged_0():
+def test_same_natural_key_but_different_non_key_column_is_flagged_0(trxnno):
     """The real bronze pattern (td_ptrno/rep_date changing across resends)
     must still reach flag=0, exactly as it does today -- proves this
     change preserves full-row semantics, not just the natural key."""
-    trxnno = uuid.uuid4().hex[:10]
-    _seed([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
-
-    cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="222")])
+    cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
     process_transactions(cams=cams)
 
+    cams_resend = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="222")])
+    process_transactions(cams=cams_resend)
+
     result = pd.read_sql(
-        "SELECT flag FROM bronze.transaction_master_new "
-        "WHERE source = :s AND trxnno = :t AND td_ptrno = '222'",
-        engine, params={"s": SENTINEL_SOURCE, "t": trxnno},
+        "SELECT flag FROM bronze.transaction_master_new WHERE trxnno = :t AND td_ptrno = '222'",
+        engine, params={"t": trxnno},
     )
     assert (result["flag"] == 0).all()
 
 
-def test_brand_new_row_is_flagged_0_and_gets_a_row_hash():
-    trxnno = uuid.uuid4().hex[:10]
+def test_brand_new_row_is_flagged_0_and_gets_a_row_hash(trxnno):
     cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000")])
     process_transactions(cams=cams)
 
     result = pd.read_sql(
-        "SELECT flag, row_hash FROM bronze.transaction_master_new "
-        "WHERE source = :s AND trxnno = :t",
-        engine, params={"s": SENTINEL_SOURCE, "t": trxnno},
+        "SELECT flag, row_hash FROM bronze.transaction_master_new WHERE trxnno = :t",
+        engine, params={"t": trxnno},
     )
     assert (result["flag"] == 0).all()
     assert result["row_hash"].notna().all()
 
 
-def test_created_at_is_never_rewritten_on_a_later_run():
-    trxnno = uuid.uuid4().hex[:10]
+def test_created_at_is_never_rewritten_on_a_later_run(trxnno):
     cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
     process_transactions(cams=cams)
 
     first = pd.read_sql(
-        "SELECT created_at FROM bronze.transaction_master_new "
-        "WHERE source = :s AND trxnno = :t AND td_ptrno = '111'",
-        engine, params={"s": SENTINEL_SOURCE, "t": trxnno},
+        "SELECT created_at FROM bronze.transaction_master_new WHERE trxnno = :t AND td_ptrno = '111'",
+        engine, params={"t": trxnno},
     )["created_at"].iloc[0]
 
     # Re-process the exact same row (an upstream resend) -- bronze must
     # append a second row (append-only, never UPDATE), leaving the first
     # row's created_at untouched.
-    process_transactions(cams=cams)
+    cams_again = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
+    process_transactions(cams=cams_again)
 
     unchanged = pd.read_sql(
         "SELECT created_at FROM bronze.transaction_master_new "
-        "WHERE source = :s AND trxnno = :t AND td_ptrno = '111' "
-        "ORDER BY created_at ASC LIMIT 1",
-        engine, params={"s": SENTINEL_SOURCE, "t": trxnno},
+        "WHERE trxnno = :t AND td_ptrno = '111' ORDER BY created_at ASC LIMIT 1",
+        engine, params={"t": trxnno},
     )["created_at"].iloc[0]
     assert unchanged == first
 ```
@@ -1084,108 +1061,92 @@ from sqlalchemy import text
 from utils.db import engine
 from etl_investor_master import process_investor_master
 
-SENTINEL_SOURCE = "__TEST_ETL_INVESTOR_ROW_HASH__"
+# process_investor_master(cams=...) hardcodes source="CAMS" internally (not
+# caller-controllable) -- these tests scope cleanup/assertions by a random
+# folio_no per test instead of a sentinel source value.
 
 
-@pytest.fixture(autouse=True)
-def cleanup():
-    yield
+@pytest.fixture
+def folio():
+    f = uuid.uuid4().hex[:10]
+    yield f
     with engine.begin() as conn:
         conn.execute(text(
-            "DELETE FROM bronze.investor_master WHERE source = :s"
-        ), {"s": SENTINEL_SOURCE})
+            "DELETE FROM bronze.investor_master WHERE folio_no = :f"
+        ), {"f": f})
 
 
 def _cams_row(folio, product_code, investor_name):
-    return {"FOLIO": folio, "PRODUCT": product_code, "INV_NAME": investor_name}
+    # Raw CAMS R9 headers: FOLIO_NO/PRODUCT_CODE/INV_NAME (all valid source
+    # aliases in INVESTOR_MASTER_MAPPING for folio_no/product_code/investor_name).
+    return {"FOLIO_NO": folio, "PRODUCT_CODE": product_code, "INV_NAME": investor_name}
 
 
-def _seed(rows):
-    df = pd.DataFrame(rows)
-    df.columns = df.columns.str.lower()
-    df["source"] = SENTINEL_SOURCE
-    df["flag"] = 0
-    df["created_at"] = pd.Timestamp.now(tz="Asia/Kolkata")
-    df["updated_at"] = df["created_at"]
-    db_columns = pd.read_sql(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema='bronze' AND table_name='investor_master' "
-        "ORDER BY ordinal_position",
-        engine,
-    )["column_name"].tolist()
-    for col in db_columns:
-        if col not in df.columns:
-            df[col] = None
-    df = df[db_columns]
-    df.to_sql("investor_master", engine, schema="bronze", if_exists="append", index=False)
-
-
-def test_exact_duplicate_of_an_existing_row_is_flagged_1():
-    folio = uuid.uuid4().hex[:10]
-    _seed([_cams_row(folio, "P1", "Jane Doe")])
-
+def test_exact_duplicate_of_an_existing_row_is_flagged_1(folio):
     cams = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
-    process_investor_master(cams=cams)
+    process_investor_master(cams=cams)  # first insert: flag=0
+
+    cams_again = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
+    process_investor_master(cams=cams_again)  # exact resend: flag=1
 
     result = pd.read_sql(
-        "SELECT flag FROM bronze.investor_master WHERE source = :s AND folio_no = :f",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
+        "SELECT flag FROM bronze.investor_master WHERE folio_no = :f ORDER BY created_at",
+        engine, params={"f": folio},
     )
-    assert (result["flag"] == 1).all()
+    assert result["flag"].tolist() == [0, 1]
 
 
-def test_same_folio_and_product_but_changed_investor_name_is_flagged_0_and_both_rows_survive():
+def test_same_folio_and_product_but_changed_investor_name_is_flagged_0_and_both_rows_survive(folio):
     """Investor attributes legitimately change (address, name spelling
     corrections, etc.) -- must still reach flag=0 and get APPENDED, never
     updated in place: both the original and the changed row must survive,
     per the confirmed decision that bronze never updates investor data."""
-    folio = uuid.uuid4().hex[:10]
-    _seed([_cams_row(folio, "P1", "Jane Doe")])
-
-    cams = pd.DataFrame([_cams_row(folio, "P1", "Jane A. Doe")])
+    cams = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
     process_investor_master(cams=cams)
+
+    cams_updated = pd.DataFrame([_cams_row(folio, "P1", "Jane A. Doe")])
+    process_investor_master(cams=cams_updated)
 
     result = pd.read_sql(
         "SELECT flag, investor_name FROM bronze.investor_master "
-        "WHERE source = :s AND folio_no = :f ORDER BY investor_name",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
+        "WHERE folio_no = :f ORDER BY investor_name",
+        engine, params={"f": folio},
     )
     assert result["investor_name"].tolist() == ["Jane A. Doe", "Jane Doe"]
     assert result.loc[result["investor_name"] == "Jane Doe", "flag"].iloc[0] == 0
     assert result.loc[result["investor_name"] == "Jane A. Doe", "flag"].iloc[0] == 0
 
 
-def test_brand_new_row_is_flagged_0_and_gets_a_row_hash():
-    folio = uuid.uuid4().hex[:10]
+def test_brand_new_row_is_flagged_0_and_gets_a_row_hash(folio):
     cams = pd.DataFrame([_cams_row(folio, "P1", "New Investor")])
     process_investor_master(cams=cams)
 
     result = pd.read_sql(
-        "SELECT flag, row_hash FROM bronze.investor_master WHERE source = :s AND folio_no = :f",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
+        "SELECT flag, row_hash FROM bronze.investor_master WHERE folio_no = :f",
+        engine, params={"f": folio},
     )
     assert (result["flag"] == 0).all()
     assert result["row_hash"].notna().all()
 
 
-def test_created_at_is_never_rewritten_on_a_later_run():
-    folio = uuid.uuid4().hex[:10]
-    _seed([_cams_row(folio, "P1", "Jane Doe")])
+def test_created_at_is_never_rewritten_on_a_later_run(folio):
+    cams = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
+    process_investor_master(cams=cams)
     first = pd.read_sql(
-        "SELECT created_at FROM bronze.investor_master WHERE source = :s AND folio_no = :f",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
+        "SELECT created_at FROM bronze.investor_master WHERE folio_no = :f",
+        engine, params={"f": folio},
     )["created_at"].iloc[0]
 
     # Re-process the exact same row (an upstream resend) -- bronze must
     # append a second row (append-only, never UPDATE), leaving the first
     # row's created_at untouched.
-    cams = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
-    process_investor_master(cams=cams)
+    cams_again = pd.DataFrame([_cams_row(folio, "P1", "Jane Doe")])
+    process_investor_master(cams=cams_again)
 
     unchanged = pd.read_sql(
         "SELECT created_at FROM bronze.investor_master "
-        "WHERE source = :s AND folio_no = :f ORDER BY created_at ASC LIMIT 1",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
+        "WHERE folio_no = :f ORDER BY created_at ASC LIMIT 1",
+        engine, params={"f": folio},
     )["created_at"].iloc[0]
     assert unchanged == first
 ```
@@ -1439,95 +1400,6 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Produces: a new `normalize_for_hash(df, compare_cols)` function in `etl_sip.py`, preserving its existing case-insensitive (`.str.upper()`) comparison convention verbatim.
 
 - [ ] **Step 1: Write the failing tests**
-
-```python
-# python_scripts/tests/test_etl_sip_row_hash_flag.py
-"""Mirrors test_etl_trans_row_hash_flag.py for etl_sip.py."""
-
-import uuid
-
-import pandas as pd
-import pytest
-from sqlalchemy import text
-
-from utils.db import engine
-from etl_sip import process_sip
-
-SENTINEL_SOURCE = "__TEST_ETL_SIP_ROW_HASH__"
-
-
-@pytest.fixture(autouse=True)
-def cleanup():
-    yield
-    with engine.begin() as conn:
-        conn.execute(text(
-            "DELETE FROM bronze.sip_master_new WHERE source = :s"
-        ), {"s": SENTINEL_SOURCE})
-
-
-def _cams_row(folio, scheme_code, reg_date, amount, ft_sip_regno):
-    return {
-        "FOLIO_NO": folio, "SCHEME_CODE": scheme_code, "REG_DATE": reg_date,
-        "AUTO_AMOUNT": amount, "FT_SIP_REGNO": ft_sip_regno,
-    }
-
-
-def test_exact_duplicate_of_an_existing_row_is_flagged_1():
-    folio = uuid.uuid4().hex[:10]
-    cams = pd.DataFrame([_cams_row(folio, "S1", "17-08-2020", "1000", "REG1")])
-    process_sip(cams=cams, cams_source="CAMS")  # first insert: flag=0
-
-    cams_again = pd.DataFrame([_cams_row(folio, "S1", "17-08-2020", "1000", "REG1")])
-    process_sip(cams=cams_again, cams_source="CAMS")  # exact resend: flag=1
-
-    result = pd.read_sql(
-        "SELECT flag FROM bronze.sip_master_new WHERE source = :s AND folio_no = :f "
-        "ORDER BY created_at",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
-    )
-    assert result["flag"].tolist() == [0, 1]
-
-
-def test_same_registration_but_different_amount_top_up_is_flagged_0():
-    """The real bronze SIP pattern: same reg_no/folio/scheme/date, a
-    different amount (a step-up/top-up tier) -- must still reach flag=0,
-    proving this isn't narrowed to the natural key."""
-    folio = uuid.uuid4().hex[:10]
-    cams = pd.DataFrame([_cams_row(folio, "S1", "17-08-2020", "1000", "REG1")])
-    process_sip(cams=cams, cams_source="CAMS")
-
-    cams_topup = pd.DataFrame([_cams_row(folio, "S1", "17-08-2020", "1500", "REG1")])
-    process_sip(cams=cams_topup, cams_source="CAMS")
-
-    result = pd.read_sql(
-        "SELECT flag FROM bronze.sip_master_new WHERE source = :s AND folio_no = :f "
-        "AND auto_amount = '1500'",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
-    )
-    assert (result["flag"] == 0).all()
-
-
-def test_brand_new_row_is_flagged_0_and_gets_a_row_hash():
-    folio = uuid.uuid4().hex[:10]
-    cams = pd.DataFrame([_cams_row(folio, "S1", "17-08-2020", "1000", "REG1")])
-    process_sip(cams=cams, cams_source="CAMS")
-
-    result = pd.read_sql(
-        "SELECT flag, row_hash FROM bronze.sip_master_new WHERE source = :s AND folio_no = :f",
-        engine, params={"s": SENTINEL_SOURCE, "f": folio},
-    )
-    assert (result["flag"] == 0).all()
-    assert result["row_hash"].notna().all()
-```
-
-Note: `process_sip` sets `df["source"] = "CAMS"` internally when called with `cams=...` — these tests rely on that existing behavior, which is why `SENTINEL_SOURCE = "__TEST_ETL_SIP_ROW_HASH__"` above must actually match what the code sets. Since `process_sip` hardcodes `"CAMS"`/`"KFIN"` (see `etl_sip.py`'s `process_sip`), adjust the fixture to filter on `source = 'CAMS'` scoped by a unique `folio_no` (a random UUID) instead of a sentinel source value:
-
-```python
-# Replace SENTINEL_SOURCE usage above: use source='CAMS' and scope every
-# query/cleanup by the random folio_no generated per test instead.
-```
-
-Rewrite the file's fixture and queries to scope by `folio_no` (unique per test via `uuid.uuid4()`) and `source = 'CAMS'`, matching how `process_sip` actually assigns `source`:
 
 ```python
 # python_scripts/tests/test_etl_sip_row_hash_flag.py
