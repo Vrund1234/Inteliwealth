@@ -36,11 +36,19 @@ def _normalize_transaction(df, compare_cols):
 
 def _normalize_investor(df, compare_cols):
     """Matches etl_investor_master.py's current inline comparison
-    normalization exactly: clean_identifier_columns, then bare
-    pd.to_datetime for its DATE_COLUMNS (verbatim, including the ambiguous-
-    date behavior -- out of scope to fix here), else fillna("").astype(str)
-    .str.strip() (no case-fold -- this loader's comparison is case-sensitive)."""
-    df = etl_investor_master.clean_identifier_columns(df[compare_cols].copy())
+    normalization exactly, replicating its full layered pipeline:
+    normalize() FIRST (quote-stripping and null-token cleanup -- both the
+    new batch, via process_investor_master() calling normalize() right
+    after mapping, and the existing-read path already apply this before
+    any comparison ever happens; normalize() itself skips DATE_COLUMNS),
+    then clean_identifier_columns, then a final per-column pass: bare
+    pd.to_datetime for its DATE_COLUMNS (verbatim, including the
+    ambiguous-date behavior -- out of scope to fix here), else
+    fillna("").astype(str).str.strip() again (redundant with normalize()
+    but matches production's actual, harmless double-cleaning) -- no
+    case-fold, this loader's comparison is case-sensitive."""
+    df = etl_investor_master.normalize(df[compare_cols].copy())
+    df = etl_investor_master.clean_identifier_columns(df)
     for col in compare_cols:
         if col in etl_investor_master.DATE_COLUMNS:
             df[col] = (
@@ -55,11 +63,19 @@ def _normalize_investor(df, compare_cols):
 
 def _normalize_sip(df, compare_cols):
     """Matches etl_sip.py's current inline comparison normalization
-    exactly: clean_identifier_columns, then dedupe_compare_date (the
-    already-fixed deterministic parser) for its DATE_COLUMNS, else
-    fillna("").astype(str).str.strip().str.upper() -- this loader's
-    comparison IS case-insensitive, unlike the other two."""
-    df = etl_sip.clean_identifier_columns(df[compare_cols].copy())
+    exactly: normalize() FIRST (numeric coercion via pd.to_numeric for
+    auto_amount/no_of_installments/top_up_amt/top_up_perc -- both the new
+    batch, via apply_sip_mapping(), and the existing-read path already
+    apply this before any comparison ever happens), then
+    clean_identifier_columns, then dedupe_compare_date (the already-fixed
+    deterministic parser) for its DATE_COLUMNS, else fillna("").astype(str)
+    .str.strip().str.upper() -- this loader's comparison IS
+    case-insensitive, unlike the other two. Skipping the normalize() step
+    would hash "1000.00" and "1000.0" as different values in
+    auto_amount/etc. even though production treats them as the same
+    number."""
+    df = etl_sip.normalize(df[compare_cols].copy())
+    df = etl_sip.clean_identifier_columns(df)
     for col in compare_cols:
         if col in etl_sip.DATE_COLUMNS:
             df[col] = df[col].apply(etl_sip.dedupe_compare_date)
