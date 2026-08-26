@@ -840,10 +840,14 @@ def extract_and_push(uploaded_files):
             kfin_source="KFIN"
         )
 
+        # UI preview only -- capped and newest-first so this never turns
+        # into an unbounded full-table bronze read as the table grows.
         sip_preview = pd.read_sql(
             """
             SELECT *
             FROM bronze.sip_master_new
+            ORDER BY created_at DESC
+            LIMIT 1000
             """,
             con=engine
         )

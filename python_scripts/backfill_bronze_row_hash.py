@@ -13,6 +13,20 @@ ambiguous pd.to_datetime date handling verbatim (via that exact call,
 inline below, matching its ONLY date branch) -- deliberately not fixed
 here, per the Global Constraints -- and etl_sip.py's case-insensitive
 .str.upper() convention on non-date columns.
+
+NOT ACTUALLY ONE-TIME -- RE-RUN AFTER ANY BRONZE SCHEMA CHANGE: the hash
+is computed positionally over `_compare_cols_for(table)` (every column of
+the bronze table in `ordinal_position` order, minus flag/created_at/
+updated_at/source/row_hash), and each bronze loader derives its own
+`compare_cols` identically. Adding, removing, or renaming a column on any
+bronze table therefore changes the hashed tuple for the loaders and this
+backfill together, so this script MUST be re-run after any such schema
+change. Skipping that re-run leaves historical rows carrying a stored
+`row_hash` the loaders can no longer reproduce for the same logical row,
+so a resend of an old row is silently mis-flagged as new (flag=0) -- the
+exact bug fixed in the 2026-08-26 commit that added this paragraph, where
+the loaders derived `compare_cols` from their own mapped DataFrame's
+columns rather than from the table's full column list.
 """
 
 import sys

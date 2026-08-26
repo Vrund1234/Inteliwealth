@@ -102,8 +102,20 @@ def test_compute_flag_via_row_hash_handles_empty_dataframe():
     row_hash, flag = compute_flag_via_row_hash(
         empty_df, ["key_col", "value_col"], TEST_SCHEMA, TEST_TABLE, engine
     )
+    # Must be a Series, not just "something empty" -- .agg(axis=1) on an
+    # empty frame returns a DataFrame, which silently broke the documented
+    # (row_hash, flag) Series contract for every caller of an empty batch.
+    assert isinstance(row_hash, pd.Series)
+    assert isinstance(flag, pd.Series)
     assert len(row_hash) == 0
     assert len(flag) == 0
+
+
+def test_hash_normalized_rows_returns_an_empty_series_not_a_dataframe():
+    empty_df = pd.DataFrame(columns=["key_col", "value_col"])
+    result = hash_normalized_rows(empty_df, ["key_col", "value_col"])
+    assert isinstance(result, pd.Series)
+    assert result.empty
 
 
 def test_join_boundary_ambiguity_does_not_produce_a_collision():

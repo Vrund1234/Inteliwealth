@@ -426,7 +426,7 @@ def process_investor_master(cams=None, kfin=None):
     # read/normalized -- bronze.investor_master is never read in full.
     # =====================================================
 
-    db_columns = pd.read_sql(
+    db_columns_preflight = pd.read_sql(
         """
         SELECT column_name
         FROM information_schema.columns
@@ -445,12 +445,24 @@ def process_investor_master(cams=None, kfin=None):
         "row_hash",
     }
 
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
     compare_cols = [
         c
-        for c in df.columns
-        if c in db_columns
-        and c not in ignore_cols
+        for c in db_columns_preflight
+        if c not in ignore_cols
     ]
+
+    # The mapping may not populate every bronze column (e.g. product);
+    # those still take part in the hash, as NULL, exactly as they do in the
+    # stored rows the backfill hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
 
     new_df = clean_identifier_columns(df[compare_cols].copy())
     new_df = normalize_for_hash(new_df, compare_cols)

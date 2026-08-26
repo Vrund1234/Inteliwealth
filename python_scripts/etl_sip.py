@@ -530,15 +530,27 @@ def process_sip(
         "row_hash",
     }
 
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
     compare_cols = [
         col
-        for col in df.columns
-        if col in db_columns_preflight
-        and col not in ignore_cols
+        for col in db_columns_preflight
+        if col not in ignore_cols
     ]
 
     print("Columns used for duplicate check:")
     print(compare_cols)
+
+    # Any bronze column the mapping does not populate still takes part in
+    # the hash, as NULL, exactly as it does in the stored rows the backfill
+    # hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
 
     new_df = normalize_for_hash(df, compare_cols)
 

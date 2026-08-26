@@ -698,17 +698,29 @@ def process_transactions(cams=None, kfin=None):
         "row_hash",
     }
 
+    # Derived from the TABLE's columns in ordinal_position order -- NOT
+    # from df.columns. This must match backfill_bronze_row_hash.py's
+    # _compare_cols_for() exactly (same columns, same order), because
+    # hash_normalized_rows() hashes positionally: any divergence makes
+    # every already-stored row_hash unreachable by this loader, so a
+    # resend of a pre-existing row would be mis-flagged as new.
     compare_cols = [
         c
-        for c in df.columns
-        if c in db_columns
-        and c not in ignore_cols
+        for c in db_columns
+        if c not in ignore_cols
     ]
 
     if not compare_cols:
         raise ValueError(
             "No columns available for duplicate comparison."
         )
+
+    # The mapping may not populate every bronze column (e.g. reversal_code);
+    # those still take part in the hash, as NULL, exactly as they do in the
+    # stored rows the backfill hashed.
+    for col in compare_cols:
+        if col not in df.columns:
+            df[col] = None
 
     new_df = prepare_for_comparison(
         df,

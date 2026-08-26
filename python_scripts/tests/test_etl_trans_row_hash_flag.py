@@ -11,7 +11,9 @@ import pytest
 from sqlalchemy import text
 
 from utils.db import engine
+from utils.dedupe_hash import hash_normalized_rows
 from etl_trans import process_transactions
+import backfill_bronze_row_hash
 
 # process_transactions(cams=...) hardcodes source="CAMS" internally (not
 # caller-controllable) -- these tests scope cleanup/assertions by a random
@@ -76,6 +78,27 @@ def test_brand_new_row_is_flagged_0_and_gets_a_row_hash(trxnno):
     )
     assert (result["flag"] == 0).all()
     assert result["row_hash"].notna().all()
+
+
+def test_loader_hash_matches_what_backfill_would_compute_for_the_same_row(trxnno):
+    """Regression guard for a real bug found in final review: the loader's
+    compare_cols derivation must match backfill_bronze_row_hash.py's
+    derivation exactly (same columns, same order), or a pre-existing row's
+    stored row_hash becomes permanently unreachable by the loader that's
+    supposed to match against it on a resend."""
+    cams = pd.DataFrame([_cams_row(trxnno, "F1", "100.00", "10.000", td_ptrno="111")])
+    process_transactions(cams=cams)
+
+    stored = pd.read_sql(
+        "SELECT * FROM bronze.transaction_master_new WHERE trxnno = %(t)s",
+        engine, params={"t": trxnno},
+    )
+    compare_cols = backfill_bronze_row_hash._compare_cols_for("transaction_master_new")
+    recomputed = hash_normalized_rows(
+        backfill_bronze_row_hash._normalize_transaction(stored, compare_cols),
+        compare_cols,
+    )
+    assert (stored["row_hash"] == recomputed).all()
 
 
 def test_created_at_is_never_rewritten_on_a_later_run(trxnno):
