@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from utils.db import engine
-from backfill_bronze_row_hash import backfill_table
+from backfill_bronze_row_hash import backfill_table, _normalize_transaction
 
 TEST_SCHEMA = "bronze"
 TEST_TABLE = "_test_backfill_row_hash"
@@ -53,7 +53,7 @@ def _insert(trxnno, td_ptrno):
 def test_backfill_populates_row_hash_for_every_row():
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         row_hash = conn.execute(text(
@@ -66,7 +66,7 @@ def test_byte_identical_rows_get_the_same_hash():
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
     _insert(txn, "111")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         hashes = [r[0] for r in conn.execute(text(
@@ -83,7 +83,7 @@ def test_rows_sharing_a_natural_key_but_differing_in_another_column_get_differen
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
     _insert(txn, "222")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         hashes = [r[0] for r in conn.execute(text(
