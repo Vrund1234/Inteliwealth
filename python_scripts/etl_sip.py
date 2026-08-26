@@ -4,6 +4,7 @@ import pandas as pd
 from utils.db import engine
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
+from etl_trans import parse_source_date
 
 # =====================================================
 # DATE COLUMNS
@@ -206,6 +207,20 @@ def clean_value(value):
 # =====================================================
 
 def format_dates(df, source=None):
+    """
+    Parse DATE_COLUMNS with the same deterministic, day-first parser
+    etl_trans.py already uses for transaction dates (parse_source_date):
+    commits to DD-MM-YYYY only when unambiguous (first component > 12),
+    and returns None rather than guessing when a value could be read either
+    way -- e.g. "05-09-2017" is refused, not silently read as MM-DD-YYYY.
+
+    Previously this used bare pd.to_datetime(df[col], errors="coerce"),
+    which has no such rule: pandas' US-style default (no dayfirst) silently
+    resolves an ambiguous DD-MM-YYYY value as MM-DD-YYYY. Confirmed live:
+    KFIN regno 232086 (folio 7776062333) is stored in bronze with
+    reg_date=2017-05-09, but re-parsing the identical source file with the
+    old code produced 2017-09-05 for the same row -- day and month swapped.
+    """
 
     if df is None or df.empty:
         return df
@@ -217,19 +232,23 @@ def format_dates(df, source=None):
         if col not in df.columns:
             continue
 
-        df[col] = pd.to_datetime(
-            df[col],
-            errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
-
-        df[col] = df[col].replace({
-            "NaT": None,
-            "nan": None,
-            "NaN": None,
-            "": None
-        })
+        df[col] = df[col].apply(parse_source_date).apply(
+            lambda d: d.strftime("%Y-%m-%d") if d is not None else None
+        )
 
     return df
+
+
+def dedupe_compare_date(value):
+    """Same deterministic day-first parsing as format_dates(), but blank or
+    unparseable values become "" rather than None -- process_sip()'s
+    duplicate-flag check joins every compared column straight into one
+    string key (`.astype(str).agg("|".join, ...)`), where "" is the
+    established "no value" representation (matching non-date columns in
+    that same comparison)."""
+
+    parsed = parse_source_date(value)
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
 
 
 # =====================================================
@@ -548,23 +567,9 @@ def process_sip(
 
             if col in DATE_COLUMNS:
 
-                new_df[col] = (
-                    pd.to_datetime(
-                        new_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
+                new_df[col] = new_df[col].apply(dedupe_compare_date)
 
-                old_df[col] = (
-                    pd.to_datetime(
-                        old_df[col],
-                        errors="coerce"
-                    )
-                    .dt.strftime("%Y-%m-%d")
-                    .fillna("")
-                )
+                old_df[col] = old_df[col].apply(dedupe_compare_date)
 
             else:
 
