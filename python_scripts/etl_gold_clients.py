@@ -1,7 +1,7 @@
 import pandas as pd
 import traceback
 
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.db import engine, master_engine
 
 
@@ -1050,7 +1050,10 @@ def transform_clients(df):
     # CREATED AT
     # ========================================================
 
-    gold["created_at"] = datetime.now()
+    # UTC, not naive local time: this column is `timestamp without time zone`,
+    # so a naive IST value is stored verbatim as IST while every other
+    # loader stores UTC -- which made cross-table time-window queries wrong.
+    gold["created_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # ========================================================
     # FINAL COLUMN ORDER
@@ -1338,7 +1341,7 @@ def load_clients(gold_df):
 
         from utils.db import upsert_dataframe
 
-        inserted_rows = upsert_dataframe(
+        upsert_result = upsert_dataframe(
             gold_df,
             schema="gold",
             table="clients",
@@ -1347,6 +1350,10 @@ def load_clients(gold_df):
             # gold.clients has no updated_at (or equivalent) column.
             updated_at_column=None,
         )
+
+        # upsert_dataframe() now returns a breakdown rather than a bare count;
+        # "inserted" is the number of rows that did not already exist.
+        inserted_rows = upsert_result["inserted"]
 
         print(
             f"Inserted {inserted_rows} / "

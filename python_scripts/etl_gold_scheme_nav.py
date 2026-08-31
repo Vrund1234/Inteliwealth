@@ -686,8 +686,11 @@ def transform_scheme_nav(df):
     # AUDIT TIMESTAMP
     # ========================================================
 
+    # UTC, not naive local time: this column is `timestamp without time zone`,
+    # so a naive IST value is stored verbatim as IST while every other
+    # loader stores UTC -- which made cross-table time-window queries wrong.
     gold_df["created_at"] = (
-        pd.Timestamp.now()
+        pd.Timestamp.now(tz="UTC").tz_localize(None)
     )
 
     # ========================================================

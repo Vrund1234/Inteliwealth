@@ -73,7 +73,7 @@ def test_one_round_trip_per_chunk_not_per_row(monkeypatch):
         chunksize=100,
     )
 
-    assert n == 250
+    assert n["attempted"] == 250
     # 250 rows / chunksize 100 -> 3 chunks -> exactly 3 calls to
     # execute_values, one per chunk -- never one call per row.
     assert calls == [100, 100, 50]
@@ -104,7 +104,7 @@ def test_two_rows_sharing_a_conflict_key_in_one_call_do_not_error():
 
     n = upsert_dataframe(df, TEST_SCHEMA, TEST_TABLE, conflict_columns=["source", "key_col"])
 
-    assert n == 2  # both rows processed, even though only one survives
+    assert n["attempted"] == 2  # both rows processed, even though only one survives
     with engine.begin() as conn:
         rows = conn.execute(text(
             f"SELECT value_col FROM {TEST_SCHEMA}.{TEST_TABLE} WHERE source = :s AND key_col = :k"

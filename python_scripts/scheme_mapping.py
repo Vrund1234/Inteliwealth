@@ -307,38 +307,73 @@ UPSERT_MAPPING_SQL = text("""
         normalized_scheme_name = EXCLUDED.normalized_scheme_name,
         rta_isin                = EXCLUDED.rta_isin,
         scheme_id = CASE
-            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
-                 AND (EXCLUDED.amfi_scheme_code IS NULL
-                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
-                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            -- A scheme that is ALREADY MAPPED is frozen: no later run may
+            -- blank it, re-point it, or downgrade it, whatever confidence the
+            -- new answer claims. Previously only verified_at rows were
+            -- protected, so any automatically-mapped scheme could be
+            -- overwritten -- live, CAMS/K205G and CAMS/TRFPG were both mapped
+            -- in the baseline and were later wiped to NULL by a run that
+            -- simply failed to resolve them, and CAMS/TRFPG could also be
+            -- re-pointed between two AMFI candidates tied at score 100.
+            -- To re-point a mapped scheme now, clear amfi_scheme_code first;
+            -- that is a deliberate act rather than a side effect of a run.
+            WHEN bronze.scheme_mapping.amfi_scheme_code IS NOT NULL
             THEN bronze.scheme_mapping.scheme_id
             ELSE EXCLUDED.scheme_id END,
         amfi_scheme_code = CASE
-            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
-                 AND (EXCLUDED.amfi_scheme_code IS NULL
-                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
-                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            -- A scheme that is ALREADY MAPPED is frozen: no later run may
+            -- blank it, re-point it, or downgrade it, whatever confidence the
+            -- new answer claims. Previously only verified_at rows were
+            -- protected, so any automatically-mapped scheme could be
+            -- overwritten -- live, CAMS/K205G and CAMS/TRFPG were both mapped
+            -- in the baseline and were later wiped to NULL by a run that
+            -- simply failed to resolve them, and CAMS/TRFPG could also be
+            -- re-pointed between two AMFI candidates tied at score 100.
+            -- To re-point a mapped scheme now, clear amfi_scheme_code first;
+            -- that is a deliberate act rather than a side effect of a run.
+            WHEN bronze.scheme_mapping.amfi_scheme_code IS NOT NULL
             THEN bronze.scheme_mapping.amfi_scheme_code
             ELSE EXCLUDED.amfi_scheme_code END,
         mapping_source = CASE
-            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
-                 AND (EXCLUDED.amfi_scheme_code IS NULL
-                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
-                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            -- A scheme that is ALREADY MAPPED is frozen: no later run may
+            -- blank it, re-point it, or downgrade it, whatever confidence the
+            -- new answer claims. Previously only verified_at rows were
+            -- protected, so any automatically-mapped scheme could be
+            -- overwritten -- live, CAMS/K205G and CAMS/TRFPG were both mapped
+            -- in the baseline and were later wiped to NULL by a run that
+            -- simply failed to resolve them, and CAMS/TRFPG could also be
+            -- re-pointed between two AMFI candidates tied at score 100.
+            -- To re-point a mapped scheme now, clear amfi_scheme_code first;
+            -- that is a deliberate act rather than a side effect of a run.
+            WHEN bronze.scheme_mapping.amfi_scheme_code IS NOT NULL
             THEN bronze.scheme_mapping.mapping_source
             ELSE EXCLUDED.mapping_source END,
         mapping_confidence = CASE
-            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
-                 AND (EXCLUDED.amfi_scheme_code IS NULL
-                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
-                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            -- A scheme that is ALREADY MAPPED is frozen: no later run may
+            -- blank it, re-point it, or downgrade it, whatever confidence the
+            -- new answer claims. Previously only verified_at rows were
+            -- protected, so any automatically-mapped scheme could be
+            -- overwritten -- live, CAMS/K205G and CAMS/TRFPG were both mapped
+            -- in the baseline and were later wiped to NULL by a run that
+            -- simply failed to resolve them, and CAMS/TRFPG could also be
+            -- re-pointed between two AMFI candidates tied at score 100.
+            -- To re-point a mapped scheme now, clear amfi_scheme_code first;
+            -- that is a deliberate act rather than a side effect of a run.
+            WHEN bronze.scheme_mapping.amfi_scheme_code IS NOT NULL
             THEN bronze.scheme_mapping.mapping_confidence
             ELSE EXCLUDED.mapping_confidence END,
         mapping_status = CASE
-            WHEN bronze.scheme_mapping.verified_at IS NOT NULL
-                 AND (EXCLUDED.amfi_scheme_code IS NULL
-                      OR COALESCE(EXCLUDED.mapping_confidence, 0)
-                         <= COALESCE(bronze.scheme_mapping.mapping_confidence, 0))
+            -- A scheme that is ALREADY MAPPED is frozen: no later run may
+            -- blank it, re-point it, or downgrade it, whatever confidence the
+            -- new answer claims. Previously only verified_at rows were
+            -- protected, so any automatically-mapped scheme could be
+            -- overwritten -- live, CAMS/K205G and CAMS/TRFPG were both mapped
+            -- in the baseline and were later wiped to NULL by a run that
+            -- simply failed to resolve them, and CAMS/TRFPG could also be
+            -- re-pointed between two AMFI candidates tied at score 100.
+            -- To re-point a mapped scheme now, clear amfi_scheme_code first;
+            -- that is a deliberate act rather than a side effect of a run.
+            WHEN bronze.scheme_mapping.amfi_scheme_code IS NOT NULL
             THEN bronze.scheme_mapping.mapping_status
             ELSE EXCLUDED.mapping_status END;
 """)

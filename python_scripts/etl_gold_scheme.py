@@ -1,6 +1,6 @@
 import pandas as pd
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 
@@ -1118,7 +1118,10 @@ def transform_scheme(
     # CREATED AT
     # =================================================
 
-    gold_df["created_at"] = datetime.now()
+    # UTC, not naive local time: this column is `timestamp without time zone`,
+    # so a naive IST value is stored verbatim as IST while every other
+    # loader stores UTC -- which made cross-table time-window queries wrong.
+    gold_df["created_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # =================================================
     # FINAL COLUMN ORDER

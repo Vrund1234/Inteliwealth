@@ -396,6 +396,25 @@ def get_table_columns(table_name):
 # APPEND NEW ROWS TO SILVER
 # =====================================================
 
+def _silver_result(table_name, status, total=0, inserted=0, updated=0, error=None):
+    """The per-table record append_new_rows() returns.
+
+    Purely additive: every caller in this repo (load_silver below, and
+    app.py:647 through it) discards the return value, so this changes nothing
+    about what the Streamlit Transform button does. The etl_pipeline runner
+    reads it to decide which reserved files to report FAILED, and to write the
+    SILVER rows of pipeline.etl_pipeline_log.
+    """
+    return {
+        "table": table_name,
+        "status": status,
+        "total": total,
+        "inserted": inserted,
+        "updated": updated,
+        "error": error,
+    }
+
+
 def append_new_rows(
     df,
     table_name
@@ -407,7 +426,7 @@ def append_new_rows(
             f"{table_name} : No data"
         )
 
-        return
+        return _silver_result(table_name, "SKIPPED")
 
     print("=" * 80)
     print(
@@ -434,7 +453,11 @@ def append_new_rows(
             "Bronze flag column is missing."
         )
 
-        return
+        return _silver_result(
+            table_name,
+            "SKIPPED",
+            error=f"{table_name}: bronze flag column is missing",
+        )
 
     # -------------------------------------------------
     # ONLY BRONZE FLAG = 0
@@ -456,7 +479,11 @@ def append_new_rows(
             "No Bronze rows with flag = 0."
         )
 
-        return
+        return _silver_result(
+            table_name,
+            "SKIPPED",
+            error=f"{table_name}: no bronze rows with flag = 0",
+        )
 
     # =================================================
     # REMOVE DUPLICATES INSIDE CURRENT BRONZE BATCH
@@ -502,7 +529,11 @@ def append_new_rows(
             "No rows after batch duplicate removal."
         )
 
-        return
+        return _silver_result(
+            table_name,
+            "SKIPPED",
+            error=f"{table_name}: no rows after batch duplicate removal",
+        )
 
     # =================================================
     # SILVER AUDIT TIMESTAMP
@@ -523,7 +554,10 @@ def append_new_rows(
     # guarantee, so it's gone.
     # =================================================
 
-    load_time = pd.Timestamp.now()
+    # UTC, not naive local time: this column is `timestamp without time zone`,
+    # so a naive IST value is stored verbatim as IST while every other
+    # loader stores UTC -- which made cross-table time-window queries wrong.
+    load_time = pd.Timestamp.now(tz="UTC").tz_localize(None)
 
     df["created_at"] = load_time
 
@@ -544,7 +578,11 @@ def append_new_rows(
             "Silver table not found."
         )
 
-        return
+        return _silver_result(
+            table_name,
+            "FAILED",
+            error=f"silver.{table_name}: table not found",
+        )
 
     # =================================================
     # ADD MISSING COLUMNS
@@ -622,7 +660,7 @@ def append_new_rows(
         }
 
         if table_name in SILVER_CONFLICT_COLUMNS:
-            upsert_dataframe(
+            upsert_result = upsert_dataframe(
                 df,
                 schema="silver",
                 table=table_name,
@@ -635,7 +673,7 @@ def append_new_rows(
             # promote an expression index to a table CONSTRAINT at all
             # (confirmed live), so it can't be targeted by name either.
             # Pass its exact expression list instead.
-            upsert_dataframe(
+            upsert_result = upsert_dataframe(
                 df,
                 schema="silver",
                 table=table_name,
@@ -659,7 +697,15 @@ def append_new_rows(
         print(e)
         print("=" * 80)
 
-        return
+        # Still swallowed and still printed -- app.py's Transform button
+        # depends on a silver failure not propagating. The exception is only
+        # ADDITIONALLY recorded, for the etl_pipeline runner to report on.
+        return _silver_result(
+            table_name,
+            "FAILED",
+            total=len(df),
+            error=f"{type(e).__name__}: {e}",
+        )
 
     print("=" * 80)
     print(
@@ -667,6 +713,14 @@ def append_new_rows(
         f"{len(df)} new rows inserted into Silver"
     )
     print("=" * 80)
+
+    return _silver_result(
+        table_name,
+        "COMPLETED",
+        total=len(df),
+        inserted=upsert_result["inserted"],
+        updated=upsert_result["updated"],
+    )
 
 
 # =====================================================
@@ -1743,6 +1797,14 @@ def load_silver():
     print("STARTING BRONZE → SILVER ETL")
     print("=" * 80)
 
+    # Every table is present in the result whether or not it had rows, so the
+    # etl_pipeline runner never has to distinguish "not attempted" from
+    # "missing key". app.py:647 discards this.
+    results = {
+        table: _silver_result(table, "SKIPPED")
+        for table in ("investor_master", "transaction_master_new", "sip_master_new")
+    }
+
     # =================================================
     # INVESTOR MASTER
     # =================================================
@@ -1775,7 +1837,7 @@ def load_silver():
             investor_df
         )
 
-        append_new_rows(
+        results["investor_master"] = append_new_rows(
             investor_df,
             "investor_master"
         )
@@ -1819,7 +1881,7 @@ def load_silver():
             transaction_df
         )
 
-        append_new_rows(
+        results["transaction_master_new"] = append_new_rows(
             transaction_df,
             "transaction_master_new"
         )
@@ -1863,7 +1925,7 @@ def load_silver():
             sip_df
         )
 
-        append_new_rows(
+        results["sip_master_new"] = append_new_rows(
             sip_df,
             "sip_master_new"
         )
@@ -1879,6 +1941,8 @@ def load_silver():
     print("=" * 80)
     print("SILVER LAYER LOADED SUCCESSFULLY")
     print("=" * 80)
+
+    return results
 
 
 # =====================================================
