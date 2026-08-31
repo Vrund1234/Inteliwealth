@@ -1,15 +1,378 @@
 import csv
-import io
 import os
 import tempfile
 
 import pandas as pd
 from dbfread import DBF
 
-from utils.db import engine
-from etl_investor_master import process_investor_master
-from etl_trans import process_transactions
-from etl_sip import process_sip
+
+# =====================================================
+# DATE COLUMNS
+# =====================================================
+
+DATE_COLUMNS = [
+    "traddate",
+    "postdate",
+    "rep_date",
+    "ticob_posted_date",
+    "sys_regn_date",
+    "ca_initiated_date",
+    "crdate",
+    "purdate",
+    "chqdate",
+    "nav_date",
+    "nct_change_date",
+    "agent_code_change_request_date",
+    "reg_date",
+]
+
+
+# =====================================================
+# DATE PARSER
+# =====================================================
+
+def parse_source_date(value):
+    """
+    Centralized source-date parser.
+
+    ALL source files are treated as DD-MM-YYYY.
+
+    Examples:
+
+        28-07-2026
+            -> 2026-07-28
+
+        03-04-2026
+            -> 2026-04-03
+
+        07/08/2026
+            -> 2026-08-07
+
+        28-07-2026 14:30:00
+            -> 2026-07-28
+
+        28-07-2026 02:30:00 PM
+            -> 2026-07-28
+
+        2026-07-28
+            -> 2026-07-28
+
+    No ambiguous-date guessing is performed.
+    """
+
+    from datetime import datetime, date
+    import re
+
+    if value is None:
+        return None
+
+    # =================================================
+    # PANDAS TIMESTAMP
+    # =================================================
+
+    if isinstance(value, pd.Timestamp):
+
+        if pd.isna(value):
+            return None
+
+        return value.to_pydatetime().date()
+
+    # =================================================
+    # PYTHON DATETIME
+    # =================================================
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    # =================================================
+    # PYTHON DATE
+    # =================================================
+
+    if isinstance(value, date):
+        return value
+
+    # =================================================
+    # PANDAS NULL
+    # =================================================
+
+    try:
+
+        if pd.isna(value):
+            return None
+
+    except (TypeError, ValueError):
+
+        pass
+
+    # =================================================
+    # CLEAN VALUE
+    # =================================================
+
+    value = (
+        str(value)
+        .replace("\xa0", " ")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("'", "")
+        .replace('"', "")
+        .strip()
+    )
+
+    # =================================================
+    # NULL VALUES
+    # =================================================
+
+    if value.lower() in {
+        "",
+        "nan",
+        "none",
+        "<na>",
+        "nat",
+        "null",
+    }:
+        return None
+
+    # =================================================
+    # ISO DATE
+    #
+    # YYYY-MM-DD
+    # YYYY-MM-DD HH:MM:SS
+    # YYYY-MM-DDTHH:MM:SS
+    # =================================================
+
+    iso_match = re.match(
+        r"^(\d{4})-(\d{1,2})-(\d{1,2})",
+        value
+    )
+
+    if iso_match:
+
+        try:
+
+            return date(
+                int(iso_match.group(1)),
+                int(iso_match.group(2)),
+                int(iso_match.group(3)),
+            )
+
+        except ValueError:
+
+            return None
+
+    # =================================================
+    # SOURCE FORMAT
+    #
+    # ALL SOURCE FILES = DD-MM-YYYY
+    #
+    # Separator can be:
+    #     -
+    #     /
+    # =================================================
+
+    match = re.search(
+        r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})",
+        value
+    )
+
+    if not match:
+
+        return None
+
+    day = int(
+        match.group(1)
+    )
+
+    month = int(
+        match.group(2)
+    )
+
+    year = int(
+        match.group(3)
+    )
+
+    # =================================================
+    # STRICT DD-MM-YYYY VALIDATION
+    # =================================================
+
+    if not 1 <= day <= 31:
+
+        print(
+            f"WARNING: Invalid day in source date: "
+            f"'{value}'"
+        )
+
+        return None
+
+    if not 1 <= month <= 12:
+
+        print(
+            f"WARNING: Invalid month in source date: "
+            f"'{value}'"
+        )
+
+        return None
+
+    # =================================================
+    # CREATE DATE
+    # =================================================
+
+    try:
+
+        return date(
+            year,
+            month,
+            day
+        )
+
+    except ValueError:
+
+        print(
+            f"WARNING: Invalid calendar date: "
+            f"'{value}'"
+        )
+
+        return None
+
+
+# =====================================================
+# FORMAT DATES
+# =====================================================
+
+def format_dates(df):
+
+    if df is None:
+        return df
+
+    df = df.copy()
+
+    for col in DATE_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        original = df[col].copy()
+
+        parsed = original.apply(
+            parse_source_date
+        )
+
+        df[col] = parsed.apply(
+            lambda d:
+            d.strftime("%Y-%m-%d")
+            if d is not None
+            else None
+        )
+
+        invalid_mask = (
+            original.notna()
+            & original.astype(str).str.strip().ne("")
+            & df[col].isna()
+        )
+
+        if invalid_mask.any():
+
+            print(
+                f"WARNING: {col} has "
+                f"{invalid_mask.sum()} "
+                f"unparsed date values."
+            )
+
+            print(
+                "Unparsed values:",
+                original.loc[
+                    invalid_mask
+                ].head(10).tolist()
+            )
+
+    return df
+
+
+# =====================================================
+# VALIDATE DATE COLUMNS
+# =====================================================
+
+def validate_date_columns(df, stage):
+    """
+    Validate populated date fields.
+
+    Valid values are either:
+
+        Python date/datetime
+
+    or:
+
+        YYYY-MM-DD string
+    """
+
+    import re
+    from datetime import date
+
+    print("=" * 80)
+    print(f"DATE VALIDATION - {stage}")
+
+    errors = []
+
+    for col in DATE_COLUMNS:
+
+        if col not in df.columns:
+            continue
+
+        non_null = df[col].notna()
+
+        invalid = df.loc[
+            non_null
+            & ~df[col].apply(
+                lambda x:
+                isinstance(x, date)
+                or (
+                    isinstance(x, str)
+                    and bool(
+                        re.match(
+                            r"^\d{4}-\d{2}-\d{2}$",
+                            x
+                        )
+                    )
+                )
+            )
+        ]
+
+        if len(invalid) > 0:
+
+            errors.append(
+                f"{col}: "
+                f"{len(invalid)} invalid date values"
+            )
+
+        print(
+            f"{col}: "
+            f"non-null={non_null.sum()}, "
+            f"null={df[col].isna().sum()}"
+        )
+
+        if non_null.any():
+
+            print(
+                df.loc[
+                    non_null,
+                    col
+                ].head(5).tolist()
+            )
+
+    if errors:
+
+        print("DATE VALIDATION ERRORS:")
+
+        for error in errors:
+            print(" -", error)
+
+        raise ValueError(
+            f"Date validation failed during "
+            f"{stage}: "
+            + "; ".join(errors)
+        )
+
+    print("Date validation passed.")
+    print("=" * 80)
 
 
 # =====================================================
@@ -29,37 +392,62 @@ def smart_split(line, delimiter):
 
             j = i + 1
 
-            close = line.find("'", j)
+            close = line.find(
+                "'",
+                j
+            )
 
-            while close != -1 and not (
-                close + 1 == n or line[close + 1] == delimiter
+            while (
+                close != -1
+                and not (
+                    close + 1 == n
+                    or line[close + 1] == delimiter
+                )
             ):
 
-                close = line.find("'", close + 1)
+                close = line.find(
+                    "'",
+                    close + 1
+                )
 
             if close == -1:
 
-                # Unterminated quote - treat rest of line as the field
-                fields.append(line[i + 1:])
+                # Unterminated quote.
+                fields.append(
+                    line[i + 1:]
+                )
+
                 i = n + 1
 
             else:
 
-                fields.append(line[i + 1:close])
-                i = close + 2  # skip closing quote + delimiter
+                fields.append(
+                    line[i + 1:close]
+                )
+
+                i = close + 2
 
         else:
 
-            next_delim = line.find(delimiter, i)
+            next_delim = line.find(
+                delimiter,
+                i
+            )
 
             if next_delim == -1:
 
-                fields.append(line[i:])
+                fields.append(
+                    line[i:]
+                )
+
                 i = n + 1
 
             else:
 
-                fields.append(line[i:next_delim])
+                fields.append(
+                    line[i:next_delim]
+                )
+
                 i = next_delim + 1
 
     return fields
@@ -77,7 +465,9 @@ def read_file(file):
     # CSV / TXT
     # =================================================
 
-    if name.endswith((".csv", ".txt")):
+    if name.endswith(
+        (".csv", ".txt")
+    ):
 
         file.seek(0)
 
@@ -93,7 +483,7 @@ def read_file(file):
             "utf-16",
             "utf-16le",
             "utf-16be",
-            "latin1"
+            "latin1",
         ]
 
         text = None
@@ -103,7 +493,10 @@ def read_file(file):
 
             try:
 
-                text = raw.decode(encoding)
+                text = raw.decode(
+                    encoding
+                )
+
                 detected_encoding = encoding
 
                 break
@@ -119,13 +512,19 @@ def read_file(file):
             )
 
         print()
-        print("Detected encoding:", detected_encoding)
+        print(
+            "Detected encoding:",
+            detected_encoding
+        )
 
         # -------------------------------------------------
         # REMOVE NULL CHARACTERS
         # -------------------------------------------------
 
-        text = text.replace("\x00", "")
+        text = text.replace(
+            "\x00",
+            ""
+        )
 
         # -------------------------------------------------
         # NORMALIZE NEWLINES
@@ -154,7 +553,9 @@ def read_file(file):
 
         except csv.Error:
 
-            first_line = text.split("\n")[0]
+            first_line = text.split(
+                "\n"
+            )[0]
 
             if "\t" in first_line:
 
@@ -182,19 +583,16 @@ def read_file(file):
         )
 
         # -------------------------------------------------
-        # IMPORTANT
-        #
-        # CAMS/KFIN files may contain values surrounded
-        # by single quotes, and those values can contain
-        # the delimiter itself.
-        #
-        # smart_split() handles this case.
+        # SMART PARSE
         # -------------------------------------------------
 
         lines = text.split("\n")
 
         rows = [
-            smart_split(line, delimiter)
+            smart_split(
+                line,
+                delimiter
+            )
             for line in lines
             if line != ""
         ]
@@ -223,14 +621,26 @@ def read_file(file):
         expected_columns = len(header)
 
         print()
-        print("File:", file.name)
-        print("Delimiter:", repr(delimiter))
-        print("Header columns:", expected_columns)
+        print(
+            "File:",
+            file.name
+        )
+
+        print(
+            "Delimiter:",
+            repr(delimiter)
+        )
+
+        print(
+            "Header columns:",
+            expected_columns
+        )
+
         print("Header:")
         print(header)
 
         # -------------------------------------------------
-        # PARSE DATA ROWS
+        # DATA ROWS
         # -------------------------------------------------
 
         clean_rows = []
@@ -242,20 +652,19 @@ def read_file(file):
             start=2
         ):
 
-            # Ignore completely empty rows
-
-            if not row or all(
-                str(value).strip() == ""
-                for value in row
+            if (
+                not row
+                or all(
+                    str(value).strip() == ""
+                    for value in row
+                )
             ):
 
                 continue
 
             actual_columns = len(row)
 
-            # -------------------------------------------------
-            # PERFECT ROW
-            # -------------------------------------------------
+            # Perfect row
 
             if actual_columns == expected_columns:
 
@@ -263,29 +672,25 @@ def read_file(file):
 
                 continue
 
-            # -------------------------------------------------
-            # SHORT ROW
-            #
-            # Missing trailing values are allowed.
-            # Fill only the missing trailing fields.
-            # -------------------------------------------------
+            # Short row:
+            # fill missing trailing fields
 
             if actual_columns < expected_columns:
 
                 row = row + (
                     [""] *
-                    (expected_columns - actual_columns)
+                    (
+                        expected_columns
+                        - actual_columns
+                    )
                 )
 
                 clean_rows.append(row)
 
                 continue
 
-            # -------------------------------------------------
-            # BAD ROW
-            #
-            # DO NOT truncate it.
-            # -------------------------------------------------
+            # Bad row:
+            # do NOT truncate
 
             bad_rows += 1
 
@@ -300,10 +705,8 @@ def read_file(file):
                 row[:20]
             )
 
-            # Skip genuinely malformed rows
-
         # -------------------------------------------------
-        # CREATE DATAFRAME
+        # DATAFRAME
         # -------------------------------------------------
 
         df = pd.DataFrame(
@@ -323,7 +726,7 @@ def read_file(file):
         )
 
         # -------------------------------------------------
-        # REMOVE OUTER QUOTES ONLY
+        # REMOVE OUTER QUOTES
         # -------------------------------------------------
 
         object_cols = df.select_dtypes(
@@ -345,7 +748,7 @@ def read_file(file):
                 {
                     "nan": "",
                     "None": "",
-                    "<NA>": ""
+                    "<NA>": "",
                 }
             )
 
@@ -373,13 +776,6 @@ def read_file(file):
 
         try:
 
-            # -------------------------------------------------
-            # DBF READER NEEDS A FILE
-            #
-            # Streamlit UploadedFile is an in-memory object,
-            # therefore save it temporarily.
-            # -------------------------------------------------
-
             with tempfile.NamedTemporaryFile(
                 suffix=".dbf",
                 delete=False
@@ -395,15 +791,13 @@ def read_file(file):
             )
 
             # -------------------------------------------------
-            # READ DBF
+            # DBF
             # -------------------------------------------------
 
             table = DBF(
                 temp_path,
                 load=True
             )
-
-            # Convert DBF records to DataFrame
 
             df = pd.DataFrame(
                 iter(table)
@@ -448,10 +842,6 @@ def read_file(file):
 
         finally:
 
-            # -------------------------------------------------
-            # REMOVE TEMPORARY FILE
-            # -------------------------------------------------
-
             if (
                 temp_path
                 and os.path.exists(temp_path)
@@ -459,7 +849,9 @@ def read_file(file):
 
                 try:
 
-                    os.remove(temp_path)
+                    os.remove(
+                        temp_path
+                    )
 
                     print(
                         "Temporary DBF file removed."
@@ -475,23 +867,11 @@ def read_file(file):
 
         # -------------------------------------------------
         # NORMALIZE DBF VALUES
-        #
-        # DBF can return:
-        # - Decimal
-        # - date
-        # - datetime
-        # - bool
-        # - None
-        #
-        # Convert values to strings so that DBF behaves
-        # consistently with the existing CSV/Excel pipeline.
         # -------------------------------------------------
 
         df = df.fillna("")
 
-        object_cols = df.columns
-
-        for col in object_cols:
+        for col in df.columns:
 
             df[col] = (
                 df[col]
@@ -503,7 +883,7 @@ def read_file(file):
                 {
                     "nan": "",
                     "None": "",
-                    "NaT": ""
+                    "NaT": "",
                 }
             )
 
@@ -511,7 +891,9 @@ def read_file(file):
     # EXCEL
     # =================================================
 
-    elif name.endswith((".xlsx", ".xls")):
+    elif name.endswith(
+        (".xlsx", ".xls")
+    ):
 
         file.seek(0)
 
@@ -522,7 +904,7 @@ def read_file(file):
         )
 
     # =================================================
-    # UNSUPPORTED FILE
+    # UNSUPPORTED
     # =================================================
 
     else:
@@ -545,7 +927,7 @@ def read_file(file):
     )
 
     # -----------------------------------------------------
-    # REMOVE BLANK HEADER COLUMNS
+    # REMOVE BLANK HEADERS
     # -----------------------------------------------------
 
     df = df.loc[
@@ -568,10 +950,22 @@ def read_file(file):
 
     print()
     print("=" * 80)
-    print("FILE :", file.name)
-    print("ROWS READ :", len(df))
-    print("TOTAL COLUMNS :", len(df.columns))
-    print("UNIQUE COLUMNS :", len(df.columns.unique()))
+    print(
+        "FILE :",
+        file.name
+    )
+    print(
+        "ROWS READ :",
+        len(df)
+    )
+    print(
+        "TOTAL COLUMNS :",
+        len(df.columns)
+    )
+    print(
+        "UNIQUE COLUMNS :",
+        len(df.columns.unique())
+    )
     print("COLUMN NAMES :")
     print(df.columns.tolist())
     print("=" * 80)
@@ -614,7 +1008,7 @@ def read_file(file):
         "Scheme",
         "Folio",
         "PAN",
-        "PAN Number"
+        "PAN Number",
     ]
 
     available_debug_columns = [
@@ -633,7 +1027,9 @@ def read_file(file):
         print(
             df[
                 available_debug_columns
-            ].head(5).to_string(index=False)
+            ]
+            .head(5)
+            .to_string(index=False)
         )
 
         print(
@@ -648,6 +1044,27 @@ def read_file(file):
 # =====================================================
 
 def extract_and_push(uploaded_files):
+
+    # =================================================
+    # IMPORTANT:
+    #
+    # DO NOT IMPORT ETL MODULES AT THE TOP OF THIS FILE.
+    #
+    # raw_ingestion -> etl_trans -> raw_ingestion
+    #
+    # creates a circular import.
+    #
+    # These imports happen only when the function is
+    # called, after raw_ingestion.py has completely loaded.
+    # =================================================
+
+    from etl_trans import process_transactions
+    from etl_investor_master import process_investor_master
+    from etl_sip import process_sip
+
+    # Import database engine here as well if desired.
+    # This keeps raw_ingestion independent during import.
+    from utils.db import engine
 
     cams_transaction = []
     kfin_transaction = []
@@ -668,15 +1085,16 @@ def extract_and_push(uploaded_files):
 
         print()
         print("=" * 80)
-        print("PROCESSING FILE:", file.name)
+        print(
+            "PROCESSING FILE:",
+            file.name
+        )
         print("=" * 80)
 
         df = read_file(file)
 
         # =================================================
-        # CAMS FILES
-        #
-        # Support CSV and DBF
+        # CAMS TRANSACTION
         # =================================================
 
         if name.endswith(
@@ -684,50 +1102,72 @@ def extract_and_push(uploaded_files):
                 "r2.csv",
                 "r2.dbf",
                 "r2.xlsx",
-                "r2.xls"
+                "r2.xls",
             )
         ):
 
             cams_transaction.append(df)
+
+        # =================================================
+        # CAMS INVESTOR
+        # =================================================
 
         elif name.endswith(
             (
                 "r9.csv",
                 "r9.dbf",
                 "r9.xlsx",
-                "r9.xls"
+                "r9.xls",
             )
         ):
 
             cams_investor.append(df)
+
+        # =================================================
+        # CAMS SIP
+        # =================================================
 
         elif name.endswith(
             (
                 "r49.csv",
                 "r49.dbf",
                 "r49.xlsx",
-                "r49.xls"
+                "r49.xls",
             )
         ):
 
             cams_sip.append(df)
 
         # =================================================
-        # KFIN FILES
-        #
-        # Filename contains the file identifier.
-        # This works for CSV, Excel and DBF.
+        # KFIN TRANSACTION
         # =================================================
 
-        elif "mfsd201" in name:
+        elif (
+            "mfsd201" in name
+            or "mfsd307" in name
+        ):
 
             kfin_transaction.append(df)
 
-        elif "mfsd211" in name:
+        # =================================================
+        # KFIN INVESTOR
+        # =================================================
+
+        elif (
+            "mfsd211" in name
+            or "mfsd311" in name
+        ):
 
             kfin_investor.append(df)
 
-        elif "mfsd243" in name:
+        # =================================================
+        # KFIN SIP
+        # =================================================
+
+        elif (
+            "mfsd243" in name
+            or "mfsd313" in name
+        ):
 
             kfin_sip.append(df)
 
@@ -761,8 +1201,7 @@ def extract_and_push(uploaded_files):
 
     if (
         cams_df is not None
-        or
-        kfin_df is not None
+        or kfin_df is not None
     ):
 
         process_transactions(
@@ -794,8 +1233,7 @@ def extract_and_push(uploaded_files):
 
     if (
         cams_df is not None
-        or
-        kfin_df is not None
+        or kfin_df is not None
     ):
 
         process_investor_master(
@@ -829,8 +1267,7 @@ def extract_and_push(uploaded_files):
 
     if (
         cams_df is not None
-        or
-        kfin_df is not None
+        or kfin_df is not None
     ):
 
         process_sip(
@@ -840,8 +1277,10 @@ def extract_and_push(uploaded_files):
             kfin_source="KFIN"
         )
 
-        # UI preview only -- capped and newest-first so this never turns
-        # into an unbounded full-table bronze read as the table grows.
+        # -------------------------------------------------
+        # UI preview only
+        # -------------------------------------------------
+
         sip_preview = pd.read_sql(
             """
             SELECT *
@@ -858,16 +1297,13 @@ def extract_and_push(uploaded_files):
 
     return (
         len(cams_transaction)
-        +
-        len(kfin_transaction),
+        + len(kfin_transaction),
 
         len(cams_investor)
-        +
-        len(kfin_investor),
+        + len(kfin_investor),
 
         len(cams_sip)
-        +
-        len(kfin_sip),
+        + len(kfin_sip),
 
         sip_preview
     )

@@ -490,7 +490,8 @@ def transform_scheme_nav(df):
     gold_df["nav_date"] = (
         pd.to_datetime(
             df["traddate"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )

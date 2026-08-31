@@ -565,7 +565,8 @@ def transform_transactions(df):
     gold_df["txn_date"] = (
         pd.to_datetime(
             df["traddate"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )
@@ -573,7 +574,8 @@ def transform_transactions(df):
     gold_df["post_date"] = (
         pd.to_datetime(
             df["postdate"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )

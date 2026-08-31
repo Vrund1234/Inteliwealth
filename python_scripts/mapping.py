@@ -113,9 +113,7 @@ INVESTOR_MASTER_MAPPING = {
     "report_date": ["report_date", "rep_date"],
     "report_time": ["report_time", "time1"],
     "folio_date": ["folio_date", "folio_dat", "folio_dt", "foliodate"],
-    "occupation": [
-        "occ_code"
-    ],
+    #"occupation": ["occ_code"],
 
     "occupation_description": ["occupation_description", "Occupation Description"],
 
@@ -125,8 +123,7 @@ INVESTOR_MASTER_MAPPING = {
     # ================= ADDITIONAL SOURCE COLUMNS =================
     #"product": ["product", "prod"],
     "product_code": ["product", "product_code"],
-    "scheme_name": ["scheme_name", "SCH_NAME", "SCHEME", "Scheme Name",
-    "fund_description", "Fund Description", "funddesc"],
+    "scheme_name": ["scheme_name", "SCH_NAME", "SCHEME", "Scheme Name","fund_description", "Fund Description", "funddesc"],
     "closing_balance": ["closing_balance", "clos_bal"],
     "rep_date": ["rep_date"],
 
@@ -160,8 +157,6 @@ INVESTOR_MASTER_MAPPING = {
     "gst_state_code": ["gst_state_code", "gst_state_"],
     "folio_old": ["folio_old", "old_folio"],
     "scheme_folio_number": ["scheme_folio_number", "scheme_fol"],
-    "fund": ["fund", "td_fund"],
-    "fund_description": ["fund_description", "scheme_name"],
         # ================= HOLDER DETAILS =================
     "tpin": ["tpin"],
     "f_name": ["f_name"],
@@ -176,7 +171,6 @@ INVESTOR_MASTER_MAPPING = {
     "fax_office": ["fax_office", "faxoff"],
 
     # ================= OCCUPATION / BANK =================
-    "occ_code": ["occ_code", "occpn"],
     "bank_phone": ["bank_phone", "bphone"],
 
     # ================= INVESTOR DETAILS =================
@@ -241,157 +235,238 @@ INVESTOR_MASTER_MAPPING = {
     "updated_at": []
 }
 
-# =========================================================
-# TRANSACTION MASTER MAPPING (CAMS + KFINTECH UNION)
-# Target: bronze.transaction_master_new
-# =========================================================
-
 TRANSACTION_MASTER_MAPPING = {
 
-    # ================= SYSTEM =================
-    "source": ["source"],
+    "CAMS": {
+        "source": ["Cams"],
+        "amc_code": ["AMC_CODE"],
+        "folio_no": ["FOLIO_NO"],
+        "prodcode": ["PRODCODE"],
+        "scheme": ["SCHEME"],
+        "inv_name": ["INV_NAME"],
+        "trxntype": ["TRXNTYPE"],
+        "trxnno": ["TRXNNO"],
+        "trxnmode": ["TRXNMODE"],
+        "trxnstat": ["TRXNSTAT"],
+        "trxnsubtyp": ["TRXNSUBTYP"],
+        "usercode": ["USERCODE"],
+        "usrtrxno": ["USRTRXNO"],
+        "traddate": ["TRADDATE"],
+        "postdate": ["POSTDATE"],
+        "purprice": ["PURPRICE"],
+        "units": ["UNITS"],
+        "amount": ["AMOUNT"],
+        "brokcode": ["BROKCODE"],
+        "subbrok": ["SUBBROK"],
+        "brokperc": ["BROKPERC"],
+        "brokcomm": ["BROKCOMM"],
+        "application_no": ["APPLICATION_NO", "APPLICATIO"],
+        "trxn_nature": ["TRXN_NATURE", "TRXN_NATUR"],
+        "load": ["LOAD"],
+        "tax_status": ["TAX_STATUS"],
+        "pan": ["PAN"],
+        "inv_iin": ["INV_IIN"],
+        "bank_name": ["BANK_NAME"],
+        "ac_no": ["AC_NO"],
+        "trxn_charges": ["TRXN_CHARGES", "TRXN_CHARG"],
+        "exchange_flag": ["EXCHANGE_FLAG", "EXCHANGE_F"],
+        "sys_regn_date": ["SYS_REGN_DATE", "SYS_REGN_D"],
+        "altfolio": ["ALTFOLIO"],
+        "rep_date": ["REP_DATE"],
+        "time1": ["TIME1"],
+        "tax": ["TAX"],
+        "total_tax": ["TOTAL_TAX"],
+        "te_15h": ["TE_15H"],
+        "micr_no": ["MICR_NO"],
+        "remarks": ["REMARKS"],
+        "swflag": ["SWFLAG"],
+        "old_folio": ["OLD_FOLIO"],
+        "seq_no": ["SEQ_NO"],
+        "reinvest_flag": ["REINVEST_FLAG", "REINVEST_F"],
+        "mult_brok": ["MULT_BROK"],
+        "stt": ["STT"],
+        "location": ["LOCATION"],
+        "scheme_type": ["SCHEME_TYPE", "SCHEME_TYP"],
+        "scanrefno": ["SCANREFNO"],
+        "targ_src_scheme": ["TARG_SRC_SCHEME", "TARG_SRC_S"],
+        "trxn_type_flag": ["TRXN_TYPE_FLAG", "TRXN_TYPE_"],
+        "ticob_trtype": ["TICOB_TRTYPE", "TICOB_TRTY"],
+        "ticob_trno": ["TICOB_TRNO"],
+        "ticob_posted_date": ["TICOB_POSTED_DATE", "TICOB_POST"],
+        "dp_id": ["DP_ID"],
+        "eligib_amt": ["ELIGIB_AMT"],
+        "src_of_txn": ["SRC_OF_TXN"],
+        "trxn_suffix": ["TRXN_SUFFIX", "TRXN_SUFFI"],
+        "siptrxnno": ["SIPTRXNNO"],
+        "ter_location": ["TER_LOCATION", "TER_LOCATI"],
+        "euin": ["EUIN"],
+        "euin_valid": ["EUIN_VALID"],
+        "euin_opted": ["EUIN_OPTED"],
+        "sub_brk_arn": ["SUB_BRK_ARN", "SUB_BRK_AR"],
+        "exch_dc_flag": ["EXCH_DC_FLAG", "EXCH_DC_FL"],
+        "src_brk_code": ["SRC_BRK_CODE", "SRC_BRK_CO"],
+        "reversal_code": ["REVERSAL_CODE", "REVERSAL_C"],
+        "ca_initiated_date": ["CA_INITIATED_DATE", "CA_INITIAT"],
+        "gst_state_code": ["GST_STATE_CODE", "GST_STATE_"],
+        "igst_amount": ["IGST_AMOUNT", "IGST_AMOUN"],
+        "cgst_amount": ["CGST_AMOUNT", "CGST_AMOUN"],
+        "sgst_amount": ["SGST_AMOUNT", "SGST_AMOUN"],
+        "rev_remark": ["REV_REMARK"],
+        "original_trxnno": ["ORIGINAL_TRXNNO", "ORIGINAL_T"],
+        "stamp_duty": ["STAMP_DUTY"],
+        "folio_old": ["FOLIO_OLD"],
+        "scheme_folio_number": ["SCHEME_FOLIO_NUMBER", "SCHEME_FOL"],
+        "amc_ref_no": ["AMC_REF_NO"],
+        "request_ref_no": ["REQUEST_REF_NO", "REQUEST_RE"],
+        "transmission_flag": ["TRANSMISSION_FLAG", "TRANSMISSI"]
+    },
 
-    # ================= CORE =================
-    "prodcode": ["prodcode", "fmcode"],                 # Product Code
-    "amc_code": ["amc_code", "td_fund"],                # Fund
-    "folio_no": ["folio_no", "td_acno"],                # Folio Number
-    "divopt": ["divopt"],                               # Dividend Option
-    "scheme": ["scheme", "funddesc"],                   # Fund Description
-    "trxnno": ["trxnno", "td_trno"],                    # Transaction Number
-    "inv_name": ["inv_name", "invname"],                # Investor Name
-    "isin": ["isin"],                                   # ISIN (present in some source files, e.g. KFIN; absent in others -- stays NULL there)
 
-    # ================= TRANSACTION =================
-    "trxnmode": ["trxnmode", "trnmode"],                # Transaction Mode
-    "trxnstat": ["trxnstat", "trnstat"],                # Transaction Status
-    "trxntype": ["trxntype", "td_trtype"],              # Transaction Type
-    "trxnsubtyp": ["trxnsubtype", "subtrtype", "trxnsubtyp", "trnsub"],         # SubTranType
-    "trxn_nature": ["trxn_nature", "trdesc", "trxn_natur"],           # Transaction Description
-    "trflag": ["trflag"],
+    "KFIN_201": {
+        "source": ["Kfin"],
+        "amc_code": ["td_fund"],
+        "folio_no": ["td_acno"],
+        "prodcode": ["fmcode"],
+        "scheme": ["funddesc"],
+        "inv_name": ["invname"],
+        "trxntype": ["td_trtype"],
+        "trxnno": ["td_trno"],
+        "trxnmode": ["trnmode"],
+        "trxnstat": ["trnstat"],
+        "trxnsubtyp": ["td_purred"],
+        "usercode": ["BranchCode"],
+        "usrtrxno": ["IHNo"],
+        "traddate": ["td_trdt"],
+        "postdate": ["td_prdt"],
+        "purprice": ["td_pop"],
+        "units": ["td_units"],
+        "amount": ["td_amt"],
+        "brokcode": ["td_agent"],
+        "subbrok": ["td_broker"],
+        "brokperc": ["brokper"],
+        "brokcomm": ["brokcomm"],
+        "application_no": ["td_appno"],
+        "trxn_nature": ["trdesc"],
+        "load": ["load1"],
+        "pan": ["PAN1"],
+        "trxn_charges": ["TrCharges"],
+        "sys_regn_date": ["SipRegdt"],
+        "stt": ["STT"],
+        "divopt": ["divopt"],
+        "chqno": ["chqno"],
+        "invid": ["invid"],
+        "crdate": ["crdate"],
+        "crtime": ["crtime"],
+        "purdate": ["purdate"],
+        "puramt": ["puramt"],
+        "purunits": ["purunits"],
+        "trflag": ["trflag"],
+        "sfunddt": ["sfunddt"],
+        "ihno": ["IHNo"],
+        "branchcode": ["BranchCode"],
+        "inwardno": ["InwardNo"],
+        "sipregslno": ["sipregslno"],
+        "divper": ["DivPer"],
+        "guardpanno": ["GuardPanNo"],
+        "cleared": ["cleared"],
+        "invstate": ["InvState"],
+        "isctrno": ["isctrno"],
+        "loadper": ["loadper"],
+        "td_ptrno": ["td_ptrno"],
+        "chqdate": ["chqdate"],
+        "exchorgtrtype": ["ExchOrgTrtype"],
+        "common_account_number": ["CAN"],
+        "scheme_code": ["schpln"],
+        "transaction_id": ["unqno"],
+        "nav": ["td_nav"],
+        "electronic_transaction_flag": ["ElecTrxnFlag"]
+    },
 
-    # ================= DATES =================
-    "traddate": ["traddate", "navdate", "td_trdt"],                # Nav Date
-    "postdate": ["postdate", "td_prdt"],                # Process Date
-    "rep_date": ["rep_date", "crdate"],                 # Report Date
-    "sys_regn_date": ["sys_regn_date", "sipregdt", "sys_regn_d"],
 
-    # ================= AMOUNT =================
-    "units": ["units", "td_units"],
-    "amount": ["amount", "td_amt"],
-    "purprice": ["purprice", "td_pop"],                     # NAV
-    "load": ["load", "load1"],
-    "stt": ["stt"],
-    "stamp_duty": ["stamp_duty"],
-    "trxn_charges": ["trxn_charge", "trcharges", "trxn_charges", "trxn_charg"],
-    "total_tax": ["total_tds", "tdsamount", "total_tax"],
-
-    # ================= DISTRIBUTOR =================
-    "brokcode": ["brokcode", "td_agent"],               # Agent Code
-    "subbrok": ["subbrok", "td_broker"],                # Sub Broker Code
-    "usercode": ["usercode", "branchcode"],             # Branch Code
-    "usrtrxno": ["usrtrxno", "ihno", "inwardnum1"],                   # IHNO
-
-    # ================= INVESTOR =================
-    "pan": ["pan", "pan1", "Pan Number"],
-    "client_id": ["client_id", "clientid"],
-    "dp_id": ["dp_id", "dpid"],
-    "tax_status": ["tax_status", "status"],
-
-    # ================= BANK =================
-    "chqno": ["chqno"],
-
-    # ================= SIP =================
-    "siptrxnno": ["siptrxnno", "sipregslno"],
-
-    # ================= SWITCH =================
-    "targ_src_scheme": ["targ_src_s", "prcode1", "targ_src_scheme"],
-
-    # ================= OTHER =================
-    "scheme_type": ["scheme_type", "assettype", "scheme_typ"],
-    "ter_location": ["ter_location", "citycateg5"],
-    "euin": ["euin"],
-    "euin_valid": ["euin_valid", "evalid"],
-    "euin_opted": ["euin_opted", "edeclflag"],
-    "sub_brk_arn": ["sub_brk_arn", "subarncode", "sub_brk_ar"],
-    "exchange_flag": ["exchange_f", "td_trxnmod", "exchange_flag", "electrxnflag", "exch_dc_fl" ],
-    "remarks": ["remarks"],
-    "altfolio": ["altfolio"],
-
-    # ================= NEW COLUMNS =================
-    "common_account_number": ["can"],
-    "ft_accno": ["ft_accno", "ftaccno"],
-    "rejtrnoor2": ["rejtrnoor2"],
-    "to_product_code": ["targ_src_s", "prcode1"],
-    "reversal_c": ["reversal_c", "reversal_code"],
-
-    # ================= LEGACY COLUMNS (KEEP) =================
-    "td_fund": ["td_fund"],
-    "funddesc": ["funddesc"],
-    "td_purred": ["td_purred"],
-    "folio_old": ["folio_old"],
-    "old_folio": ["old_folio"],
-    "scheme_folio_number": ["scheme_folio_number", "scheme_fol"],
-    "time1": ["time1"],
-    "crdate": ["crdate"],
-    "crtime": ["crtime"],
-    "purdate": ["purdate"],
-    "puramt": ["puramt"],
-    "purunits": ["purunits"],
-    "brokperc": ["brokperc"],
-    "brokcomm": ["brokcomm"],
-    "application_no": ["application_no", "td_appno", "applicatio"],
-    "tax": ["tax"],
-    "te_15h": ["te_15h"],
-    "bank_name": ["bank_name"],
-    "ac_no": ["ac_no", "BankAccno"],
-    "micr_no": ["micr_no"],
-    "inv_iin": ["inv_iin"],
-    "invid": ["invid"],
-    "guardpanno": ["guardpanno"],
-    "scanrefno": ["scanrefno"],
-    "trxn_type_flag": ["trxn_type_flag", "trxn_type_"],
-    "ticob_trtype": ["ticob_trtype", "ticob_trty"],
-    "ticob_trno": ["ticob_trno"],
-    "ticob_posted_date": ["ticob_posted_date", "ticob_post"],
-    "eligib_amt": ["eligib_amt"],
-    "src_of_txn": ["src_of_txn"],
-    "trxn_suffix": ["trxn_suffix", "trxn_suffi"],
-    "exch_dc_flag": ["exch_dc_flag", "exch_dc_fl"],
-    "src_brk_code": ["src_brk_code", "src_brk_co"],
-    "ca_initiated_date": ["ca_initiated_date", "ca_initiat"],
-    "gst_state_code": ["gst_state_code", "gst_state_"],
-    "igst_amount": ["igst_amount", "igst_amoun"],
-    "cgst_amount": ["cgst_amount", "cgst_amoun"],
-    "sgst_amount": ["sgst_amount", "sgst_amoun"],
-    "rev_remark": ["rev_remark"],
-    "original_trxnno": ["original_trxnno","original_t"],
-    "amc_ref_no": ["amc_ref_no"],
-    "request_ref_no": ["request_ref_no", "request_re"],
-    "transmission_flag": ["transmission_flag", "transmissi"],
-    "swflag": ["swflag"],
-    "seq_no": ["seq_no"],
-    "reinvest_flag": ["reinvest_flag", "reinvest_f"],
-    "mult_brok": ["mult_brok"],
-    "location": ["location"],
-    "divper": ["divper"],
-    "loadper": ["loadper"],
-    "ihno": ["ihno"],
-    "branchcode": ["branchcode"],
-    "inwardno": ["inwardno"],
-    "sipregslno": ["sipregslno"],
-    "cleared": ["cleared"],
-    "invstate": ["invstate"],
-    "isctrno": ["isctrno"],
-    "td_pop": ["td_pop"],
-    "td_ptrno": ["td_ptrno"],
-    "chqdate": ["chqdate"],
-    "exchorgtrtype": ["exchorgtrtype"],
-    "sfunddt": ["sfunddt"],   
-
-    # ================= SYSTEM =================
-    "flag": [],
-    "created_at": [],
-    "updated_at": []
+    "KFIN_307": {
+        "source": ["Kfin"],
+        "amc_code": ["Fund"],
+        "folio_no": ["Folio Number"],
+        "prodcode": ["Product Code"],
+        "scheme": ["Fund Description"],
+        "inv_name": ["Investor Name"],
+        "trxntype": ["Transaction Type"],
+        "trxnno": ["Transaction Number"],
+        "trxnmode": ["Transaction Mode"],
+        "trxnstat": ["Transaction Status"],
+        "trxnsubtyp": ["Transaction Sub"],
+        "usercode": ["Branch Code"],
+        "usrtrxno": ["Ihno"],
+        "traddate": ["Transaction Date"],
+        "postdate": ["Process Date"],
+        "purprice": ["Price"],
+        "units": ["Units"],
+        "amount": ["Amount"],
+        "brokcode": ["Agent Code"],
+        "subbrok": ["Sub-Broker Code"],
+        "brokperc": ["Brokerage Percentage"],
+        "brokcomm": ["Commission"],
+        "application_no": ["Application Number"],
+        "trxn_nature": ["Transaction Description"],
+        "load": ["Load Amount"],
+        "pan": ["PAN1"],
+        "trxn_charges": ["TrCharges"],
+        "sys_regn_date": ["SIP Regn Date"],
+        "total_tax": ["TDSAmount"],
+        "stt": ["STT"],
+        "td_purred": ["Transaction Head"],
+        "chqno": ["Instrument Number"],
+        "invid": ["Investor ID"],
+        "crdate": ["Report Date"],
+        "crtime": ["Report Time"],
+        "trflag": ["Transaction Flag"],
+        "sipregslno": ["sipregslno"],
+        "divper": ["DivPer"],
+        "guardpanno": ["GuardPanNo"],
+        "cleared": ["chequeclearnce"],
+        "invstate": ["InvestorState"],
+        "isctrno": ["Branch Transaction No"],
+        "chqdate": ["Instrument Date"],
+        "exchorgtrtype": ["Exchange OrgTrType"],
+        "common_account_number": ["Common Account Number"],
+        "to_product_code": ["ToProductCode"],
+        "dp_id": ["DpId"],
+        "euin": ["EUIN"],
+        "euin_valid": ["EUIN Valid Indicator"],
+        "sub_brk_arn": ["Sub Broker ARN Code"],
+        "stamp_duty": ["Stamp Duty Charges"],
+        "remarks": ["Remarks"],
+        "client_id": ["ClientId"],
+        "scheme_code": ["Scheme Code"],
+        "branch_name": ["Branch Name"],
+        "transaction_id": ["Transaction ID"],
+        "instrument_bank": ["Instrument Bank"],
+        "nav": ["Nav"],
+        "electronic_transaction_flag": ["Electronic transaction Flag"],
+        "nav_date": ["Nav Date"],
+        "pan2": ["PAN2"],
+        "pan3": ["PAN3"],
+        "isin": ["ISIN"],
+        "switch_ref_no": ["Switch_Ref. No."],
+        "atm_card_status": ["ATMCardStatus"],
+        "atmcardremarks": ["ATMCardRemarks"],
+        "nct_change_date": ["NCT Change Date"],
+        "feed_type": ["Feed Type"],
+        "utr_no": ["UTR No"],
+        "payment_instrument_type": ["Payment Instrument Type"],
+        "ac_no": ["Bank Acno"],
+        "euin_declaration_indicator": ["EUIN Declaration Indicator"],
+        "asset_type": ["AssetType"],
+        "scheme_subcode": ["Scheme"],
+        "plan": ["Plan"],
+        "insure_amount": ["Insure Amount"],
+        "agent_code_change_request_date": ["Agent Code Change request Date"],
+        "status": ["status"],
+        "rejtrnoor2": ["RejTrnoOrgNo"],
+        "sub_tran_type": ["SubTranType"],
+        "to_scheme": ["sch1"],
+        "to_plan": ["pln1"]
+    }
 }
 
 SIP_MASTER_MAPPING = {
@@ -416,7 +491,7 @@ SIP_MASTER_MAPPING = {
     "inv_name": ["INV_NAME", "Investor Name"],
     "pan": ["PAN"],
 
-    "inv_iin": ["INV_IIN", "Ihno"],
+    "ihno": ["INV_IIN", "Ihno"],
 
     "inv_dp_id": ["InvDpId"],
     "inv_client_id": ["InvClientId"],

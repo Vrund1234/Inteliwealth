@@ -92,7 +92,6 @@ def extract_scheme():
             amc_code,
             product_code,
             scheme_name,
-            fund_description,
             categorydesc
         FROM silver.investor_master
 
@@ -578,7 +577,6 @@ def transform_scheme(
     investor_scheme = investor_scheme.rename(
         columns={
             "scheme_name": "investor_scheme_name",
-            "fund_description": "investor_fund_description",
             "categorydesc": "investor_category"
         }
     )
@@ -595,7 +593,6 @@ def transform_scheme(
                 "amc_code",
                 "scheme_code",
                 "investor_scheme_name",
-                "investor_fund_description",
                 "investor_category"
             ]
         ],
@@ -630,11 +627,6 @@ def transform_scheme(
         .combine_first(
             gold_base["investor_scheme_name"]
         )
-
-        .combine_first(
-            gold_base["investor_fund_description"]
-        )
-
     )
 
     scheme_name = (

@@ -1,96 +1,173 @@
 import os
 from urllib.parse import quote_plus
+
+import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from psycopg2.extras import execute_values
-import pandas as pd
+
+
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
 
 load_dotenv()
 
-HOST = os.getenv("DB_HOST")
-PORT = os.getenv("DB_PORT")
-USER = os.getenv("DB_USER")
-PASSWORD = os.getenv("DB_PASSWORD")
 
-MasterHOST = os.getenv("MASTER_POSTGRES_HOST")
-MasterPORT = os.getenv("MASTER_POSTGRES_PORT")
-MasterUSER = os.getenv("MASTER_POSTGRES_USER")
-MasterPASSWORD = os.getenv("MASTER_POSTGRES_PASSWORD")
+# ============================================================
+# PROJECT DATABASE
+# ============================================================
+
+HOST = os.getenv("DB_HOST", "localhost")
+PORT = os.getenv("DB_PORT", "5432")
+USER = os.getenv("DB_USER", "postgres")
+PASSWORD = os.getenv("DB_PASSWORD", "")
 
 PROJECT_DATABASE = os.getenv("DB_NAME")
+
+
+# ============================================================
+# MASTER DATABASE
+# ============================================================
+
+MASTER_HOST = os.getenv("MASTER_POSTGRES_HOST", "localhost")
+MASTER_PORT = os.getenv("MASTER_POSTGRES_PORT", "5432")
+MASTER_USER = os.getenv("MASTER_POSTGRES_USER", "postgres")
+MASTER_PASSWORD = os.getenv("MASTER_POSTGRES_PASSWORD", "")
+
 MASTER_DATABASE = os.getenv("MASTER_POSTGRES_DB")
 
-# NOTE: credentials are URL-encoded (quote_plus) before being interpolated
-# into the DSN — an unescaped "@", ":" or "/" in a password otherwise breaks
-# URL parsing (e.g. a password like "Test@123" gets misread as a host split).
-# Project Database
+
+# ============================================================
+# VALIDATE DATABASE CONFIGURATION
+# ============================================================
+
+if not PROJECT_DATABASE:
+    raise RuntimeError(
+        "DB_NAME is not set in .env. "
+        "Expected: DB_NAME=intelliwealth_trial"
+    )
+
+if not MASTER_DATABASE:
+    raise RuntimeError(
+        "MASTER_POSTGRES_DB is not set in .env. "
+        "Expected: MASTER_POSTGRES_DB=latest_dump"
+    )
+
+
+print("=" * 80)
+print("DATABASE CONFIGURATION")
+print("=" * 80)
+print(f"Project Database : {PROJECT_DATABASE}")
+print(f"Master Database  : {MASTER_DATABASE}")
+print(f"Project Host     : {HOST}:{PORT}")
+print(f"Master Host      : {MASTER_HOST}:{MASTER_PORT}")
+print("=" * 80)
+
+
+# ============================================================
+# PROJECT DATABASE ENGINE
+# ============================================================
+
 engine = create_engine(
-    f"postgresql+psycopg2://{quote_plus(USER)}:{quote_plus(PASSWORD)}@{HOST}:{PORT}/{PROJECT_DATABASE}",
+    (
+        f"postgresql+psycopg2://"
+        f"{quote_plus(USER)}:"
+        f"{quote_plus(PASSWORD)}@"
+        f"{HOST}:{PORT}/"
+        f"{PROJECT_DATABASE}"
+    ),
     pool_pre_ping=True
 )
 
-# Master Database
+
+# ============================================================
+# MASTER DATABASE ENGINE
+# ============================================================
+
 master_engine = create_engine(
-    f"postgresql+psycopg2://{quote_plus(MasterUSER)}:{quote_plus(MasterPASSWORD)}@{MasterHOST}:{MasterPORT}/{MASTER_DATABASE}"
+    (
+        f"postgresql+psycopg2://"
+        f"{quote_plus(MASTER_USER)}:"
+        f"{quote_plus(MASTER_PASSWORD)}@"
+        f"{MASTER_HOST}:{MASTER_PORT}/"
+        f"{MASTER_DATABASE}"
+    ),
+    pool_pre_ping=True
 )
 
-# Restore Database
-#restore_engine = create_engine(
-#    f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{RESTORE_DATABASE}"
-#)
 
+# ============================================================
+# READ TABLE
+# ============================================================
 
 def read_table(schema, table, limit=100):
 
     try:
 
-        # check available columns
-        column_query = f"""
+        # ----------------------------------------------------
+        # Get available columns
+        # ----------------------------------------------------
+
+        column_query = """
             SELECT column_name
             FROM information_schema.columns
-            WHERE table_schema='{schema}'
-            AND table_name='{table}'
+            WHERE table_schema = :schema
+              AND table_name = :table
         """
 
         columns = pd.read_sql(
-            column_query,
-            engine
+            text(column_query),
+            engine,
+            params={
+                "schema": schema,
+                "table": table
+            }
         )["column_name"].tolist()
 
 
+        # ----------------------------------------------------
         # Dynamic ordering
+        # ----------------------------------------------------
+
         if "created_at" in columns:
 
-            order_by = "ORDER BY created_at DESC"
+            order_by = 'ORDER BY "created_at" DESC'
 
         elif "updated_at" in columns:
 
-            order_by = "ORDER BY updated_at DESC"
+            order_by = 'ORDER BY "updated_at" DESC'
 
         elif "last_synced_at" in columns:
 
-            order_by = "ORDER BY last_synced_at DESC"
+            order_by = 'ORDER BY "last_synced_at" DESC'
 
         else:
 
             order_by = ""
 
 
+        # ----------------------------------------------------
+        # Read table
+        # ----------------------------------------------------
+
         query = f"""
             SELECT *
-            FROM {schema}.{table}
+            FROM "{schema}"."{table}"
             {order_by}
-            LIMIT {limit}
+            LIMIT {int(limit)}
         """
 
-
         df = pd.read_sql(
-            query,
+            text(query),
             engine
         )
 
 
-        # datetime formatting
+        # ----------------------------------------------------
+        # Datetime formatting
+        # ----------------------------------------------------
+
         for col in [
             "created_at",
             "updated_at",
@@ -104,7 +181,8 @@ def read_table(schema, table, limit=100):
                     errors="coerce"
                 )
 
-
+                # Convert timezone-aware timestamps
+                # to Asia/Kolkata
                 if getattr(df[col].dt, "tz", None) is not None:
 
                     df[col] = (
@@ -113,13 +191,43 @@ def read_table(schema, table, limit=100):
                         .tz_convert("Asia/Kolkata")
                     )
 
-
                 df[col] = (
                     df[col]
                     .dt
                     .strftime("%Y-%m-%d %H:%M:%S")
                 )
 
+        # ----------------------------------------------------
+        # Date formatting (YYYY-MM-DD)
+        # ----------------------------------------------------
+
+        date_cols = [
+            "dob", "report_date", "rep_date", "folio_date", "trade_date", "traddate",
+            "post_date", "postdate", "purdate", "chqdate", "sys_regn_d", "sys_regn_date",
+            "reg_date", "from_date", "to_date", "cease_date", "pause_from_date",
+            "pause_to_date", "nav_date", "balance_date", "start_date", "end_date",
+            "registered_date", "ceased_date", "next_due_date", "txn_date",
+            "first_txn_date", "last_txn_date", "nominee_dob", "jh1_dob",
+            "jh2_dob", "guardian_dob", "traddate_clean", "crdate", "cr_date",
+            "nct_change_date", "agent_code_change_request_date", "ticob_posted_date",
+            "ca_initiated_date", "lastupdateddate"
+        ]
+
+        for col in date_cols:
+            if col in df.columns:
+                dt_series = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                formatted = dt_series.dt.strftime("%Y-%m-%d")
+                df[col] = formatted.where(dt_series.notna(), None)
+
+        # ----------------------------------------------------
+        # Convert UUID objects to strings for PyArrow/Streamlit
+        # ----------------------------------------------------
+        import uuid
+        for col in df.columns:
+            if df[col].dtype == "object":
+                df[col] = df[col].apply(
+                    lambda x: str(x) if isinstance(x, uuid.UUID) else x
+                )
 
         return df
 
@@ -135,6 +243,10 @@ def read_table(schema, table, limit=100):
         return pd.DataFrame()
 
 
+# ============================================================
+# UPSERT DATAFRAME
+# ============================================================
+
 def upsert_dataframe(
     df,
     schema,
@@ -146,227 +258,347 @@ def upsert_dataframe(
     chunksize=500,
     updated_at_column="updated_at",
 ):
+
     """
-    Upsert a DataFrame into schema.table via INSERT ... ON CONFLICT ... DO UPDATE.
+    Upsert a DataFrame into schema.table using:
 
-    Replaces the repo-wide df.to_sql(if_exists="append") pattern, which has
-    no protection against re-inserting a row that already exists under the
-    table's natural key -- the root cause of the gold.transactions /
-    gold.sip duplication found on 2026-08-24/25.
+        INSERT ... ON CONFLICT ... DO UPDATE
 
-    Pass exactly one of:
-      conflict_columns:    list[str] -- for a unique constraint on plain
-                            columns, e.g. ["rta", "rta_txn_no", "folio_number"].
-      conflict_constraint: str -- a table CONSTRAINT's name, for a unique
-                            constraint built on plain columns that you'd
-                            rather target by name than by repeating its
-                            column list.
-      conflict_index_expr: str -- the literal ON CONFLICT (...) target,
-                            REQUIRED when the unique index includes an
-                            expression (e.g. the COALESCE-normalized SIP
-                            reg-no key) rather than only plain columns.
-                            Postgres cannot promote an expression-based
-                            index to a table CONSTRAINT at all ("Cannot
-                            create a primary key or unique constraint using
-                            such an index" -- hit live on
-                            uq_silver_sip_natural_key/uq_gold_sip_natural_key),
-                            so conflict_constraint can never name one; the
-                            raw expression is the only way to target it.
-                            Pass exactly what appears inside the index's own
-                            parentheses, e.g.
-                            '"rta", "folio_number", (COALESCE(NULLIF(sip_reg_no, \\'\\'), \\'\\'))'.
+    Exactly one of the following must be supplied:
 
-    DO UPDATE always wins over DO NOTHING here on purpose: DO NOTHING would
-    silently drop a legitimate correction (e.g. a transaction's trxnstat
-    changing on a resend with the same natural key).
+        conflict_columns
+        conflict_constraint
+        conflict_index_expr
 
-    Every column present in `df` is refreshed from EXCLUDED on conflict,
-    except the conflict columns themselves (conflict_constraint/
-    conflict_index_expr don't name specific df columns to exclude, so every
-    df column is refreshed in those two modes -- harmless, since a column
-    that's part of the conflict target has the same value in EXCLUDED as
-    it already does in the row being matched) and `created_at`, which is
-    always excluded from the SET clause so a row's first-seen timestamp
-    survives any number of re-processing runs -- every gold/silver loader
-    sets `created_at` to "now" before calling this function, and several
-    extraction functions (e.g. `get_last_gold_timestamp()` in
-    etl_gold_transaction.py) read `MAX(created_at)` as an incremental
-    watermark, so refreshing it on conflict would silently corrupt that
-    watermark on every re-processed row.
+    created_at is never updated on conflict.
 
-    `updated_at_column`: if the target table actually has this column, it is
-    always set to now() on conflict, whether or not it's a column in `df`.
-    Pass `updated_at_column=None` for a table that has no such column at all
-    -- e.g. every gold table in this project except `gold.holdings` (which
-    uses `last_synced_at` instead: pass `updated_at_column="last_synced_at"`
-    there). Getting this wrong raises `psycopg2.errors.UndefinedColumn`
-    the first time a real conflict occurs (a fresh INSERT with no existing
-    conflicting row never touches the SET clause, so the bug stays dormant
-    until re-processing a natural key that's already in the table -- hit
-    live on gold.holdings during Task 8's functional test).
-
-    Returns the number of rows upserted.
+    updated_at_column, when supplied, is updated to now().
     """
+
+    # --------------------------------------------------------
+    # Empty dataframe
+    # --------------------------------------------------------
+
     if df.empty:
         return 0
 
-    targets_given = sum(bool(x) for x in (conflict_columns, conflict_constraint, conflict_index_expr))
-    if targets_given != 1:
-        raise ValueError(
-            "upsert_dataframe: pass exactly one of conflict_columns, "
-            "conflict_constraint, or conflict_index_expr"
+
+    # --------------------------------------------------------
+    # Validate conflict target
+    # --------------------------------------------------------
+
+    targets_given = sum(
+        bool(x)
+        for x in (
+            conflict_columns,
+            conflict_constraint,
+            conflict_index_expr
         )
+    )
+
+    if targets_given != 1:
+
+        raise ValueError(
+            "upsert_dataframe: pass exactly one of "
+            "conflict_columns, conflict_constraint, "
+            "or conflict_index_expr"
+        )
+
 
     columns = list(df.columns)
 
-    # Real column types, for casting the raw VALUES literals below. A bare
-    # `INSERT INTO t (...) VALUES (...)` lets Postgres infer each literal's
-    # type straight from the target column -- but once VALUES is wrapped in
-    # a subquery (needed for the same-batch dedup below), that direct link
-    # is gone and an all-NULL or ambiguous column silently infers as `text`,
-    # which then fails to satisfy the outer INSERT's real column type
-    # ("column ... is of type integer but expression is of type text").
-    # Casting explicitly here, once per call, avoids depending on inference
-    # at all.
+
+    # ========================================================
+    # GET ACTUAL POSTGRES COLUMN TYPES
+    # ========================================================
+
     with engine.begin() as conn:
-        # dict(result) -- not dict(result.fetchall()) -- would silently take
-        # the wrong path: Result exposes .keys() (column names), so plain
-        # dict() treats it as a mapping and tries result["attname"] instead
-        # of iterating (name, type) row pairs, raising "'CursorResult'
-        # object is not subscriptable".
-        col_types = dict(conn.execute(text("""
-            SELECT a.attname, format_type(a.atttypid, a.atttypmod)
-            FROM pg_attribute a
-            JOIN pg_class c ON a.attrelid = c.oid
-            JOIN pg_namespace n ON c.relnamespace = n.oid
-            WHERE n.nspname = :schema AND c.relname = :table
-              AND a.attnum > 0 AND NOT a.attisdropped
-        """), {"schema": schema, "table": table}).fetchall())
-    missing_types = [c for c in columns if c not in col_types]
+
+        result = conn.execute(
+            text("""
+                SELECT
+                    a.attname,
+                    format_type(a.atttypid, a.atttypmod)
+                FROM pg_attribute a
+                JOIN pg_class c
+                    ON a.attrelid = c.oid
+                JOIN pg_namespace n
+                    ON c.relnamespace = n.oid
+                WHERE n.nspname = :schema
+                  AND c.relname = :table
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+            """),
+            {
+                "schema": schema,
+                "table": table
+            }
+        )
+
+        col_types = dict(result.fetchall())
+
+
+    # --------------------------------------------------------
+    # Make sure all DataFrame columns exist in DB
+    # --------------------------------------------------------
+
+    missing_types = [
+        c for c in columns
+        if c not in col_types
+    ]
+
     if missing_types:
+
         raise ValueError(
-            f"upsert_dataframe: {schema}.{table} has no column(s) {missing_types!r} "
+            f"upsert_dataframe: {schema}.{table} "
+            f"has no column(s) {missing_types!r} "
             "to infer a cast type from"
         )
 
-    conflict_set = set(conflict_columns) if conflict_columns else set()
-    update_columns = [
-        c for c in columns
-        if c not in conflict_set
-        and c != "created_at"
-        and (updated_at_column is None or c != updated_at_column)
-    ]
 
-    set_parts = [f'"{c}" = EXCLUDED."{c}"' for c in update_columns]
-    if updated_at_column is not None:
-        set_parts.append(f'"{updated_at_column}" = now()')
-    set_clause = ", ".join(set_parts)
+    # ========================================================
+    # UPDATE COLUMNS
+    # ========================================================
 
-    if conflict_columns:
-        target_cols = ", ".join(f'"{c}"' for c in conflict_columns)
-        conflict_clause = f"ON CONFLICT ({target_cols})"
-        partition_by_expr = target_cols
-    elif conflict_constraint:
-        conflict_clause = f"ON CONFLICT ON CONSTRAINT {conflict_constraint}"
-        with engine.begin() as conn:
-            constraint_cols = [
-                row[0] for row in conn.execute(text("""
-                    SELECT kcu.column_name
-                    FROM information_schema.table_constraints tc
-                    JOIN information_schema.key_column_usage kcu
-                      ON tc.constraint_name = kcu.constraint_name
-                     AND tc.table_schema = kcu.table_schema
-                    WHERE tc.table_schema = :schema
-                      AND tc.table_name = :table
-                      AND tc.constraint_name = :name
-                    ORDER BY kcu.ordinal_position
-                """), {"schema": schema, "table": table, "name": conflict_constraint})
-            ]
-        if not constraint_cols:
-            raise ValueError(
-                f"upsert_dataframe: could not resolve columns for constraint "
-                f"{conflict_constraint!r} on {schema}.{table}"
-            )
-        partition_by_expr = ", ".join(f'"{c}"' for c in constraint_cols)
-    else:
-        conflict_clause = f"ON CONFLICT ({conflict_index_expr})"
-        # Same expression as the ON CONFLICT target itself -- see the
-        # pre-filter note below for why this must match exactly.
-        partition_by_expr = conflict_index_expr
-
-    col_list = ", ".join(f'"{c}"' for c in columns)
-    batch_col_list = ", ".join(f'"{c}"' for c in columns) + ', "__upsert_seq"'
-    typed_col_list = (
-        ", ".join(f'"{c}"::{col_types[c]}' for c in columns) + ', "__upsert_seq"'
+    conflict_set = (
+        set(conflict_columns)
+        if conflict_columns
+        else set()
     )
 
-    # VALUES %s (not a per-column :placeholder list) -- psycopg2.extras.
-    # execute_values() rewrites that single %s into "(v1,v2,...),(v1,v2,...)"
-    # for a whole chunk and sends it as ONE statement. Passing named
-    # placeholders through SQLAlchemy's Connection.execute(sql, list_of_dicts)
-    # instead (the previous implementation) compiles to the DBAPI's plain
-    # cursor.executemany(), which for psycopg2 issues one round trip PER ROW,
-    # not per chunk -- measured at ~2,070 rows/sec against silver.
-    # transaction_master_new (~62s for ~129k rows) versus ~65,000 rows/sec
-    # once batched (see docs/superpowers/plans/2026-08-26-bronze-dedup-performance.md
-    # for the comparably-shaped bronze-side fix).
-    #
-    # PRE-FILTER TO ONE ROW PER CONFLICT KEY: a single multi-row INSERT ...
-    # ON CONFLICT DO UPDATE is not allowed to touch the same conflict target
-    # twice ("ON CONFLICT DO UPDATE command cannot affect row a second
-    # time") -- unlike the old row-by-row executemany(), where each row was
-    # its own statement and a same-key repeat simply updated what the
-    # previous statement had just inserted. Two incoming rows sharing a
-    # conflict key but differing elsewhere (e.g. a bronze resend with a
-    # corrected status column, still in the same batch) hit this live the
-    # first time this shipped. ROW_NUMBER() here keeps only the LAST row
-    # per conflict key (by original batch order, via the synthetic
-    # __upsert_seq column) before the INSERT ever reaches ON CONFLICT --
-    # same "last one wins" result the old sequential updates produced.
+    update_columns = [
+        c
+        for c in columns
+        if c not in conflict_set
+        and c != "created_at"
+        and (
+            updated_at_column is None
+            or c != updated_at_column
+        )
+    ]
+
+
+    set_parts = [
+        f'"{c}" = EXCLUDED."{c}"'
+        for c in update_columns
+    ]
+
+
+    if updated_at_column is not None:
+
+        set_parts.append(
+            f'"{updated_at_column}" = now()'
+        )
+
+
+    set_clause = ", ".join(set_parts)
+
+
+    # ========================================================
+    # CONFLICT CLAUSE
+    # ========================================================
+
+    if conflict_columns:
+
+        target_cols = ", ".join(
+            f'"{c}"'
+            for c in conflict_columns
+        )
+
+        conflict_clause = (
+            f"ON CONFLICT ({target_cols})"
+        )
+
+        partition_by_expr = target_cols
+
+
+    elif conflict_constraint:
+
+        conflict_clause = (
+            f"ON CONFLICT ON CONSTRAINT "
+            f"{conflict_constraint}"
+        )
+
+
+        with engine.begin() as conn:
+
+            constraint_cols = [
+                row[0]
+                for row in conn.execute(
+                    text("""
+                        SELECT kcu.column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name =
+                             kcu.constraint_name
+                         AND tc.table_schema =
+                             kcu.table_schema
+                        WHERE tc.table_schema = :schema
+                          AND tc.table_name = :table
+                          AND tc.constraint_name = :name
+                        ORDER BY kcu.ordinal_position
+                    """),
+                    {
+                        "schema": schema,
+                        "table": table,
+                        "name": conflict_constraint
+                    }
+                )
+            ]
+
+
+        if not constraint_cols:
+
+            raise ValueError(
+                "upsert_dataframe: could not resolve "
+                f"columns for constraint "
+                f"{conflict_constraint!r} on "
+                f"{schema}.{table}"
+            )
+
+
+        partition_by_expr = ", ".join(
+            f'"{c}"'
+            for c in constraint_cols
+        )
+
+
+    else:
+
+        conflict_clause = (
+            f"ON CONFLICT ({conflict_index_expr})"
+        )
+
+        partition_by_expr = conflict_index_expr
+
+
+    # ========================================================
+    # SQL COLUMN LISTS
+    # ========================================================
+
+    col_list = ", ".join(
+        f'"{c}"'
+        for c in columns
+    )
+
+
+    batch_col_list = (
+        ", ".join(
+            f'"{c}"'
+            for c in columns
+        )
+        + ', "__upsert_seq"'
+    )
+
+
+    typed_col_list = (
+        ", ".join(
+            f'"{c}"::{col_types[c]}'
+            for c in columns
+        )
+        + ', "__upsert_seq"'
+    )
+
+
+    # ========================================================
+    # UPSERT SQL
+    # ========================================================
+
     sql = f"""
-        INSERT INTO {schema}.{table} ({col_list})
+        INSERT INTO "{schema}"."{table}"
+        ({col_list})
+
         SELECT {col_list}
+
         FROM (
-            SELECT {col_list},
-                   ROW_NUMBER() OVER (
-                       PARTITION BY {partition_by_expr}
-                       ORDER BY "__upsert_seq" DESC
-                   ) AS "__upsert_rn"
+            SELECT
+                {col_list},
+
+                ROW_NUMBER() OVER (
+                    PARTITION BY {partition_by_expr}
+                    ORDER BY "__upsert_seq" DESC
+                ) AS "__upsert_rn"
+
             FROM (
                 SELECT {typed_col_list}
-                FROM (VALUES %s) AS "__upsert_raw" ({batch_col_list})
+
+                FROM (
+                    VALUES %s
+                ) AS "__upsert_raw"
+                ({batch_col_list})
+
             ) AS "__upsert_batch"
+
         ) AS "__upsert_deduped"
+
         WHERE "__upsert_rn" = 1
+
         {conflict_clause}
-        DO UPDATE SET {set_clause}
+
+        DO UPDATE SET
+            {set_clause}
     """
 
-    # astype(object) FIRST: assigning None into a still-datetime64-dtype
-    # column doesn't actually store None -- pandas silently coerces it right
-    # back to NaT (a pandas gotcha, not a psycopg2 one), so a literal NaT
-    # reaches psycopg2 as an unparseable timestamp literal ("invalid input
-    # syntax for type timestamp: 'NaT'"). Confirmed live against
-    # gold.folio_nominees' dob column during Task 8's functional test.
-    # Casting to object first makes the column able to actually hold None.
-    records = df.astype(object).where(pd.notnull(df), None).to_dict(orient="records")
-    rows = [tuple(record[c] for c in columns) for record in records]
+
+    # ========================================================
+    # CLEAN DATAFRAME VALUES
+    # ========================================================
+
+    records = (
+        df
+        .astype(object)
+        .where(pd.notnull(df), None)
+        .to_dict(orient="records")
+    )
+
+
+    rows = [
+        tuple(
+            record[c]
+            for c in columns
+        )
+        for record in records
+    ]
+
+
+    # ========================================================
+    # INSERT IN CHUNKS
+    # ========================================================
 
     total = 0
+
+
     with engine.begin() as conn:
+
         cursor = conn.connection.cursor()
-        for i in range(0, len(rows), chunksize):
-            batch = rows[i:i + chunksize]
-            # __upsert_seq is the row's position within THIS chunk -- dedup
-            # only ever needs to be resolved within one INSERT statement, so
-            # it doesn't need to be unique across chunks, just increasing
-            # within one.
-            batch_with_seq = [row + (seq,) for seq, row in enumerate(batch)]
-            # page_size=len(batch): execute_values' own default page_size
-            # (100) would silently re-fragment an already-chunked batch back
-            # into multiple round trips -- one execute_values() call per
-            # chunk is the whole point.
-            execute_values(cursor, sql, batch_with_seq, page_size=len(batch_with_seq))
+
+
+        for i in range(
+            0,
+            len(rows),
+            chunksize
+        ):
+
+            batch = rows[
+                i:i + chunksize
+            ]
+
+
+            batch_with_seq = [
+                row + (seq,)
+                for seq, row in enumerate(batch)
+            ]
+
+
+            execute_values(
+                cursor,
+                sql,
+                batch_with_seq,
+                page_size=len(batch_with_seq)
+            )
+
+
             total += len(batch)
+
 
     return total

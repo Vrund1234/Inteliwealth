@@ -106,7 +106,7 @@ CREATE TABLE investor_master (
 
     -- CAMS Unique Columns
     foliochk TEXT,
-    product TEXT,
+    product_code TEXT,
     sch_name TEXT,
     rep_date TEXT,
     clos_bal TEXT,
@@ -131,9 +131,9 @@ CREATE TABLE investor_master (
     scheme_folio_number TEXT,
 
     -- KFin Unique Columns
-    fund TEXT,
+    amc_code TEXT,
+    scheme_name TEXT,
     folio TEXT,
-    fund_description TEXT,
     tpin TEXT,
     f_name TEXT,
     m_name TEXT,
@@ -144,8 +144,6 @@ CREATE TABLE investor_master (
     phone_off2 TEXT,
     fax_residence TEXT,
     fax_office TEXT,
-
-    occ_code TEXT,
 
     bank_phone TEXT,
 

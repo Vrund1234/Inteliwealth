@@ -167,11 +167,21 @@ def load_scheme_structured_attrs(conn_engine):
     amfi_scheme_master cannot see at all (see module docstring) -- scheme_master
     is the only structured signal available to corroborate against.
     """
-    df = pd.read_sql(
-        "SELECT scheme_code::text AS code, plan_type, option_type "
-        "FROM public.scheme_master WHERE is_deleted = false",
-        conn_engine,
-    )
+    plan_col = "plan_type"
+    option_col = "option_type"
+    if conn_engine is not None:
+        try:
+            from sqlalchemy import inspect
+            cols = [c["name"] for c in inspect(conn_engine).get_columns("scheme_master", schema="public")]
+            if "plan_type" not in cols:
+                plan_col = "NULL::text AS plan_type"
+            if "option_type" not in cols:
+                option_col = "NULL::text AS option_type"
+        except Exception:
+            pass
+
+    query = f"SELECT scheme_code::text AS code, {plan_col}, {option_col} FROM public.scheme_master WHERE is_deleted = false"
+    df = pd.read_sql(query, conn_engine)
     return {
         row.code: {"plan_type": row.plan_type, "option_type": row.option_type}
         for row in df.itertuples()
