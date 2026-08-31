@@ -465,7 +465,7 @@ def process_sip(
     if not dfs:
 
         print("No SIP file found.")
-        return 0
+        return {"total": 0, "new": 0, "duplicate": 0}
 
     # =====================================================
     # MERGE CAMS + KFIN
@@ -562,6 +562,12 @@ def process_sip(
         engine,
     )
 
+    # Captured HERE, not at the end: `df` is re-sliced to db_columns below.
+    # See etl_trans.process_transactions() for the rationale.
+    bronze_total = len(df)
+    bronze_new = int((df["flag"] == 0).sum())
+    bronze_duplicate = int((df["flag"] == 1).sum())
+
     print("=" * 80)
     print("Duplicate Check Result")
     print(df["flag"].value_counts(dropna=False))
@@ -647,7 +653,11 @@ def process_sip(
     print(f"Inserted {len(df)} rows")
     print("=" * 80)
 
-    return len(df)
+    return {
+        "total": bronze_total,
+        "new": bronze_new,
+        "duplicate": bronze_duplicate,
+    }
 
     # # =====================================================
     # # GET DATABASE COLUMN ORDER
