@@ -1034,7 +1034,11 @@ def transform_investor_master(df):
     for col in [
         "dob",
         "report_date",
-        "folio_date"
+        "folio_date",
+        "jh1_dob",
+        "jh2_dob",
+        "guardian_dob",
+        "nominee_dob"
     ]:
 
         if col in df.columns:
@@ -1042,7 +1046,8 @@ def transform_investor_master(df):
             df[col] = (
                 pd.to_datetime(
                     df[col],
-                    errors="coerce"
+                    errors="coerce",
+                    dayfirst=True
                 )
                 .dt.date
             )
@@ -1313,11 +1318,21 @@ def transform_transaction(df):
 
     for col in [
         "trade_date",
+        "traddate",
         "post_date",
+        "postdate",
         "report_date",
+        "rep_date",
         "purdate",
         "chqdate",
-        "sys_regn_d"
+        "sys_regn_d",
+        "sys_regn_date",
+        "crdate",
+        "nav_date",
+        "nct_change_date",
+        "agent_code_change_request_date",
+        "ticob_posted_date",
+        "ca_initiated_date"
     ]:
 
         if col in df.columns:
@@ -1413,7 +1428,7 @@ def transform_sip_master(df):
     # =================================================
 
     for col in [
-        "inv_iin",
+        "ihno",
         "inv_dp_id",
         "inv_client_id",
         "ecsno",
@@ -1641,6 +1656,30 @@ def transform_sip_master(df):
                 regex=False
             )
         )
+
+    # =================================================
+    # DATE COLUMNS
+    # =================================================
+
+    for col in [
+        "reg_date",
+        "from_date",
+        "to_date",
+        "cease_date",
+        "pause_from_date",
+        "pause_to_date"
+    ]:
+
+        if col in df.columns:
+
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    errors="coerce",
+                    dayfirst=True
+                )
+                .dt.date
+            )
 
     # =================================================
     # NUMERIC COLUMNS

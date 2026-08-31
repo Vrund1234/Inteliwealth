@@ -624,7 +624,8 @@ def transform_clients(df):
         gold["date_of_birth"] = (
             pd.to_datetime(
                 df["dob"],
-                errors="coerce"
+                errors="coerce",
+                dayfirst=True
             )
             .dt.date
         )
@@ -1002,7 +1003,8 @@ def transform_clients(df):
 
         folio_date = pd.to_datetime(
             df["folio_date"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
 
         gold.loc[
@@ -1016,7 +1018,8 @@ def transform_clients(df):
 
         txn_date = pd.to_datetime(
             df["txn_traddate"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
 
         gold.loc[
@@ -1029,7 +1032,8 @@ def transform_clients(df):
     gold["onboarded_at"] = (
         pd.to_datetime(
             gold["onboarded_at"],
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )

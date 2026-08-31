@@ -5,7 +5,7 @@ from utils.db import engine
 from mapping import SIP_MASTER_MAPPING
 from utils.db import engine
 from utils.dedupe_hash import compute_flag_via_row_hash
-from etl_trans import parse_source_date
+from raw_ingestion import parse_source_date
 
 # =====================================================
 # DATE COLUMNS

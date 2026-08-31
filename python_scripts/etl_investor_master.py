@@ -216,19 +216,13 @@ def format_dates(df):
 
         if col in df.columns:
 
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    # dayfirst=False
-                )
-                .dt.date
+            parsed = pd.to_datetime(
+                df[col],
+                errors="coerce",
+                dayfirst=True
             )
 
-            df[col] = df[col].where(
-                pd.notnull(df[col]),
-                None
-            )
+            df[col] = parsed.dt.strftime("%Y-%m-%d").where(parsed.notna(), None)
 
     return df
 
@@ -237,18 +231,16 @@ def format_dates(df):
 # =====================================================
 
 def normalize_for_hash(df, compare_cols):
-    """Verbatim extraction of this module's existing per-column comparison
-    normalization (previously inline in process_investor_master()'s
-    DUPLICATE FLAG section). Deliberately unchanged, including its current
-    ambiguous pd.to_datetime handling of `dob` -- see the 2026-08-26 spec's
-    Global Constraints; that bug is the same class already fixed for SIP,
-    but fixing it here is out of scope for this performance change."""
     df = df[compare_cols].copy()
     for col in compare_cols:
         if col in DATE_COLUMNS:
+            parsed = pd.to_datetime(
+                df[col],
+                errors="coerce",
+                dayfirst=True
+            )
             df[col] = (
-                pd.to_datetime(df[col], errors="coerce")
-                .dt.strftime("%Y-%m-%d")
+                parsed.dt.strftime("%Y-%m-%d")
                 .fillna("")
             )
         else:
@@ -331,10 +323,6 @@ def apply_investor_mapping(raw_df, mapping, source):
 
         # KFIN has separate occupation code
         # and occupation description.
-
-        if "occ_code" in raw_df.columns:
-
-            mapped_df["occupation"] = raw_df["occ_code"]
 
         if "occupation_description" in raw_df.columns:
 

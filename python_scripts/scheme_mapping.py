@@ -1,3 +1,4 @@
+from sqlalchemy import inspect
 import difflib
 import re
 import uuid
@@ -70,7 +71,19 @@ def load_scheme_master(conn_engine):
     "no structured signal yet," never a specific plan/option -- see
     scheme_matching.structured_signals.plan_option_mismatch.
     """
-    sm_query = """
+    plan_col = "plan_type"
+    option_col = "option_type"
+    if conn_engine is not None:
+        try:
+            cols = [c["name"] for c in inspect(conn_engine).get_columns("scheme_master", schema="public")]
+            if "plan_type" not in cols:
+                plan_col = "NULL::text AS plan_type"
+            if "option_type" not in cols:
+                option_col = "NULL::text AS option_type"
+        except Exception:
+            pass
+
+    sm_query = f"""
         SELECT
             scheme_code::text AS scheme_code,
             name              AS scheme_name,
@@ -78,8 +91,8 @@ def load_scheme_master(conn_engine):
             category,
             isin_growth,
             isin_reinvest,
-            plan_type,
-            option_type
+            {plan_col},
+            {option_col}
         FROM public.scheme_master
         WHERE is_deleted = false;
     """

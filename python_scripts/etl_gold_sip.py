@@ -217,7 +217,7 @@ def extract_sip():
                 pan,
                 folio_no,
                 folio_old,
-                inv_iin,
+                ihno,
                 inv_dp_id,
                 inv_client_id,
                 dp_inv_name,
@@ -307,7 +307,7 @@ def extract_sip():
                 pan,
                 folio_no,
                 folio_old,
-                inv_iin,
+                ihno,
                 inv_dp_id,
                 inv_client_id,
                 dp_inv_name,
@@ -630,7 +630,8 @@ def transform_sip(df):
     gold_df["start_date"] = (
         pd.to_datetime(
             get_column(df, "from_date"),
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )
@@ -642,7 +643,8 @@ def transform_sip(df):
     gold_df["end_date"] = (
         pd.to_datetime(
             get_column(df, "to_date"),
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )
@@ -693,7 +695,8 @@ def transform_sip(df):
     gold_df["registered_date"] = (
         pd.to_datetime(
             get_column(df, "reg_date"),
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )
@@ -705,7 +708,8 @@ def transform_sip(df):
     gold_df["ceased_date"] = (
         pd.to_datetime(
             get_column(df, "cease_date"),
-            errors="coerce"
+            errors="coerce",
+            dayfirst=True
         )
         .dt.date
     )
