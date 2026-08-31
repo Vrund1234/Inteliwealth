@@ -26,10 +26,6 @@ def safe_read(query, params=None):
 
 # ============================================================
 # SAFE READ - MASTER DATABASE
-#
-# IMPORTANT:
-# Any table under the PUBLIC schema that belongs to the
-# master database must be read using master_engine.
 # ============================================================
 
 def safe_master_read(query, params=None):
@@ -217,7 +213,10 @@ def extract_sip():
                 pan,
                 folio_no,
                 folio_old,
+
+                -- Changed from inv_iin to ihno
                 ihno,
+
                 inv_dp_id,
                 inv_client_id,
                 dp_inv_name,
@@ -307,7 +306,10 @@ def extract_sip():
                 pan,
                 folio_no,
                 folio_old,
+
+                -- Changed from inv_iin to ihno
                 ihno,
+
                 inv_dp_id,
                 inv_client_id,
                 dp_inv_name,
@@ -395,10 +397,12 @@ def extract_sip():
 
     print()
     print("Rows fetched:", len(df))
+
     print(
         "Minimum Silver created_at:",
         df["created_at"].min()
     )
+
     print(
         "Maximum Silver created_at:",
         df["created_at"].max()
@@ -412,6 +416,7 @@ def extract_sip():
 
         print()
         print("Silver flag values in extracted rows:")
+
         print(
             df["flag"].value_counts(
                 dropna=False
@@ -469,6 +474,7 @@ def transform_sip(df):
     print("=" * 80)
 
     if not isinstance(df, pd.DataFrame):
+
         raise TypeError(
             f"transform_sip expected DataFrame, "
             f"received {type(df).__name__}"
@@ -538,34 +544,65 @@ def transform_sip(df):
     )
 
     # ========================================================
-    # BASIC FIELDS
+    # RTA
     # ========================================================
 
     gold_df["rta"] = df["rta_clean"]
 
-    # sip_reg_no falls back to request_ref_no when ft_sip_regno is blank or
-    # the literal placeholder "0" that KFIN sends for "no reg number".
-    # Without this fallback, two genuinely different SIP registrations that
-    # share folio/scheme/date/amount (only distinguished by ft_sip_regno or
-    # request_ref_no) both come out blank here and look like duplicates to
-    # everything downstream -- confirmed live on folio 1019044785.
+    # ========================================================
+    # SIP REGISTRATION NUMBER
+    # ========================================================
+
     ft_sip_regno = (
         get_column(df, "ft_sip_regno")
         .astype("string")
         .str.strip()
-        .replace({"0": pd.NA, "": pd.NA})
+        .replace(
+            {
+                "0": pd.NA,
+                "": pd.NA
+            }
+        )
     )
 
     request_ref_no = (
         get_column(df, "request_ref_no")
         .astype("string")
         .str.strip()
-        .replace({"": pd.NA})
+        .replace(
+            {
+                "": pd.NA
+            }
+        )
     )
 
-    gold_df["sip_reg_no"] = ft_sip_regno.fillna(request_ref_no)
+    gold_df["sip_reg_no"] = (
+        ft_sip_regno.fillna(
+            request_ref_no
+        )
+    )
 
-    gold_df["folio_number"] = df["folio_clean"]
+    # ========================================================
+    # FOLIO NUMBER
+    # ========================================================
+
+    gold_df["folio_number"] = (
+        df["folio_clean"]
+    )
+
+    # ========================================================
+    # IHNO
+    #
+    # Silver column is ihno.
+    # Gold column is also ihno.
+    # ========================================================
+
+    gold_df["ihno"] = (
+        get_column(df, "ihno")
+        .astype("string")
+        .str.strip()
+        .replace("", pd.NA)
+    )
 
     # ========================================================
     # SCHEME CODE
@@ -595,6 +632,9 @@ def transform_sip(df):
 
     # ========================================================
     # ISIN
+    #
+    # Silver SIP does NOT have an isin column.
+    # Keep ISIN NULL for now.
     # ========================================================
 
     gold_df["isin"] = pd.Series(
@@ -716,8 +756,6 @@ def transform_sip(df):
 
     # ========================================================
     # SCHEME ID
-    #
-    # Take scheme_id directly from Silver.
     # ========================================================
 
     print()
@@ -758,10 +796,6 @@ def transform_sip(df):
 
     # ========================================================
     # AMC ID
-    #
-    # IMPORTANT:
-    # public.amc belongs to the MASTER DATABASE.
-    # Therefore master_engine MUST be used.
     # ========================================================
 
     print()
@@ -803,9 +837,6 @@ def transform_sip(df):
 
     # ========================================================
     # CLIENT ID
-    #
-    # gold.clients belongs to the PROJECT DATABASE.
-    # Therefore engine is intentionally used here.
     # ========================================================
 
     print("Loading client mapping...")
@@ -1288,10 +1319,6 @@ def transform_sip(df):
 
     # ========================================================
     # ARN ID
-    #
-    # IMPORTANT:
-    # public.arn belongs to the MASTER DATABASE.
-    # Therefore master_engine MUST be used.
     # ========================================================
 
     sub_arn_code = (
@@ -1427,10 +1454,17 @@ def transform_sip(df):
         "rta",
         "sip_reg_no",
         "folio_number",
+
+        # New Gold SIP column
+        "ihno",
+
         "scheme_code",
         "scheme_name",
         "amc_code",
+
+        # ISIN intentionally kept NULL
         "isin",
+
         "amount",
         "frequency",
         "start_date",
@@ -1534,6 +1568,11 @@ def transform_sip(df):
     )
 
     print(
+        "Missing ISIN values:",
+        gold_df["isin"].isna().sum()
+    )
+
+    print(
         "Completed Installments:",
         gold_df["completed_installments"].sum()
     )
@@ -1548,8 +1587,6 @@ def transform_sip(df):
 
 # ============================================================
 # GET GOLD.SIP COLUMN LIMITS
-#
-# gold.sip is in the PROJECT DATABASE.
 # ============================================================
 
 def get_gold_sip_column_limits():
@@ -1712,6 +1749,10 @@ def load_sip(gold_df):
         "rta",
         "sip_reg_no",
         "folio_number",
+
+        # New column
+        "ihno",
+
         "scheme_code",
         "scheme_name",
         "amc_code",
@@ -1793,31 +1834,22 @@ def load_sip(gold_df):
 
     # ========================================================
     # INSERT
-    #
-    # NOTE: pandas NULL -> database NULL conversion is handled inside
-    # upsert_dataframe() itself (astype(object).where(pd.notnull(...), None)
-    # applied right before building the insert records), so no pre-
-    # conversion is needed here.
     # ========================================================
 
     try:
 
         from utils.db import upsert_dataframe
 
-        # uq_gold_sip_natural_key is on an expression (COALESCE-normalized
-        # sip_reg_no), not plain columns -- Postgres cannot promote an
-        # expression index to a table CONSTRAINT at all (confirmed live on
-        # the analogous silver SIP index), so it can't be targeted by name.
         upsert_dataframe(
             gold_df,
             schema="gold",
             table="sip",
             conflict_index_expr=(
-                '"rta", "folio_number", "scheme_code", "registered_date", "amount", '
+                '"rta", "folio_number", "scheme_code", '
+                '"registered_date", "amount", '
                 '(COALESCE(NULLIF("sip_reg_no", \'\'), \'\'))'
             ),
             chunksize=500,
-            # gold.sip has no updated_at (or equivalent) column.
             updated_at_column=None,
         )
 
@@ -1930,7 +1962,7 @@ if __name__ == "__main__":
                 )
 
             # =================================================
-            # GOLD DATA SAMPLE
+            # GOLD SIP DATA SAMPLE
             # =================================================
 
             print()
@@ -1944,8 +1976,10 @@ if __name__ == "__main__":
                         "rta",
                         "sip_reg_no",
                         "folio_number",
+                        "ihno",
                         "scheme_id",
                         "scheme_code",
+                        "isin",
                         "created_at"
                     ]
                 ].head(20)
