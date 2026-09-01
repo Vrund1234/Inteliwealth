@@ -72,8 +72,6 @@ def get_last_gold_timestamp():
 # =====================================================
 # EXTRACT SILVER TRANSACTIONS
 #
-# IMPORTANT:
-#
 # ONLY TIMESTAMP COMPARISON IS USED.
 #
 # NO DUPLICATE CHECKING.
@@ -96,8 +94,6 @@ def extract_transactions():
 
     # -------------------------------------------------
     # FIRST RUN
-    #
-    # If Gold is empty, take all Silver rows.
     # -------------------------------------------------
 
     if last_gold_timestamp is None:
@@ -116,11 +112,7 @@ def extract_transactions():
                 source,
                 folio_no,
                 prodcode,
-
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
-
                 trxntype,
                 trxnno,
                 trxnstat,
@@ -156,9 +148,6 @@ def extract_transactions():
 
     # -------------------------------------------------
     # SUBSEQUENT RUN
-    #
-    # Only Silver rows newer than the latest Gold
-    # created_at are loaded.
     # -------------------------------------------------
 
     else:
@@ -177,11 +166,7 @@ def extract_transactions():
                 source,
                 folio_no,
                 prodcode,
-
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
-
                 trxntype,
                 trxnno,
                 trxnstat,
@@ -560,25 +545,25 @@ def transform_transactions(df):
 
     # =================================================
     # DATES
+    #
+    # Both traddate and postdate are handled
+    # independently in exactly the same way.
+    #
+    # No filtering is applied.
+    # If a source value is NULL, Gold remains NULL.
     # =================================================
 
-    gold_df["txn_date"] = (
-        pd.to_datetime(
-            df["traddate"],
-            errors="coerce",
-            dayfirst=True
-        )
-        .dt.date
-    )
+    gold_df["txn_date"] = pd.to_datetime(
+        df["traddate"],
+        errors="coerce",
+        dayfirst=True
+    ).dt.date
 
-    gold_df["post_date"] = (
-        pd.to_datetime(
-            df["postdate"],
-            errors="coerce",
-            dayfirst=True
-        )
-        .dt.date
-    )
+    gold_df["post_date"] = pd.to_datetime(
+        df["postdate"],
+        errors="coerce",
+        dayfirst=True
+    ).dt.date
 
     # =================================================
     # NUMERIC FIELDS
@@ -683,9 +668,6 @@ def transform_transactions(df):
 
     # =================================================
     # ISIN
-    #
-    # Not every source file carries this (e.g. today's CAMS files don't) --
-    # stays null when absent, same as pan/arn below when blank.
     # =================================================
 
     gold_df["isin"] = (
@@ -737,9 +719,6 @@ def transform_transactions(df):
     # SCHEME ID
     #
     # DIRECTLY FROM SILVER
-    #
-    # NO LOOKUP
-    # NO UUID GENERATION
     # =================================================
 
     print("=" * 80)
@@ -807,9 +786,6 @@ def transform_transactions(df):
 
     # =================================================
     # CREATED AT
-    #
-    # IMPORTANT:
-    # Gold created_at represents the load timestamp.
     # =================================================
 
     gold_df["created_at"] = pd.Timestamp.utcnow()
@@ -859,9 +835,8 @@ def transform_transactions(df):
     # =================================================
     # REMOVE INVALID
     #
-    # This is NOT duplicate removal.
-    # Only rows without required transaction identity
-    # are excluded.
+    # Only transaction identity is required.
+    # No date filtering.
     # =================================================
 
     gold_df = gold_df.dropna(
@@ -954,6 +929,34 @@ def transform_transactions(df):
     )
 
     # =================================================
+    # DATE CHECK
+    # =================================================
+
+    print("=" * 80)
+    print("DATE CHECK")
+    print("=" * 80)
+
+    print(
+        "Transaction dates present:",
+        gold_df["txn_date"].notna().sum()
+    )
+
+    print(
+        "Transaction dates missing:",
+        gold_df["txn_date"].isna().sum()
+    )
+
+    print(
+        "Post dates present:",
+        gold_df["post_date"].notna().sum()
+    )
+
+    print(
+        "Post dates missing:",
+        gold_df["post_date"].isna().sum()
+    )
+
+    # =================================================
     # ROW COUNT
     # =================================================
 
@@ -984,17 +987,9 @@ def transform_transactions(df):
     return gold_df
 
 
-# =================================================
+# =====================================================
 # LOAD GOLD TRANSACTIONS
-#
-# The timestamp watermark in extract_transactions() is a performance
-# pre-filter only, NOT the safety net -- it can (and on 2026-08-24, did)
-# return a false "gold is empty" result and re-extract the entire silver
-# table. The real safety net is the (rta, rta_txn_no, folio_number,
-# amount, units) unique constraint on gold.transactions: upsert_dataframe
-# below turns any such re-extraction into a no-op UPDATE instead of a
-# second copy of every row.
-# =================================================
+# =====================================================
 
 def load_transactions(gold_df):
 
@@ -1032,16 +1027,6 @@ def load_transactions(gold_df):
 
     # =================================================
     # NO EXISTING GOLD QUERY
-    #
-    # NO DUPLICATE CHECK.
-    # NO NATURAL KEY CHECK.
-    # NO ROW SIGNATURE.
-    # NO DROP DUPLICATES.
-    #
-    # The only incremental logic is:
-    #
-    # silver.created_at > MAX(gold.created_at)
-    #
     # =================================================
 
     print()
@@ -1074,13 +1059,14 @@ def load_transactions(gold_df):
             gold_df,
             schema="gold",
             table="transactions",
-            conflict_columns=["rta", "rta_txn_no", "folio_number", "amount", "units"],
+            conflict_columns=[
+                "rta",
+                "rta_txn_no",
+                "folio_number",
+                "amount",
+                "units"
+            ],
             chunksize=500,
-            # gold.transactions has no updated_at (or equivalent) column --
-            # confirmed via information_schema; passing the default here
-            # raises psycopg2.errors.UndefinedColumn on the first real
-            # conflict (hit live against gold.holdings during the Task 8
-            # functional test, same underlying cause).
             updated_at_column=None,
         )
 
@@ -1155,6 +1141,8 @@ if __name__ == "__main__":
                         "rta_txn_no",
                         "scheme_id",
                         "scheme_code",
+                        "txn_date",
+                        "post_date",
                         "created_at"
                     ]
                 ].head(20)
