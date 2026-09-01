@@ -566,7 +566,7 @@ def transform_folio_nominees(df):
             nominee_dob = pd.to_datetime(
                 nominee_dob,
                 errors="coerce",
-                dayfirst=True
+                format="ISO8601"
             )
 
             if pd.isna(

@@ -4,6 +4,48 @@ from utils.db import engine
 
 
 # =====================================================
+# BRONZE DATE -> SILVER DATE
+# =====================================================
+
+def parse_bronze_date_series(series):
+    """
+    Cast a bronze date column to date objects.
+
+    Bronze has already resolved the RTA's own format (see
+    raw_ingestion.parse_source_date) and stores every date as YYYY-MM-DD,
+    so silver's job here is a CAST, not a re-interpretation.
+
+    This used to be pd.to_datetime(series, errors="coerce", dayfirst=True).
+    Handing already-ISO strings to dayfirst=True makes pandas infer
+    %Y-%d-%m from the first ambiguous value in the column and apply it to
+    the whole column, which both transposes and destroys dates:
+
+        pd.to_datetime(
+            ['2013-12-11', '2019-05-21', '2024-08-02'], dayfirst=True
+        )
+            -> [2013-11-12, NaT, 2024-02-08]
+                 swapped     ^ 21 is not a month     swapped
+
+    Live before the fix: bronze held 38,230 KFIN transaction dates with
+    none blank, silver held 22,195 nulls, and no row in gold.transactions
+    fell on a day above the 12th. Since the inferred format depended on
+    whichever value pandas saw first, the damage was order-dependent too.
+
+    format="ISO8601" pins the reading. It also accepts a trailing time and
+    real date objects, which is what psycopg returns for bronze columns
+    already typed `date`.
+    """
+
+    parsed = pd.to_datetime(
+        series,
+        format="ISO8601",
+        errors="coerce"
+    )
+
+    return parsed.dt.date
+
+
+# =====================================================
 # SAFE READ
 # =====================================================
 
@@ -1097,13 +1139,8 @@ def transform_investor_master(df):
 
         if col in df.columns:
 
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    dayfirst=True
-                )
-                .dt.date
+            df[col] = parse_bronze_date_series(
+                df[col]
             )
 
     # =================================================
@@ -1391,13 +1428,8 @@ def transform_transaction(df):
 
         if col in df.columns:
 
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    dayfirst=True
-                )
-                .dt.date
+            df[col] = parse_bronze_date_series(
+                df[col]
             )
 
     # =================================================
@@ -1726,13 +1758,8 @@ def transform_sip_master(df):
 
         if col in df.columns:
 
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    errors="coerce",
-                    dayfirst=True
-                )
-                .dt.date
+            df[col] = parse_bronze_date_series(
+                df[col]
             )
 
     # =================================================
