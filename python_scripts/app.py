@@ -434,15 +434,25 @@ if extract_btn:
         )
 
 
-    except Exception:
+    except Exception as exc:
 
+        # The message goes in the headline, not just the traceback below it:
+        # "❌ Extraction Failed" alone says nothing, and the reason was being
+        # missed at the bottom of a collapsed code block. Type name included
+        # because some exceptions (KeyError, and anything raised bare) carry
+        # an empty or single-token str().
         st.error(
-            "❌ Extraction Failed"
+            f"❌ Extraction Failed — "
+            f"{type(exc).__name__}: {exc}"
         )
 
         st.code(
             traceback.format_exc()
         )
+
+        # Also to the Streamlit process's stdout/stderr, so the failure is
+        # readable on the server (journalctl / nohup.out) without the browser.
+        traceback.print_exc()
 
 
 # =========================================================
@@ -812,15 +822,18 @@ if transform_btn:
             )
 
 
-        except Exception:
+        except Exception as exc:
 
             st.error(
-                "❌ Transformation Failed"
+                f"❌ Transformation Failed — "
+                f"{type(exc).__name__}: {exc}"
             )
 
             st.code(
                 traceback.format_exc()
             )
+
+            traceback.print_exc()
 
 
 # =========================================================
