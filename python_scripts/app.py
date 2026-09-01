@@ -235,15 +235,24 @@ if extract_btn:
                 uploaded_types["sip"] = True
             # ---------- KFIN ----------
 
-            elif "mfsd211" in name:
+            elif (
+                "mfsd211" in name
+                or "mfsd311" in name
+            ):
 
                 uploaded_types["investor"] = True
 
-            elif "mfsd201" in name:
+            elif (
+                "mfsd201" in name
+                or "mfsd307" in name
+            ):
 
                 uploaded_types["transaction"] = True
 
-            elif "mfsd243" in name:
+            elif (
+                "mfsd243" in name
+                or "mfsd313" in name
+            ):
 
                 uploaded_types["sip"] = True
 
