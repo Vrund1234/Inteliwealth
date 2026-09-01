@@ -491,7 +491,7 @@ def transform_scheme_nav(df):
         pd.to_datetime(
             df["traddate"],
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )

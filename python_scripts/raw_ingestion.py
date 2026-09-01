@@ -31,33 +31,39 @@ DATE_COLUMNS = [
 # DATE PARSER
 # =====================================================
 
-def parse_source_date(value):
+def parse_source_date(value, source=None):
     """
     Centralized source-date parser.
 
-    ALL source files are treated as DD-MM-YYYY.
+    The two RTAs do NOT share a date format, and the component order is
+    decided by `source`:
 
-    Examples:
+        CAMS    M/D/YYYY   3/20/2019   -> 2019-03-20
+        KFIN    D/M/YYYY   21/05/2019  -> 2019-05-21
 
-        28-07-2026
-            -> 2026-07-28
+    That is not a guess. In 10072026104746_216882305R2.csv the CAMS
+    TRADDATE column has 90,536 values whose FIRST component never once
+    exceeds 12 while the second exceeds it 55,812 times -- the first
+    component is the month. KFin's MFSD243 RegistrationDate is the mirror
+    image: 364 first components above 12, none in the second.
 
-        03-04-2026
-            -> 2026-04-03
+    `source=None` keeps the historical day-first reading, for callers that
+    do not know their RTA. Any caller handling CAMS data MUST pass it, or
+    every date with a day above the 12th is read as an impossible month and
+    coerced to None, and every date below it is silently transposed.
 
-        07/08/2026
-            -> 2026-08-07
+    ISO input is returned as-is regardless of source:
 
-        28-07-2026 14:30:00
-            -> 2026-07-28
+        2026-07-28              -> 2026-07-28
 
-        28-07-2026 02:30:00 PM
-            -> 2026-07-28
+    A trailing time is ignored:
 
-        2026-07-28
-            -> 2026-07-28
+        28-07-2026 14:30:00     -> 2026-07-28   (KFIN)
+        3/20/2019 12:00:00 AM   -> 2019-03-20   (CAMS)
 
-    No ambiguous-date guessing is performed.
+    No ambiguous-date guessing is performed: once `source` fixes the
+    component order, an out-of-range month is an error, not a prompt to try
+    the other order.
     """
 
     from datetime import datetime, date
@@ -162,7 +168,8 @@ def parse_source_date(value):
     # =================================================
     # SOURCE FORMAT
     #
-    # ALL SOURCE FILES = DD-MM-YYYY
+    #     CAMS = M/D/YYYY
+    #     KFIN = D/M/YYYY
     #
     # Separator can be:
     #     -
@@ -178,11 +185,11 @@ def parse_source_date(value):
 
         return None
 
-    day = int(
+    first = int(
         match.group(1)
     )
 
-    month = int(
+    second = int(
         match.group(2)
     )
 
@@ -190,8 +197,21 @@ def parse_source_date(value):
         match.group(3)
     )
 
+    if str(source).strip().upper() == "CAMS":
+
+        month, day = first, second
+
+    else:
+
+        day, month = first, second
+
     # =================================================
-    # STRICT DD-MM-YYYY VALIDATION
+    # STRICT VALIDATION
+    #
+    # The order is already fixed by `source` above, so an
+    # out-of-range component is a bad value -- never a
+    # reason to retry with the components the other way
+    # round.
     # =================================================
 
     if not 1 <= day <= 31:
@@ -238,7 +258,7 @@ def parse_source_date(value):
 # FORMAT DATES
 # =====================================================
 
-def format_dates(df):
+def format_dates(df, source=None):
 
     if df is None:
         return df
@@ -253,7 +273,7 @@ def format_dates(df):
         original = df[col].copy()
 
         parsed = original.apply(
-            parse_source_date
+            lambda v: parse_source_date(v, source)
         )
 
         df[col] = parsed.apply(
