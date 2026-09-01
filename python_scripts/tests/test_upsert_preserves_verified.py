@@ -91,20 +91,37 @@ def test_a_verified_mapping_survives_a_run_that_resolves_nothing():
     assert row["mapping_source"] == "NAV_NAME_MATCH"
 
 
-def test_an_unverified_mapping_is_still_overwritten():
-    """Rows the engine owns keep the original behaviour."""
+def test_an_unverified_mapping_is_no_longer_overwritten():
+    """CONTRACT CHANGED 2026-08-31: an already-mapped scheme is frozen.
+
+    This test previously asserted the opposite -- that a row the engine owns
+    (verified_at IS NULL) could be blanked by a later run. That is exactly how
+    CAMS/K205G and CAMS/TRFPG lost the mappings recorded in
+    tests/baseline_mappings.csv: a run that simply failed to resolve them wrote
+    NULL over a good code. Being mapped is now protection in itself, whether or
+    not a curator verified it.
+    """
     code = f"U{uuid.uuid4().hex[:8]}"
     _upsert(_row(code, amfi_scheme_code="123456", mapping_source="CORE_FUZZY",
                  mapping_confidence=90, mapping_status="MATCHED"))
 
     _upsert(_row(code))
 
-    assert _read(code)["amfi_scheme_code"] is None
+    assert _read(code)["amfi_scheme_code"] == "123456"
 
 
-def test_the_engine_still_wins_when_it_finds_a_code():
-    """A verified mapping yields to a real engine result: STRUCT_EXACT (98)
-    outranks anything this fallback can produce."""
+def test_the_engine_no_longer_wins_over_an_existing_mapping():
+    """CONTRACT CHANGED 2026-08-31: a mapped scheme is frozen even against a
+    strictly more confident rule.
+
+    This previously asserted that STRUCT_EXACT (98) could re-point a verified
+    NAV_NAME_MATCH (96). Confidence no longer buys the right to change a
+    scheme that is already mapped -- CAMS/TRFPG had two AMFI candidates tied
+    at 100, so "more confident" was not a safe tiebreak.
+
+    To re-point a mapped scheme, clear amfi_scheme_code first; that makes it a
+    deliberate act rather than a side effect of a run.
+    """
     code = f"W{uuid.uuid4().hex[:8]}"
     _upsert(_row(code, amfi_scheme_code="123456", mapping_source="NAV_NAME_MATCH",
                  mapping_confidence=96, mapping_status="MATCHED"))
@@ -114,8 +131,8 @@ def test_the_engine_still_wins_when_it_finds_a_code():
                  mapping_confidence=98, mapping_status="MATCHED"))
 
     row = _read(code)
-    assert row["amfi_scheme_code"] == "999999"
-    assert row["mapping_source"] == "STRUCT_EXACT"
+    assert row["amfi_scheme_code"] == "123456"
+    assert row["mapping_source"] == "NAV_NAME_MATCH"
 
 
 def test_a_weaker_engine_result_cannot_overwrite_a_verified_mapping():

@@ -53,7 +53,7 @@ def test_first_insert_creates_the_row():
 
     n = upsert_dataframe(df, TEST_SCHEMA, TEST_TABLE, conflict_columns=["source", "key_col"])
 
-    assert n == 1
+    assert n["attempted"] == 1
     assert _read_all() == [{"source": SENTINEL, "key_col": key, "value_col": "v1"}]
 
 
@@ -152,8 +152,8 @@ def test_updated_at_column_none_skips_the_clause_on_a_table_with_no_such_column(
     n1 = upsert_dataframe(df1, TEST_SCHEMA, table, conflict_columns=["source", "key_col"], updated_at_column=None)
     n2 = upsert_dataframe(df2, TEST_SCHEMA, table, conflict_columns=["source", "key_col"], updated_at_column=None)
 
-    assert n1 == 1
-    assert n2 == 1
+    assert n1["attempted"] == 1
+    assert n2["attempted"] == 1
     with engine.begin() as conn:
         rows = conn.execute(text(
             f"SELECT value_col FROM {TEST_SCHEMA}.{table} WHERE source = :s"
@@ -244,7 +244,7 @@ def test_created_at_is_never_refreshed_from_excluded_on_conflict():
     }])
     n = upsert_dataframe(df2, TEST_SCHEMA, table, conflict_columns=["source", "key_col"], updated_at_column=None)
 
-    assert n == 1
+    assert n["attempted"] == 1
     with engine.begin() as conn:
         row = conn.execute(text(
             f"SELECT value_col, created_at FROM {TEST_SCHEMA}.{table} WHERE source=:s AND key_col=:k"
@@ -287,7 +287,7 @@ def test_nat_in_a_datetime_column_is_stored_as_null_not_the_string_nat():
 
     n = upsert_dataframe(df, TEST_SCHEMA, table, conflict_columns=["source", "key_col"], updated_at_column=None)
 
-    assert n == 1
+    assert n["attempted"] == 1
     with engine.begin() as conn:
         stored = conn.execute(text(
             f"SELECT dob FROM {TEST_SCHEMA}.{table} WHERE source = :s AND key_col = :k"
@@ -310,8 +310,8 @@ def test_conflict_constraint_updates_in_place_not_duplicates():
     n1 = upsert_dataframe(df1, TEST_SCHEMA, TEST_TABLE, conflict_constraint="_test_upsert_dataframe_uq")
     n2 = upsert_dataframe(df2, TEST_SCHEMA, TEST_TABLE, conflict_constraint="_test_upsert_dataframe_uq")
 
-    assert n1 == 1
-    assert n2 == 1
+    assert n1["attempted"] == 1
+    assert n2["attempted"] == 1
     rows = _read_all()
     assert len(rows) == 1
     assert rows[0]["value_col"] == "v2"
@@ -332,7 +332,7 @@ def test_two_different_keys_both_survive():
 def test_empty_dataframe_is_a_noop():
     df = pd.DataFrame(columns=["source", "key_col", "value_col"])
     n = upsert_dataframe(df, TEST_SCHEMA, TEST_TABLE, conflict_columns=["source", "key_col"])
-    assert n == 0
+    assert n["attempted"] == 0
 
 
 def test_requires_exactly_one_of_the_three_conflict_targets():
@@ -416,8 +416,8 @@ def test_conflict_index_expr_targets_an_expression_index():
         conflict_index_expr='"source", (COALESCE(NULLIF(BTRIM("raw_code"), \'\'), \'\'))',
     )
 
-    assert n1 == 1
-    assert n2 == 1
+    assert n1["attempted"] == 1
+    assert n2["attempted"] == 1
     with engine.begin() as conn:
         rows = conn.execute(text(
             f"SELECT raw_code, value_col FROM {TEST_SCHEMA}.{table} WHERE source = :s ORDER BY raw_code"

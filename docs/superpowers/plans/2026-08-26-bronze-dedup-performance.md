@@ -173,8 +173,19 @@ from sqlalchemy import bindparam, text
 
 def hash_normalized_rows(normalized_df, compare_cols):
     """One SHA-256 hex digest per row, from `compare_cols` values the
-    caller has already normalized into plain strings."""
-    joined = normalized_df[compare_cols].astype(str).agg("|".join, axis=1)
+    caller has already normalized into plain strings.
+
+    Fields are length-prefixed (netstring-style: "<len>:<value>" per field,
+    concatenated) rather than joined with a plain delimiter -- a bare
+    "|".join is ambiguous across a column boundary (e.g. a="X|Y", b="Z" and
+    a="X", b="Y|Z" would join to the identical string), which could
+    silently violate full-row duplicate semantics if a "|" ever appears in
+    a free-text bronze column (an investor name/address, for instance).
+    Length-prefixing removes the ambiguity regardless of field content."""
+    def _encode_row(values):
+        return "".join(f"{len(v)}:{v}" for v in values)
+
+    joined = normalized_df[compare_cols].astype(str).agg(_encode_row, axis=1)
     return joined.apply(lambda s: hashlib.sha256(s.encode("utf-8")).hexdigest())
 
 
@@ -345,7 +356,7 @@ import pytest
 from sqlalchemy import text
 
 from utils.db import engine
-from backfill_bronze_row_hash import backfill_table
+from backfill_bronze_row_hash import backfill_table, _normalize_transaction
 
 TEST_SCHEMA = "bronze"
 TEST_TABLE = "_test_backfill_row_hash"
@@ -386,7 +397,7 @@ def _insert(trxnno, td_ptrno):
 def test_backfill_populates_row_hash_for_every_row():
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         row_hash = conn.execute(text(
@@ -399,7 +410,7 @@ def test_byte_identical_rows_get_the_same_hash():
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
     _insert(txn, "111")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         hashes = [r[0] for r in conn.execute(text(
@@ -416,7 +427,7 @@ def test_rows_sharing_a_natural_key_but_differing_in_another_column_get_differen
     txn = uuid.uuid4().hex[:8]
     _insert(txn, "111")
     _insert(txn, "222")
-    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], sentinel_source=SENTINEL)
+    backfill_table(TEST_SCHEMA, TEST_TABLE, compare_cols=["trxnno", "td_ptrno"], normalize_fn=_normalize_transaction, sentinel_source=SENTINEL)
 
     with engine.begin() as conn:
         hashes = [r[0] for r in conn.execute(text(
@@ -439,12 +450,17 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'backfill_bronze_row_h
 the 2026-08-26 dedup-performance migration. Run once, after Task 2's
 ALTER TABLE and before Task 4's index + NOT NULL.
 
-Each table's `compare_cols` normalization below is a deliberately frozen,
-verbatim copy of that table's loader's current inline comparison logic at
-the time of this migration (etl_trans.py's compare block; the equivalent
-inline blocks in etl_investor_master.py / etl_sip.py) -- not imported live,
-so this script stays reproducible even as the loaders are refactored in
-later tasks.
+Each table's normalization below DIRECTLY IMPORTS that loader's own real,
+current comparison logic (functions and constants) rather than hand-copying
+it -- `etl_trans.prepare_for_comparison` already exists standalone and is
+reused as-is; `etl_investor_master`/`etl_sip`'s `clean_identifier_columns`
+and `DATE_COLUMNS` are imported directly rather than re-listed, so this
+script cannot silently drift from what those modules actually do today.
+This includes reproducing `etl_investor_master.py`'s own currently-unfixed
+ambiguous `pd.to_datetime` date handling verbatim (via that exact call,
+inline below, matching its ONLY date branch) -- deliberately not fixed
+here, per the Global Constraints -- and `etl_sip.py`'s case-insensitive
+`.str.upper()` convention on non-date columns.
 """
 
 import sys
@@ -455,22 +471,72 @@ from sqlalchemy import text
 from utils.db import engine
 from utils.dedupe_hash import hash_normalized_rows
 
+import etl_trans
+import etl_investor_master
+import etl_sip
 
-def _normalize_generic(df, compare_cols, date_columns=()):
-    """Frozen copy of the non-transaction loaders' inline compare-column
-    normalization: blank/NaN -> "", everything else -> str(value).strip().
-    Date columns get "" instead of NaT/None (matching the loaders' own
-    `.fillna("")` on the date branch)."""
-    df = df[compare_cols].copy()
+
+def _normalize_transaction(df, compare_cols):
+    """Reuses etl_trans.py's own comparison normalizer directly -- this IS
+    the function etl_trans.process_transactions() already calls."""
+    return etl_trans.prepare_for_comparison(df, compare_cols)
+
+
+def _normalize_investor(df, compare_cols):
+    """Matches etl_investor_master.py's current inline comparison
+    normalization exactly, replicating its full layered pipeline:
+    normalize() FIRST (quote-stripping and null-token cleanup -- both the
+    new batch, via process_investor_master() calling normalize() right
+    after mapping, and the existing-read path already apply this before
+    any comparison ever happens; normalize() itself skips DATE_COLUMNS),
+    then clean_identifier_columns, then a final per-column pass: bare
+    pd.to_datetime for its DATE_COLUMNS (verbatim, including the
+    ambiguous-date behavior -- out of scope to fix here), else
+    fillna("").astype(str).str.strip() again (redundant with normalize()
+    but matches production's actual, harmless double-cleaning) -- no
+    case-fold, this loader's comparison is case-sensitive."""
+    df = etl_investor_master.normalize(df[compare_cols].copy())
+    df = etl_investor_master.clean_identifier_columns(df)
     for col in compare_cols:
-        if col in date_columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
-        df[col] = df[col].fillna("").astype(str).str.strip()
+        if col in etl_investor_master.DATE_COLUMNS:
+            df[col] = (
+                pd.to_datetime(df[col], errors="coerce")
+                .dt.strftime("%Y-%m-%d")
+                .fillna("")
+            )
+        else:
+            df[col] = df[col].fillna("").astype(str).str.strip()
     return df
 
 
-def backfill_table(schema, table, compare_cols, sentinel_source=None, date_columns=()):
+def _normalize_sip(df, compare_cols):
+    """Matches etl_sip.py's current inline comparison normalization
+    exactly: normalize() FIRST (numeric coercion via pd.to_numeric for
+    auto_amount/no_of_installments/top_up_amt/top_up_perc -- both the new
+    batch, via apply_sip_mapping(), and the existing-read path already
+    apply this before any comparison ever happens), then
+    clean_identifier_columns, then dedupe_compare_date (the already-fixed
+    deterministic parser) for its DATE_COLUMNS, else fillna("").astype(str)
+    .str.strip().str.upper() -- this loader's comparison IS
+    case-insensitive, unlike the other two. Skipping the normalize() step
+    would hash "1000.00" and "1000.0" as different values in
+    auto_amount/etc. even though production treats them as the same
+    number."""
+    df = etl_sip.normalize(df[compare_cols].copy())
+    df = etl_sip.clean_identifier_columns(df)
+    for col in compare_cols:
+        if col in etl_sip.DATE_COLUMNS:
+            df[col] = df[col].apply(etl_sip.dedupe_compare_date)
+        else:
+            df[col] = df[col].fillna("").astype(str).str.strip().str.upper()
+    return df
+
+
+def backfill_table(schema, table, compare_cols, normalize_fn, sentinel_source=None):
     """Compute and store row_hash for every existing row in schema.table.
+    `normalize_fn` is one of `_normalize_transaction`/`_normalize_investor`/
+    `_normalize_sip` above (tests may pass any callable with the same
+    `(df, compare_cols) -> df` shape against a throwaway table).
     `sentinel_source`, when given, restricts the backfill to that source
     value -- used only by tests against throwaway tables; production calls
     (see __main__ below) omit it to cover every row."""
@@ -488,7 +554,7 @@ def backfill_table(schema, table, compare_cols, sentinel_source=None, date_colum
     if df.empty:
         return 0
 
-    normalized = _normalize_generic(df, compare_cols, date_columns=date_columns)
+    normalized = normalize_fn(df, compare_cols)
     row_hash = hash_normalized_rows(normalized, compare_cols)
 
     with engine.begin() as conn:
@@ -514,25 +580,14 @@ def _compare_cols_for(table):
     )["column_name"].tolist()
 
 
-TRANSACTION_DATE_COLUMNS = [
-    "traddate", "postdate", "rep_date", "ticob_posted_date",
-    "sys_regn_date", "ca_initiated_date",
-]
-INVESTOR_DATE_COLUMNS = ["dob"]
-SIP_DATE_COLUMNS = [
-    "from_date", "to_date", "cease_date", "reg_date",
-    "pause_from_date", "pause_to_date",
-]
-
-
 if __name__ == "__main__":
-    for table, date_cols in (
-        ("transaction_master_new", TRANSACTION_DATE_COLUMNS),
-        ("investor_master", INVESTOR_DATE_COLUMNS),
-        ("sip_master_new", SIP_DATE_COLUMNS),
+    for table, normalize_fn in (
+        ("transaction_master_new", _normalize_transaction),
+        ("investor_master", _normalize_investor),
+        ("sip_master_new", _normalize_sip),
     ):
         n = backfill_table(
-            "bronze", table, _compare_cols_for(table), date_columns=date_cols
+            "bronze", table, _compare_cols_for(table), normalize_fn
         )
         print(f"Backfilled row_hash for {n} rows in bronze.{table}")
         sys.stdout.flush()

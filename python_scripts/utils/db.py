@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from urllib.parse import quote_plus
 
 import pandas as pd
@@ -243,9 +244,46 @@ def read_table(schema, table, limit=100):
         return pd.DataFrame()
 
 
-# ============================================================
-# UPSERT DATAFRAME
-# ============================================================
+# Set by collect_upserts() to a list, and left as None otherwise. When it is
+# a list, every upsert_dataframe() call appends its own count breakdown to it.
+# This is how gold_loader attributes an insert/update split to one gold entity
+# without any of the eight gold modules having to return it -- their
+# signatures and return values (True/False) stay exactly as they are.
+_upsert_collector = None
+
+
+@contextmanager
+def collect_upserts():
+    """Capture the count breakdown of every upsert_dataframe() call in the block.
+
+    Yields a list that each call appends
+    {"schema", "table", "attempted", "affected", "inserted", "updated"} to.
+
+    Nesting is supported and the previous collector is always restored on the
+    way out, including on an exception -- an armed collector left behind would
+    accumulate for the lifetime of the Streamlit process.
+    """
+    global _upsert_collector
+    previous = _upsert_collector
+    collected = []
+    _upsert_collector = collected
+    try:
+        yield collected
+    finally:
+        _upsert_collector = previous
+
+
+def _record_upsert(schema, table, attempted, affected, inserted):
+    result = {
+        "attempted": attempted,
+        "affected": affected,
+        "inserted": inserted,
+        "updated": affected - inserted,
+    }
+    if _upsert_collector is not None:
+        _upsert_collector.append({"schema": schema, "table": table, **result})
+    return result
+
 
 def upsert_dataframe(
     df,
@@ -260,42 +298,89 @@ def upsert_dataframe(
 ):
 
     """
-    Upsert a DataFrame into schema.table using:
+    Upsert a DataFrame into schema.table via INSERT ... ON CONFLICT ... DO UPDATE.
 
-        INSERT ... ON CONFLICT ... DO UPDATE
+    Replaces the repo-wide df.to_sql(if_exists="append") pattern, which has
+    no protection against re-inserting a row that already exists under the
+    table's natural key -- the root cause of the gold.transactions /
+    gold.sip duplication found on 2026-08-24/25.
 
-    Exactly one of the following must be supplied:
+    Pass exactly one of:
+      conflict_columns:    list[str] -- for a unique constraint on plain
+                            columns, e.g. ["rta", "rta_txn_no", "folio_number"].
+      conflict_constraint: str -- a table CONSTRAINT's name, for a unique
+                            constraint built on plain columns that you'd
+                            rather target by name than by repeating its
+                            column list.
+      conflict_index_expr: str -- the literal ON CONFLICT (...) target,
+                            REQUIRED when the unique index includes an
+                            expression (e.g. the COALESCE-normalized SIP
+                            reg-no key) rather than only plain columns.
+                            Postgres cannot promote an expression-based
+                            index to a table CONSTRAINT at all ("Cannot
+                            create a primary key or unique constraint using
+                            such an index" -- hit live on
+                            uq_silver_sip_natural_key/uq_gold_sip_natural_key),
+                            so conflict_constraint can never name one; the
+                            raw expression is the only way to target it.
+                            Pass exactly what appears inside the index's own
+                            parentheses, e.g.
+                            '"rta", "folio_number", (COALESCE(NULLIF(sip_reg_no, \\'\\'), \\'\\'))'.
 
-        conflict_columns
-        conflict_constraint
-        conflict_index_expr
+    DO UPDATE always wins over DO NOTHING here on purpose: DO NOTHING would
+    silently drop a legitimate correction (e.g. a transaction's trxnstat
+    changing on a resend with the same natural key).
 
-    created_at is never updated on conflict.
+    Every column present in `df` is refreshed from EXCLUDED on conflict,
+    except the conflict columns themselves (conflict_constraint/
+    conflict_index_expr don't name specific df columns to exclude, so every
+    df column is refreshed in those two modes -- harmless, since a column
+    that's part of the conflict target has the same value in EXCLUDED as
+    it already does in the row being matched) and `created_at`, which is
+    always excluded from the SET clause so a row's first-seen timestamp
+    survives any number of re-processing runs -- every gold/silver loader
+    sets `created_at` to "now" before calling this function, and several
+    extraction functions (e.g. `get_last_gold_timestamp()` in
+    etl_gold_transaction.py) read `MAX(created_at)` as an incremental
+    watermark, so refreshing it on conflict would silently corrupt that
+    watermark on every re-processed row.
 
-    updated_at_column, when supplied, is updated to now().
+    `updated_at_column`: if the target table actually has this column, it is
+    always set to now() on conflict, whether or not it's a column in `df`.
+    Pass `updated_at_column=None` for a table that has no such column at all
+    -- e.g. every gold table in this project except `gold.holdings` (which
+    uses `last_synced_at` instead: pass `updated_at_column="last_synced_at"`
+    there). Getting this wrong raises `psycopg2.errors.UndefinedColumn`
+    the first time a real conflict occurs (a fresh INSERT with no existing
+    conflicting row never touches the SET clause, so the bug stays dormant
+    until re-processing a natural key that's already in the table -- hit
+    live on gold.holdings during Task 8's functional test).
+
+    Returns {"attempted", "affected", "inserted", "updated"}:
+
+      attempted -- rows sent to Postgres, i.e. the sum of the chunk lengths.
+                   This is what this function used to return on its own, kept
+                   so the previous number stays available and the change is
+                   auditable. It is an UPPER BOUND: the in-chunk
+                   ROW_NUMBER() ... WHERE __upsert_rn = 1 pre-filter below
+                   collapses same-key rows that `attempted` still counts.
+      affected  -- rows the statement actually inserted or updated.
+      inserted  -- of those, the ones that did not already exist.
+      updated   -- of those, the ones that took the ON CONFLICT DO UPDATE path.
+
+    The split comes from RETURNING (xmax = 0): Postgres sets xmax to 0 on a
+    freshly inserted tuple and to the locking/updating xid on one reached
+    through the conflict path. xmax can also be non-zero for a tuple locked by
+    a CONCURRENT transaction, so the reading is exact only when this is the
+    sole writer -- the etl_pipeline runner holds a session advisory lock for
+    its whole run to make that true. A simultaneous Streamlit session can skew
+    it; that is accepted, because these numbers are observability, not control
+    flow.
     """
-
-    # --------------------------------------------------------
-    # Empty dataframe
-    # --------------------------------------------------------
-
     if df.empty:
-        return 0
+        return _record_upsert(schema, table, 0, 0, 0)
 
-
-    # --------------------------------------------------------
-    # Validate conflict target
-    # --------------------------------------------------------
-
-    targets_given = sum(
-        bool(x)
-        for x in (
-            conflict_columns,
-            conflict_constraint,
-            conflict_index_expr
-        )
-    )
-
+    targets_given = sum(bool(x) for x in (conflict_columns, conflict_constraint, conflict_index_expr))
     if targets_given != 1:
 
         raise ValueError(
@@ -534,9 +619,8 @@ def upsert_dataframe(
         WHERE "__upsert_rn" = 1
 
         {conflict_clause}
-
-        DO UPDATE SET
-            {set_clause}
+        DO UPDATE SET {set_clause}
+        RETURNING (xmax = 0) AS "inserted"
     """
 
 
@@ -566,39 +650,29 @@ def upsert_dataframe(
     # ========================================================
 
     total = 0
-
-
+    inserted = 0
+    affected = 0
     with engine.begin() as conn:
 
         cursor = conn.connection.cursor()
-
-
-        for i in range(
-            0,
-            len(rows),
-            chunksize
-        ):
-
-            batch = rows[
-                i:i + chunksize
-            ]
-
-
-            batch_with_seq = [
-                row + (seq,)
-                for seq, row in enumerate(batch)
-            ]
-
-
-            execute_values(
-                cursor,
-                sql,
-                batch_with_seq,
-                page_size=len(batch_with_seq)
+        for i in range(0, len(rows), chunksize):
+            batch = rows[i:i + chunksize]
+            # __upsert_seq is the row's position within THIS chunk -- dedup
+            # only ever needs to be resolved within one INSERT statement, so
+            # it doesn't need to be unique across chunks, just increasing
+            # within one.
+            batch_with_seq = [row + (seq,) for seq, row in enumerate(batch)]
+            # page_size=len(batch): execute_values' own default page_size
+            # (100) would silently re-fragment an already-chunked batch back
+            # into multiple round trips -- one execute_values() call per
+            # chunk is the whole point.
+            # fetch=True returns the RETURNING rows for the WHOLE chunk in one
+            # list, so the split accumulates across chunk boundaries.
+            returned = execute_values(
+                cursor, sql, batch_with_seq, page_size=len(batch_with_seq), fetch=True
             )
-
-
             total += len(batch)
+            affected += len(returned)
+            inserted += sum(1 for row in returned if row[0])
 
-
-    return total
+    return _record_upsert(schema, table, total, affected, inserted)

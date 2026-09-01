@@ -859,12 +859,8 @@ def process_transactions(
     # =================================================
 
     if not dfs:
-
-        print(
-            "No Transaction file found."
-        )
-
-        return 0
+        print("No Transaction file found.")
+        return {"total": 0, "new": 0, "duplicate": 0}
 
     # =================================================
     # MERGE
@@ -977,9 +973,13 @@ def process_transactions(
         )
     )
 
-    # =================================================
-    # DUPLICATE CHECK OUTPUT
-    # =================================================
+    # Captured HERE, not at the end: `df` is re-sliced to db_columns and
+    # cleaned below, and these are the numbers the etl_pipeline runner reports
+    # back per file. new + duplicate == total by construction, because
+    # compute_flag_via_row_hash only ever writes 0 or 1.
+    bronze_total = len(df)
+    bronze_new = int((df["flag"] == 0).sum())
+    bronze_duplicate = int((df["flag"] == 1).sum())
 
     print("=" * 80)
     print("DUPLICATE CHECK")
@@ -1195,4 +1195,8 @@ def process_transactions(
 
     print("=" * 80)
 
-    return len(df)
+    return {
+        "total": bronze_total,
+        "new": bronze_new,
+        "duplicate": bronze_duplicate,
+    }

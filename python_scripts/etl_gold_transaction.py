@@ -788,7 +788,9 @@ def transform_transactions(df):
     # CREATED AT
     # =================================================
 
-    gold_df["created_at"] = pd.Timestamp.utcnow()
+    # tz-aware UTC then dropped to naive: Timestamp.utcnow() is deprecated in
+    # pandas 3 and this column is `timestamp without time zone`.
+    gold_df["created_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
 
     # =================================================
     # GOLD COLUMN ORDER

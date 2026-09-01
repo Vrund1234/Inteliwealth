@@ -10,3 +10,5 @@ tzdata
 pyparsing
 rapidfuzz
 pytest
+boto3
+requests

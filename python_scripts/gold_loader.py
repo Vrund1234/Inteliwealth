@@ -32,6 +32,8 @@ from etl_gold_holdings import (
     load_holdings
 )
 
+from utils.db import collect_upserts
+
 
 # =====================================================
 # OPTIONAL GOLD SIP
@@ -94,11 +96,76 @@ except ImportError:
 # MAIN GOLD LOAD FUNCTION
 # =====================================================
 
+# =====================================================
+# PER-ENTITY RESULTS
+# =====================================================
+#
+# Purely additive. app.py:665 discards load_gold()'s return value, so none of
+# this changes what the Streamlit Transform button does. The etl_pipeline
+# runner reads it to decide which reserved files to report FAILED (a gold
+# entity failing fails only the report types that feed it -- see
+# etl_pipeline/dispatch.py) and to write the GOLD rows of
+# pipeline.etl_pipeline_log.
+#
+# The eight etl_gold_*.py modules are deliberately NOT modified: their
+# load_*() functions already return True/False, and load_gold() already calls
+# them one at a time, so a collect_upserts() block around each call is enough
+# to attribute an insert/update split to one entity.
+
+GOLD_ENTITIES = (
+    "amc",
+    "scheme",
+    "scheme_nav",
+    "transactions",
+    "holdings",
+    "sip",
+    "clients",
+    "folio_nominees",
+)
+
+
+def _gold_result(entity, status, total=0, upserts=(), error=None):
+    return {
+        "entity": entity,
+        "status": status,
+        "total": total,
+        "inserted": sum(u["inserted"] for u in upserts),
+        "updated": sum(u["updated"] for u in upserts),
+        "error": error,
+    }
+
+
+def _record_gold(results, entity, gold_df, upserts, loaded):
+    """Turn one entity's load into a result row.
+
+    `loaded` is what the entity's load_*() returned. Several of them catch
+    their own insert failure and return False without re-raising, so
+    load_gold()'s try/except never sees it -- that False is the only signal.
+    A loader that falls off the end returning None counts as COMPLETED: the
+    conservative direction, because a spurious FAILED would fail every
+    reserved file that entity depends on.
+    """
+    if loaded is False:
+        results[entity] = _gold_result(
+            entity, "FAILED", total=len(gold_df), upserts=upserts,
+            error=f"{entity}: loader reported failure",
+        )
+    else:
+        results[entity] = _gold_result(
+            entity, "COMPLETED", total=len(gold_df), upserts=upserts,
+        )
+
+
 def load_gold():
 
     print("=" * 80)
     print("STARTING GOLD LAYER LOAD")
     print("=" * 80)
+
+    results = {
+        entity: _gold_result(entity, "SKIPPED")
+        for entity in GOLD_ENTITIES
+    }
 
 
     # =====================================================
@@ -119,9 +186,12 @@ def load_gold():
 
             if not amc_gold_df.empty:
 
-                load_amc(
-                    amc_gold_df
-                )
+                with collect_upserts() as upserts:
+                    loaded = load_amc(
+                        amc_gold_df
+                    )
+
+                _record_gold(results, "amc", amc_gold_df, upserts, loaded)
 
                 print("AMC loaded successfully")
 
@@ -133,6 +203,10 @@ def load_gold():
 
         print("AMC Gold Failed")
         print(e)
+
+        results["amc"] = _gold_result(
+            "amc", "FAILED", error=f"{type(e).__name__}: {e}"
+        )
 
 
     # =====================================================
@@ -157,9 +231,12 @@ def load_gold():
 
             if not scheme_gold_df.empty:
 
-                load_scheme(
-                    scheme_gold_df
-                )
+                with collect_upserts() as upserts:
+                    loaded = load_scheme(
+                        scheme_gold_df
+                    )
+
+                _record_gold(results, "scheme", scheme_gold_df, upserts, loaded)
 
                 print("Scheme loaded successfully")
 
@@ -171,6 +248,10 @@ def load_gold():
 
         print("Scheme Gold Failed")
         print(e)
+
+        results["scheme"] = _gold_result(
+            "scheme", "FAILED", error=f"{type(e).__name__}: {e}"
+        )
 
 
     # =====================================================
@@ -191,9 +272,12 @@ def load_gold():
 
             if not nav_gold_df.empty:
 
-                load_scheme_nav(
-                    nav_gold_df
-                )
+                with collect_upserts() as upserts:
+                    loaded = load_scheme_nav(
+                        nav_gold_df
+                    )
+
+                _record_gold(results, "scheme_nav", nav_gold_df, upserts, loaded)
 
                 print("Scheme NAV loaded successfully")
 
@@ -205,6 +289,10 @@ def load_gold():
 
         print("Scheme NAV Gold Failed")
         print(e)
+
+        results["scheme_nav"] = _gold_result(
+            "scheme_nav", "FAILED", error=f"{type(e).__name__}: {e}"
+        )
 
 
     # =====================================================
@@ -225,8 +313,13 @@ def load_gold():
 
             if not transaction_gold_df.empty:
 
-                load_transactions(
-                    transaction_gold_df
+                with collect_upserts() as upserts:
+                    loaded = load_transactions(
+                        transaction_gold_df
+                    )
+
+                _record_gold(
+                    results, "transactions", transaction_gold_df, upserts, loaded
                 )
 
                 print(
@@ -241,6 +334,10 @@ def load_gold():
 
         print("Transaction Gold Failed")
         print(e)
+
+        results["transactions"] = _gold_result(
+            "transactions", "FAILED", error=f"{type(e).__name__}: {e}"
+        )
 
 
     # =====================================================
@@ -261,8 +358,13 @@ def load_gold():
 
             if not holdings_gold_df.empty:
 
-                load_holdings(
-                    holdings_gold_df
+                with collect_upserts() as upserts:
+                    loaded = load_holdings(
+                        holdings_gold_df
+                    )
+
+                _record_gold(
+                    results, "holdings", holdings_gold_df, upserts, loaded
                 )
 
                 print(
@@ -277,6 +379,10 @@ def load_gold():
 
         print("Holdings Gold Failed")
         print(e)
+
+        results["holdings"] = _gold_result(
+            "holdings", "FAILED", error=f"{type(e).__name__}: {e}"
+        )
 
 
     # =====================================================
@@ -299,8 +405,13 @@ def load_gold():
 
                 if not sip_gold_df.empty:
 
-                    load_sip(
-                        sip_gold_df
+                    with collect_upserts() as upserts:
+                        loaded = load_sip(
+                            sip_gold_df
+                        )
+
+                    _record_gold(
+                        results, "sip", sip_gold_df, upserts, loaded
                     )
 
                     print(
@@ -317,6 +428,10 @@ def load_gold():
 
             print("SIP Gold Failed")
             print(e)
+
+            results["sip"] = _gold_result(
+                "sip", "FAILED", error=f"{type(e).__name__}: {e}"
+            )
 
     else:
 
@@ -345,8 +460,13 @@ def load_gold():
 
                 if not client_gold_df.empty:
 
-                    load_clients(
-                        client_gold_df
+                    with collect_upserts() as upserts:
+                        loaded = load_clients(
+                            client_gold_df
+                        )
+
+                    _record_gold(
+                        results, "clients", client_gold_df, upserts, loaded
                     )
 
                     print(
@@ -363,6 +483,10 @@ def load_gold():
 
             print("Clients Gold Failed")
             print(e)
+
+            results["clients"] = _gold_result(
+                "clients", "FAILED", error=f"{type(e).__name__}: {e}"
+            )
 
 
     # =====================================================
@@ -385,8 +509,13 @@ def load_gold():
 
                 if not folio_gold_df.empty:
 
-                    load_folio_nominees(
-                        folio_gold_df
+                    with collect_upserts() as upserts:
+                        loaded = load_folio_nominees(
+                            folio_gold_df
+                        )
+
+                    _record_gold(
+                        results, "folio_nominees", folio_gold_df, upserts, loaded
                     )
 
                     print(
@@ -407,10 +536,16 @@ def load_gold():
 
             print(e)
 
+            results["folio_nominees"] = _gold_result(
+                "folio_nominees", "FAILED", error=f"{type(e).__name__}: {e}"
+            )
+
 
     print("=" * 80)
     print("GOLD LAYER LOAD COMPLETED")
     print("=" * 80)
+
+    return results
 
 
 # =====================================================

@@ -390,7 +390,7 @@ def process_investor_master(cams=None, kfin=None):
     if not dfs:
 
         print("No Investor Master file found.")
-        return
+        return {"total": 0, "new": 0, "duplicate": 0}
 
     # =====================================================
     # MERGE
@@ -462,6 +462,12 @@ def process_investor_master(cams=None, kfin=None):
         "investor_master",
         engine,
     )
+
+    # Captured HERE, not at the end: `df` is re-cleaned and re-sliced to
+    # db_columns below. See etl_trans.process_transactions() for the rationale.
+    bronze_total = len(df)
+    bronze_new = int((df["flag"] == 0).sum())
+    bronze_duplicate = int((df["flag"] == 1).sum())
 
     # =====================================================
     # CLEAN IDENTIFIER COLUMNS AGAIN BEFORE INSERT
@@ -641,4 +647,8 @@ def process_investor_master(cams=None, kfin=None):
     print(f"Inserted {len(df)} rows")
     print("=" * 80)
 
-    return df
+    return {
+        "total": bronze_total,
+        "new": bronze_new,
+        "duplicate": bronze_duplicate,
+    }

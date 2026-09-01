@@ -1,0 +1,20 @@
+# Automated ETL handoff pipeline.
+#
+# Install with:  crontab -e   (as the user that owns the repo checkout)
+#
+# Every 15 minutes, deliberately offset from :00 and :30. The backend's
+# app/modules/cron/registry.py schedules master-data refreshes at 0 1, 30 1,
+# 0 2, 0 3, 0 4 and a summary at 30 8; this offset keeps the job clear of all
+# of them. etl_gold_sip reads the master database, so avoiding those windows
+# is not merely cosmetic.
+#
+# Overlapping invocations are safe: a run that cannot take the Postgres
+# advisory lock logs "another run is in progress" and exits 0.
+#
+# The >> redirect is the backstop for a crash that happens BEFORE logging is
+# initialised -- an import error or a bad .env -- which would otherwise vanish.
+
+# The `cd` is REQUIRED, not cosmetic: cron runs with cwd=$HOME, so without it
+# `venv/bin/python` does not resolve AND `-m etl_pipeline.runner` is not
+# importable (the package is not pip-installed, it is found via cwd).
+5,20,35,50 * * * * cd /var/www/html/intelliwealth_layer_old_code/python_scripts && venv/bin/python -m etl_pipeline.runner >> ../logs/cron.log 2>&1
