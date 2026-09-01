@@ -37,4 +37,5 @@ docker-compose.yml
 
 silver_to_gold.py
 bronze_to_silver.py
+sif_mapping.py
 
