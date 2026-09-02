@@ -1,3 +1,4 @@
+from dbfread import dbf
 import pandas as pd
 import traceback
 
@@ -683,30 +684,12 @@ def transform_clients(df):
     # OCCUPATION
     # ========================================================
 
-    gold["occupation"] = None
-
-    if "occupation" in df.columns:
-
-        gold.loc[
-            cams_mask,
-            "occupation"
-        ] = clean_string(
-            df.loc[
-                cams_mask,
-                "occupation"
-            ]
-        )
+    gold["occupation"] = pd.NA
 
     if "occupation_description" in df.columns:
 
-        gold.loc[
-            kfin_mask,
-            "occupation"
-        ] = clean_string(
-            df.loc[
-                kfin_mask,
-                "occupation_description"
-            ]
+        gold["occupation"] = clean_string(
+            df["occupation_description"]
         )
 
     # ========================================================
