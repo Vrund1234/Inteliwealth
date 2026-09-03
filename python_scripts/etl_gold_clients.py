@@ -1,4 +1,3 @@
-from dbfread import dbf
 import pandas as pd
 import traceback
 
@@ -144,7 +143,9 @@ def normalize_mobile(series):
         dtype="object"
     )
 
-    # 91 + 10 digits
+    # ========================================================
+    # 91 + 10 DIGITS
+    # ========================================================
 
     mask_91 = (
         (digits.str.len() == 12)
@@ -158,7 +159,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_91] = "91"
 
-    # 10 digits
+    # ========================================================
+    # 10 DIGITS
+    # ========================================================
 
     mask_10 = (
         digits.str.len() == 10
@@ -170,7 +173,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_10] = "91"
 
-    # International
+    # ========================================================
+    # INTERNATIONAL
+    # ========================================================
 
     mask_other = (
         (digits.str.len() > 10)
@@ -403,6 +408,142 @@ def extract_clients():
 
 
 # ============================================================
+# GET CKYC / DP ID LOOKUP
+#
+# IMPORTANT:
+# Mapping is done using PAN.
+#
+# silver.investor_master
+#        |
+#        | PAN
+#        v
+# ckyc_no / dp_id
+# ============================================================
+
+def get_ckyc_dp_lookup():
+
+    print()
+    print("=" * 80)
+    print("BUILDING PAN -> CKYC / DP ID LOOKUP")
+    print("=" * 80)
+
+    query = """
+
+    SELECT
+        pan_no,
+        ckyc_no,
+        dp_id
+    FROM silver.investor_master
+    WHERE pan_no IS NOT NULL
+      AND TRIM(pan_no) <> ''
+
+    """
+
+    lookup = safe_read(query)
+
+    if lookup.empty:
+
+        print(
+            "No CKYC / DP ID records found "
+            "in silver.investor_master."
+        )
+
+        return pd.DataFrame(
+            columns=[
+                "pan",
+                "ckyc_no",
+                "dp_id"
+            ]
+        )
+
+    # ========================================================
+    # CLEAN PAN
+    # ========================================================
+
+    lookup["pan"] = clean_pan(
+        lookup["pan_no"]
+    )
+
+    # ========================================================
+    # CLEAN CKYC / DP ID
+    # ========================================================
+
+    lookup["ckyc_no"] = clean_string(
+        lookup["ckyc_no"]
+    )
+
+    lookup["dp_id"] = clean_string(
+        lookup["dp_id"]
+    )
+
+    lookup = lookup[
+        lookup["pan"].notna()
+    ].copy()
+
+    # ========================================================
+    # SORT SO THAT RECORDS HAVING CKYC / DP ID
+    # ARE PREFERRED
+    # ========================================================
+
+    lookup["_has_ckyc"] = (
+        lookup["ckyc_no"].notna()
+    )
+
+    lookup["_has_dp_id"] = (
+        lookup["dp_id"].notna()
+    )
+
+    lookup = lookup.sort_values(
+        by=[
+            "pan",
+            "_has_ckyc",
+            "_has_dp_id"
+        ],
+        ascending=[
+            True,
+            False,
+            False
+        ]
+    )
+
+    # ========================================================
+    # ONE RECORD PER PAN
+    # ========================================================
+
+    lookup = (
+        lookup
+        .drop_duplicates(
+            subset=["pan"],
+            keep="first"
+        )
+        [
+            [
+                "pan",
+                "ckyc_no",
+                "dp_id"
+            ]
+        ]
+    )
+
+    print(
+        "Unique PANs in CKYC / DP ID lookup:",
+        len(lookup)
+    )
+
+    print(
+        "PANs having CKYC:",
+        lookup["ckyc_no"].notna().sum()
+    )
+
+    print(
+        "PANs having DP ID:",
+        lookup["dp_id"].notna().sum()
+    )
+
+    return lookup
+
+
+# ============================================================
 # TRANSFORM CLIENTS
 # ============================================================
 
@@ -460,6 +601,18 @@ def transform_clients(df):
         df["sip_pan"]
     )
 
+    # ========================================================
+    # FINAL PAN
+    #
+    # SAME EXISTING LOGIC
+    #
+    # Investor PAN
+    #     ↓
+    # Transaction PAN
+    #     ↓
+    # SIP PAN
+    # ========================================================
+
     df["pan"] = (
         df["pan_no"]
         .fillna(df["txn_pan"])
@@ -492,6 +645,71 @@ def transform_clients(df):
     print(
         "Missing PAN     :",
         df["pan"].isna().sum()
+    )
+
+    # ========================================================
+    # CKYC / DP ID PAN MAPPING
+    #
+    # THIS IS THE IMPORTANT FIX.
+    #
+    # We do NOT take CKYC / DP ID simply from the
+    # folio-joined investor row.
+    #
+    # Instead:
+    #
+    # final gold PAN
+    #       ↓
+    # silver.investor_master.pan_no
+    #       ↓
+    # ckyc_no / dp_id
+    # ========================================================
+
+    ckyc_dp_lookup = get_ckyc_dp_lookup()
+
+    if not ckyc_dp_lookup.empty:
+
+        df = df.merge(
+            ckyc_dp_lookup,
+            how="left",
+            left_on="pan",
+            right_on="pan",
+            suffixes=(
+                "",
+                "_lookup"
+            )
+        )
+
+    else:
+
+        df["ckyc_no"] = pd.NA
+        df["dp_id"] = pd.NA
+
+    print("\nPAN Based CKYC / DP ID Mapping")
+    print("-" * 80)
+
+    print(
+        "Final PANs:",
+        df["pan"].notna().sum()
+    )
+
+    print(
+        "CKYC mapped:",
+        df["ckyc_no"].notna().sum()
+    )
+
+    print(
+        "CKYC missing:",
+        df["ckyc_no"].isna().sum()
+    )
+
+    print(
+        "DP ID mapped:",
+        df["dp_id"].notna().sum()
+    )
+
+    print(
+        "DP ID missing:",
+        df["dp_id"].isna().sum()
     )
 
     # ========================================================
@@ -850,6 +1068,22 @@ def transform_clients(df):
         ] = "Verified"
 
     # ========================================================
+    # CKYC NO
+    # ========================================================
+
+    gold["ckyc_no"] = clean_string(
+        df["ckyc_no"]
+    )
+
+    # ========================================================
+    # DP ID
+    # ========================================================
+
+    gold["dp_id"] = clean_string(
+        df["dp_id"]
+    )
+
+    # ========================================================
     # APP MANAGED
     # ========================================================
 
@@ -1033,10 +1267,10 @@ def transform_clients(df):
     # CREATED AT
     # ========================================================
 
-    # UTC, not naive local time: this column is `timestamp without time zone`,
-    # so a naive IST value is stored verbatim as IST while every other
-    # loader stores UTC -- which made cross-table time-window queries wrong.
-    gold["created_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
+    gold["created_at"] = (
+        datetime.now(timezone.utc)
+        .replace(tzinfo=None)
+    )
 
     # ========================================================
     # FINAL COLUMN ORDER
@@ -1074,6 +1308,8 @@ def transform_clients(df):
             "investor_type",
             "tax_status",
             "kyc_status",
+            "ckyc_no",
+            "dp_id",
             "risk_profile",
             "rm_id",
             "branch_id",
@@ -1092,7 +1328,219 @@ def transform_clients(df):
         len(gold)
     )
 
+    print(
+        "Gold CKYC values    :",
+        gold["ckyc_no"].notna().sum()
+    )
+
+    print(
+        "Gold DP ID values   :",
+        gold["dp_id"].notna().sum()
+    )
+
     return gold
+
+
+# ============================================================
+# UPDATE EXISTING CLIENT CKYC / DP ID
+# ============================================================
+
+def update_existing_ckyc_dp(gold_df):
+
+    print()
+    print("=" * 80)
+    print("UPDATING EXISTING CLIENT CKYC / DP ID")
+    print("=" * 80)
+
+    update_df = gold_df[
+        gold_df["pan"].notna()
+        &
+        (
+            gold_df["ckyc_no"].notna()
+            |
+            gold_df["dp_id"].notna()
+        )
+    ][
+        [
+            "pan",
+            "ckyc_no",
+            "dp_id"
+        ]
+    ].copy()
+
+    if update_df.empty:
+
+        print(
+            "No existing clients have CKYC / DP ID values to update."
+        )
+
+        return 0
+
+    # ========================================================
+    # GET EXISTING CLIENTS
+    # ========================================================
+
+    existing = safe_read(
+        """
+        SELECT
+            id,
+            pan,
+            ckyc_no,
+            dp_id
+        FROM gold.clients
+        WHERE pan IS NOT NULL
+        """
+    )
+
+    if existing.empty:
+
+        print(
+            "No existing clients found."
+        )
+
+        return 0
+
+    existing["pan"] = clean_pan(
+        existing["pan"]
+    )
+
+    # ========================================================
+    # MAP GOLD DATA TO EXISTING CLIENT ID
+    # ========================================================
+
+    update_df = update_df.merge(
+        existing[
+            [
+                "id",
+                "pan",
+                "ckyc_no",
+                "dp_id"
+            ]
+        ],
+        on="pan",
+        how="inner",
+        suffixes=(
+            "_new",
+            "_existing"
+        )
+    )
+
+    if update_df.empty:
+
+        print(
+            "No matching existing clients found."
+        )
+
+        return 0
+
+    # ========================================================
+    # ONLY UPDATE WHEN GOLD HAS A VALUE
+    # AND EXISTING VALUE IS NULL
+    # ========================================================
+
+    update_df["final_ckyc"] = (
+        update_df["ckyc_no_existing"]
+        .fillna(update_df["ckyc_no_new"])
+    )
+
+    update_df["final_dp_id"] = (
+        update_df["dp_id_existing"]
+        .fillna(update_df["dp_id_new"])
+    )
+
+    changed = update_df[
+        (
+            update_df["ckyc_no_existing"].isna()
+            &
+            update_df["ckyc_no_new"].notna()
+        )
+        |
+        (
+            update_df["dp_id_existing"].isna()
+            &
+            update_df["dp_id_new"].notna()
+        )
+    ].copy()
+
+    if changed.empty:
+
+        print(
+            "No existing client CKYC / DP ID values required updating."
+        )
+
+        return 0
+
+    # ========================================================
+    # UPDATE DATABASE
+    # ========================================================
+
+    updated_count = 0
+
+    try:
+
+        with engine.begin() as connection:
+
+            for _, row in changed.iterrows():
+
+                query = """
+
+                UPDATE gold.clients
+
+                SET
+                    ckyc_no = COALESCE(:ckyc_no, ckyc_no),
+                    dp_id = COALESCE(:dp_id, dp_id)
+
+                WHERE id = :id
+
+                """
+
+                connection.execute(
+                    __import__(
+                        "sqlalchemy"
+                    ).text(query),
+                    {
+                        "ckyc_no": (
+                            None
+                            if pd.isna(
+                                row["ckyc_no_new"]
+                            )
+                            else str(
+                                row["ckyc_no_new"]
+                            )
+                        ),
+                        "dp_id": (
+                            None
+                            if pd.isna(
+                                row["dp_id_new"]
+                            )
+                            else str(
+                                row["dp_id_new"]
+                            )
+                        ),
+                        "id": row["id"]
+                    }
+                )
+
+                updated_count += 1
+
+        print(
+            "Existing clients updated:",
+            updated_count
+        )
+
+        return updated_count
+
+    except Exception as e:
+
+        print(
+            "Existing CKYC / DP ID update failed:",
+            str(e)[:3000]
+        )
+
+        traceback.print_exc()
+
+        return 0
+
 
 # ============================================================
 # LOAD CLIENTS INTO DATABASE
@@ -1105,17 +1553,27 @@ def load_clients(gold_df):
     print("=" * 80)
 
     if gold_df.empty:
+
         print("No client rows generated.")
+
         return False
 
     gold_df = gold_df.copy()
 
     # ========================================================
-    # CLEAN PAN
+    # CLEAN VALUES
     # ========================================================
 
     gold_df["pan"] = clean_pan(
         gold_df["pan"]
+    )
+
+    gold_df["ckyc_no"] = clean_string(
+        gold_df["ckyc_no"]
+    )
+
+    gold_df["dp_id"] = clean_string(
+        gold_df["dp_id"]
     )
 
     # ========================================================
@@ -1134,7 +1592,7 @@ def load_clients(gold_df):
     )
 
     # ========================================================
-    # REMOVE DUPLICATES INSIDE CURRENT BATCH
+    # REMOVE DUPLICATES
     # ========================================================
 
     before = len(gold_df)
@@ -1167,7 +1625,15 @@ def load_clients(gold_df):
         return True
 
     # ========================================================
-    # GET EXISTING PANS FROM DATABASE
+    # UPDATE EXISTING CLIENTS FIRST
+    # ========================================================
+
+    update_existing_ckyc_dp(
+        gold_df
+    )
+
+    # ========================================================
+    # GET EXISTING PANS
     # ========================================================
 
     print()
@@ -1203,12 +1669,12 @@ def load_clients(gold_df):
         ].copy()
 
         print(
-            "Existing client rows skipped:",
+            "Existing client rows skipped for INSERT:",
             before - len(gold_df)
         )
 
     print(
-        "Rows actually going to database:",
+        "Rows actually going to INSERT:",
         len(gold_df)
     )
 
@@ -1217,11 +1683,6 @@ def load_clients(gold_df):
     # ========================================================
 
     if gold_df.empty:
-
-        print()
-        print(
-            "All client records already exist in gold.clients."
-        )
 
         count_df = safe_read(
             """
@@ -1244,9 +1705,6 @@ def load_clients(gold_df):
     # ========================================================
     # CHECK TABLE COLUMNS
     # ========================================================
-
-    print()
-    print("Checking gold.clients table columns...")
 
     table_columns = safe_read(
         """
@@ -1286,6 +1744,7 @@ def load_clients(gold_df):
         )
 
         for col in missing_database_columns:
+
             print(
                 " -",
                 col
@@ -1294,7 +1753,7 @@ def load_clients(gold_df):
         return False
 
     # ========================================================
-    # KEEP ONLY DATABASE COLUMNS
+    # KEEP DATABASE COLUMNS
     # ========================================================
 
     gold_df = gold_df[
@@ -1307,12 +1766,6 @@ def load_clients(gold_df):
 
     # ========================================================
     # INSERT
-    #
-    # NOTE: pandas NULL -> database NULL conversion and chunking are both
-    # handled inside upsert_dataframe() itself (it takes a chunksize
-    # parameter and applies astype(object).where(pd.notnull(...), None)
-    # right before building the insert records), so no pre-conversion or
-    # manual batching loop is needed here.
     # ========================================================
 
     print()
@@ -1330,12 +1783,9 @@ def load_clients(gold_df):
             table="clients",
             conflict_columns=["pan"],
             chunksize=100,
-            # gold.clients has no updated_at (or equivalent) column.
             updated_at_column=None,
         )
 
-        # upsert_dataframe() now returns a breakdown rather than a bare count;
-        # "inserted" is the number of rows that did not already exist.
         inserted_rows = upsert_result["inserted"]
 
         print(
@@ -1344,7 +1794,7 @@ def load_clients(gold_df):
         )
 
         # ====================================================
-        # VERIFY DATABASE
+        # VERIFY
         # ====================================================
 
         print()
@@ -1362,17 +1812,54 @@ def load_clients(gold_df):
 
         if not count_df.empty:
 
-            total_clients = int(
-                count_df.iloc[0]["total_clients"]
-            )
-
             print(
                 "Total rows in gold.clients:",
-                total_clients
+                int(
+                    count_df.iloc[0]["total_clients"]
+                )
             )
 
         # ====================================================
-        # SHOW ACTUAL DATABASE DATA
+        # CKYC / DP ID COUNTS
+        # ====================================================
+
+        validation_df = safe_read(
+            """
+            SELECT
+
+                COUNT(*) AS total_clients,
+
+                COUNT(ckyc_no) AS clients_with_ckyc,
+
+                COUNT(dp_id) AS clients_with_dp_id
+
+            FROM gold.clients
+            """
+        )
+
+        if not validation_df.empty:
+
+            print()
+            print(
+                "Clients with CKYC:",
+                int(
+                    validation_df.iloc[0][
+                        "clients_with_ckyc"
+                    ]
+                )
+            )
+
+            print(
+                "Clients with DP ID:",
+                int(
+                    validation_df.iloc[0][
+                        "clients_with_dp_id"
+                    ]
+                )
+            )
+
+        # ====================================================
+        # PREVIEW
         # ====================================================
 
         database_preview = safe_read(
@@ -1380,12 +1867,11 @@ def load_clients(gold_df):
             SELECT
                 pan,
                 full_name,
-                phone,
-                mobile,
+                ckyc_no,
+                dp_id,
                 arn,
                 sub_arn,
                 email,
-                date_of_birth,
                 investor_type,
                 tax_status,
                 kyc_status,
@@ -1394,6 +1880,8 @@ def load_clients(gold_df):
                 source,
                 created_at
             FROM gold.clients
+            WHERE ckyc_no IS NOT NULL
+               OR dp_id IS NOT NULL
             ORDER BY created_at DESC
             LIMIT 10
             """
@@ -1401,14 +1889,14 @@ def load_clients(gold_df):
 
         print()
         print(
-            "Latest 10 rows actually stored "
-            "in PostgreSQL gold.clients:"
+            "Sample clients having CKYC / DP ID:"
         )
 
         if database_preview.empty:
 
             print(
-                "WARNING: Database returned 0 rows."
+                "WARNING: No CKYC / DP ID values found "
+                "in gold.clients."
             )
 
         else:
@@ -1438,21 +1926,11 @@ def load_clients(gold_df):
             type(e).__name__
         )
 
-        # IMPORTANT:
-        # Print only the actual error.
-        # Do NOT print the complete SQLAlchemy parameter list.
-
-        error_text = str(e)
-
         print(
-            "Database error:"
+            "Database error:",
+            str(e)[:3000]
         )
 
-        print(
-            error_text[:3000]
-        )
-
-        print()
         print(
             "Rows successfully inserted before failure:",
             inserted_rows
@@ -1463,14 +1941,14 @@ def load_clients(gold_df):
             len(gold_df) - inserted_rows
         )
 
-        print()
-        print(
-            "The transaction has been rolled back."
-        )
+        traceback.print_exc()
 
         return False
 
-#Main Function#
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
 
 def main():
 
