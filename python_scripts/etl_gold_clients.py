@@ -635,6 +635,15 @@ def transform_clients(df):
         gold["date_of_birth"] = pd.NaT
 
     # ========================================================
+    # AGE
+    # ========================================================
+
+    if "age" in df.columns:
+        gold["age"] = df["age"].astype("Int64")
+    else:
+        gold["age"] = pd.NA
+
+    # ========================================================
     # APP MANAGED
     # ========================================================
 
@@ -1078,6 +1087,7 @@ def transform_clients(df):
             "sub_arn",
             "email",
             "date_of_birth",
+            "age",
             "marital_status",
             "anniversary_date",
             "blood_group",

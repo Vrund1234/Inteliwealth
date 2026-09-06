@@ -1144,6 +1144,37 @@ def transform_investor_master(df):
             )
 
     # =================================================
+    # AGE CALCULATION
+    # =================================================
+
+    if "dob" in df.columns:
+
+        today = pd.Timestamp.today().normalize()
+
+        dob = pd.to_datetime(
+            df["dob"],
+            errors="coerce"
+        )
+
+        df["age"] = (
+            today.year
+            - dob.dt.year
+            - (
+                (today.month < dob.dt.month)
+                |
+                (
+                    (today.month == dob.dt.month)
+                    & (today.day < dob.dt.day)
+                )
+            )
+        )
+
+        # If DOB is NULL, age should also be NULL
+        df.loc[dob.isna(), "age"] = None
+
+        df["age"] = df["age"].astype("Int64")
+
+    # =================================================
     # EMPTY STRING → NULL
     # =================================================
 
