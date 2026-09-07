@@ -1174,6 +1174,17 @@ def transform_investor_master(df):
 
         df["age"] = df["age"].astype("Int64")
 
+
+    # =================================================
+    # MINOR IDENTIFICATION
+    # =================================================
+
+    if "age" in df.columns:
+        df["is_minor"] = df["age"].apply(
+            lambda x: True if pd.notna(x) and x < 18 else False
+            if pd.notna(x) else pd.NA
+        ).astype("boolean")
+
     # =================================================
     # EMPTY STRING → NULL
     # =================================================

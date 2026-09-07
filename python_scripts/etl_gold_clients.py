@@ -644,6 +644,15 @@ def transform_clients(df):
         gold["age"] = pd.NA
 
     # ========================================================
+    # IS MINOR
+    # ========================================================
+
+    if "is_minor" in df.columns:
+        gold["is_minor"] = df["is_minor"].astype("boolean")
+    else:
+        gold["is_minor"] = pd.NA
+
+    # ========================================================
     # APP MANAGED
     # ========================================================
 
@@ -1088,6 +1097,7 @@ def transform_clients(df):
             "email",
             "date_of_birth",
             "age",
+            "is_minor",
             "marital_status",
             "anniversary_date",
             "blood_group",
