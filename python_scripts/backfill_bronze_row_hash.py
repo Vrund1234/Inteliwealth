@@ -67,7 +67,7 @@ def _normalize_investor(df, compare_cols):
     for col in compare_cols:
         if col in etl_investor_master.DATE_COLUMNS:
             df[col] = (
-                pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                pd.to_datetime(df[col], errors="coerce", format="ISO8601")
                 .dt.strftime("%Y-%m-%d")
                 .fillna("")
             )

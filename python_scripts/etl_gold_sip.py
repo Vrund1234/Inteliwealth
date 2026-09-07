@@ -671,7 +671,7 @@ def transform_sip(df):
         pd.to_datetime(
             get_column(df, "from_date"),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
@@ -684,7 +684,7 @@ def transform_sip(df):
         pd.to_datetime(
             get_column(df, "to_date"),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
@@ -736,7 +736,7 @@ def transform_sip(df):
         pd.to_datetime(
             get_column(df, "reg_date"),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
@@ -749,7 +749,7 @@ def transform_sip(df):
         pd.to_datetime(
             get_column(df, "cease_date"),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )

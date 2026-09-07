@@ -209,18 +209,24 @@ def clean_value(value):
 
 def format_dates(df, source=None):
     """
-    Parse DATE_COLUMNS with the same deterministic, day-first parser
-    etl_trans.py already uses for transaction dates (parse_source_date):
-    commits to DD-MM-YYYY only when unambiguous (first component > 12),
-    and returns None rather than guessing when a value could be read either
-    way -- e.g. "05-09-2017" is refused, not silently read as MM-DD-YYYY.
+    Parse DATE_COLUMNS with the same shared parser etl_trans.py uses for
+    transaction dates (raw_ingestion.parse_source_date), passing `source`
+    so the component order follows the RTA the rows came from: CAMS is
+    read M/D/YYYY, KFIN D/M/YYYY.
 
-    Previously this used bare pd.to_datetime(df[col], errors="coerce"),
-    which has no such rule: pandas' US-style default (no dayfirst) silently
-    resolves an ambiguous DD-MM-YYYY value as MM-DD-YYYY. Confirmed live:
-    KFIN regno 232086 (folio 7776062333) is stored in bronze with
-    reg_date=2017-05-09, but re-parsing the identical source file with the
-    old code produced 2017-09-05 for the same row -- day and month swapped.
+    `source` is what makes this deterministic, so pass it. It was
+    previously accepted and ignored, and every RTA was read day-first --
+    which is right for KFIN and wrong for CAMS. Under that rule a CAMS
+    date whose day exceeded the 12th became an impossible month and was
+    coerced to None, and every other CAMS date was silently transposed:
+    407 of the 738 REG_DATE values in R49 were dropped and the remaining
+    331 were swapped, leaving none correct.
+
+    Before that it was bare pd.to_datetime(df[col], errors="coerce"),
+    whose US-style default read ambiguous KFIN values month-first.
+    Confirmed live: KFIN regno 232086 (folio 7776062333) sits in bronze
+    with reg_date=2017-05-09, while re-parsing the identical source file
+    with that code produced 2017-09-05 -- day and month swapped.
     """
 
     if df is None or df.empty:
@@ -233,14 +239,16 @@ def format_dates(df, source=None):
         if col not in df.columns:
             continue
 
-        df[col] = df[col].apply(parse_source_date).apply(
+        df[col] = df[col].apply(
+            lambda v: parse_source_date(v, source)
+        ).apply(
             lambda d: d.strftime("%Y-%m-%d") if d is not None else None
         )
 
     return df
 
 
-def dedupe_compare_date(value):
+def dedupe_compare_date(value, source=None):
     """Same deterministic day-first parsing as format_dates(), but blank or
     unparseable values become "" rather than None -- process_sip()'s
     duplicate-flag check joins every compared column straight into one
@@ -248,7 +256,7 @@ def dedupe_compare_date(value):
     established "no value" representation (matching non-date columns in
     that same comparison)."""
 
-    parsed = parse_source_date(value)
+    parsed = parse_source_date(value, source)
     return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
 
 

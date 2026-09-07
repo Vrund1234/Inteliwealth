@@ -216,7 +216,7 @@ def read_table(schema, table, limit=100):
 
         for col in date_cols:
             if col in df.columns:
-                dt_series = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+                dt_series = pd.to_datetime(df[col], errors="coerce", format="ISO8601")
                 formatted = dt_series.dt.strftime("%Y-%m-%d")
                 df[col] = formatted.where(dt_series.notna(), None)
 

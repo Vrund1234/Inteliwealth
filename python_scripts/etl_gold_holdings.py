@@ -905,7 +905,7 @@ def transform_holdings(df):
                 "rep_date"
             ),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
@@ -921,7 +921,7 @@ def transform_holdings(df):
                 "traddate"
             ),
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
@@ -1355,7 +1355,7 @@ def transform_holdings(df):
         pd.to_datetime(
             df["purchase_date"],
             errors="coerce",
-            dayfirst=True
+            format="ISO8601"
         )
         .dt.date
     )
