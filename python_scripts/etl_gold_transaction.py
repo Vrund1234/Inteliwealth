@@ -22,6 +22,8 @@ def safe_read(query, params=None):
 
         print("SQL ERROR:", e)
 
+        traceback.print_exc(limit=5)
+
         return pd.DataFrame()
 
 
@@ -45,9 +47,7 @@ def get_last_gold_timestamp():
 
     if result.empty:
 
-        print(
-            "Gold transactions table returned no result."
-        )
+        print("Gold transactions table returned no result.")
 
         return None
 
@@ -55,9 +55,7 @@ def get_last_gold_timestamp():
 
     if pd.isna(last_created_at):
 
-        print(
-            "Gold transactions is empty."
-        )
+        print("Gold transactions is empty.")
 
         return None
 
@@ -71,8 +69,6 @@ def get_last_gold_timestamp():
 
 # =====================================================
 # EXTRACT SILVER TRANSACTIONS
-#
-# IMPORTANT:
 #
 # ONLY TIMESTAMP COMPARISON IS USED.
 #
@@ -88,39 +84,24 @@ def extract_transactions():
     print("EXTRACTING SILVER TRANSACTIONS")
     print("=" * 80)
 
-    # -------------------------------------------------
-    # GET LAST GOLD TIMESTAMP
-    # -------------------------------------------------
-
     last_gold_timestamp = get_last_gold_timestamp()
 
-    # -------------------------------------------------
+    # =================================================
     # FIRST RUN
-    #
-    # If Gold is empty, take all Silver rows.
-    # -------------------------------------------------
+    # =================================================
 
     if last_gold_timestamp is None:
 
         print()
-        print(
-            "No previous Gold timestamp found."
-        )
-
-        print(
-            "This is treated as the first Gold load."
-        )
+        print("No previous Gold timestamp found.")
+        print("This is treated as the first Gold load.")
 
         query = """
             SELECT
                 source,
                 folio_no,
                 prodcode,
-
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
-
                 trxntype,
                 trxnno,
                 trxnstat,
@@ -145,7 +126,16 @@ def extract_transactions():
                 td_purred,
                 isin,
                 created_at,
-                flag
+                flag,
+                src_of_txn,
+                trxnmode,
+                trxn_type_flag,
+                transmission_flag,
+                sub_tran_type,
+                to_product_code,
+                to_scheme,
+                to_plan,
+                switch_ref_no
 
             FROM silver.transaction_master_new
 
@@ -154,12 +144,9 @@ def extract_transactions():
 
         df = safe_read(query)
 
-    # -------------------------------------------------
+    # =================================================
     # SUBSEQUENT RUN
-    #
-    # Only Silver rows newer than the latest Gold
-    # created_at are loaded.
-    # -------------------------------------------------
+    # =================================================
 
     else:
 
@@ -168,20 +155,14 @@ def extract_transactions():
             "Loading only Silver rows newer than:"
         )
 
-        print(
-            last_gold_timestamp
-        )
+        print(last_gold_timestamp)
 
         query = """
             SELECT
                 source,
                 folio_no,
                 prodcode,
-
-                -- IMPORTANT:
-                -- Take scheme_id directly from Silver.
                 scheme_id,
-
                 trxntype,
                 trxnno,
                 trxnstat,
@@ -206,7 +187,16 @@ def extract_transactions():
                 td_purred,
                 isin,
                 created_at,
-                flag
+                flag,
+                src_of_txn,
+                trxnmode,
+                trxn_type_flag,
+                transmission_flag,
+                sub_tran_type,
+                to_product_code,
+                to_scheme,
+                to_plan,
+                switch_ref_no
 
             FROM silver.transaction_master_new
 
@@ -220,9 +210,9 @@ def extract_transactions():
             params=(last_gold_timestamp,)
         )
 
-    # -------------------------------------------------
+    # =================================================
     # RESULT
-    # -------------------------------------------------
+    # =================================================
 
     if df.empty:
 
@@ -274,9 +264,7 @@ def extract_transactions():
         df["scheme_id"].isna().sum()
     )
 
-    print(
-        "Sample Silver scheme IDs:"
-    )
+    print("Sample Silver scheme IDs:")
 
     print(
         df["scheme_id"]
@@ -289,157 +277,964 @@ def extract_transactions():
 
 
 # =====================================================
-# TRANSACTION CLASSIFICATION
+# CONSTANTS
 # =====================================================
 
-def classify_transaction_fast(df):
+IN = "IN"
+OUT = "OUT"
+NONE = "NONE"
 
-    text = (
 
-        df["trxn_nature"]
-        .fillna("")
-        .astype(str)
+# =====================================================
+# EXACT TRANSACTION CODE MAP
+#
+# code -> (
+#     txn_type,
+#     transaction_sub_type,
+#     transaction_direction
+# )
+# =====================================================
 
-        + " "
-
-        + df["trxntype"]
-        .fillna("")
-        .astype(str)
-
-        + " "
-
-        + df["td_purred"]
-        .fillna("")
-        .astype(str)
-
-    ).str.lower()
-
-    result = pd.Series(
-        "OTHER",
-        index=df.index
-    )
+TRANSACTION_CODE_MAP = {
 
     # -------------------------------------------------
     # PURCHASE
     # -------------------------------------------------
 
-    result[
-        text.str.contains(
-            "purchase|fresh purchase|additional purchase",
-            regex=True,
-            na=False
-        )
-        |
-        df["trxntype"]
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .eq("PUR")
-    ] = "PURCHASE"
+    "NEW": (
+        "PURCHASE",
+        "NEW_PURCHASE",
+        IN
+    ),
+
+    "ADD": (
+        "PURCHASE",
+        "ADDITIONAL_PURCHASE",
+        IN
+    ),
+
+    "SIN": (
+        "PURCHASE",
+        "SIP",
+        IN
+    ),
+
+    "IPO": (
+        "PURCHASE",
+        "INITIAL_ALLOTMENT",
+        IN
+    ),
 
     # -------------------------------------------------
     # REDEMPTION
     # -------------------------------------------------
 
-    result[
-        text.str.contains(
-            "redemption|redeem",
-            regex=True,
-            na=False
-        )
-        |
-        df["trxntype"]
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .eq("RED")
-    ] = "REDEMPTION"
+    "RED": (
+        "REDEMPTION",
+        "REDEMPTION",
+        OUT
+    ),
+
+    "FUL": (
+        "REDEMPTION",
+        "FULL_REDEMPTION",
+        OUT
+    ),
+
+    "SWD": (
+        "REDEMPTION",
+        "SWP",
+        OUT
+    ),
 
     # -------------------------------------------------
-    # SIP
+    # SWITCH
     # -------------------------------------------------
 
-    result[
-        text.str.contains(
-            "sip|systematic",
-            regex=True,
-            na=False
-        )
-    ] = "SIP"
+    "SWIN": (
+        "SWITCH",
+        "SWITCH_IN",
+        IN
+    ),
 
-    # -------------------------------------------------
-    # SWITCH IN
-    # -------------------------------------------------
+    "SWOF": (
+        "SWITCH",
+        "SWITCH_OUT",
+        OUT
+    ),
 
-    result[
-        text.str.contains(
-            "switch in|switchin",
-            regex=True,
-            na=False
-        )
-    ] = "SWITCH_IN"
+    "SWOP": (
+        "SWITCH",
+        "SWITCH_OUT",
+        OUT
+    ),
 
-    # -------------------------------------------------
-    # SWITCH OUT
-    # -------------------------------------------------
+    "LTIN": (
+        "SWITCH",
+        "SWITCH_IN",
+        IN
+    ),
 
-    result[
-        text.str.contains(
-            "switch out|switchout",
-            regex=True,
-            na=False
-        )
-    ] = "SWITCH_OUT"
+    "LTIA": (
+        "SWITCH",
+        "SWITCH_IN",
+        IN
+    ),
 
-    # -------------------------------------------------
-    # DIVIDEND
-    # -------------------------------------------------
+    "LTOF": (
+        "SWITCH",
+        "SWITCH_OUT",
+        OUT
+    ),
 
-    result[
-        text.str.contains(
-            "dividend",
-            regex=True,
-            na=False
-        )
-    ] = "DIVIDEND"
+    "LTOP": (
+        "SWITCH",
+        "SWITCH_OUT",
+        OUT
+    ),
 
     # -------------------------------------------------
     # STP
     # -------------------------------------------------
 
-    result[
-        text.str.contains(
-            "stp",
-            regex=True,
-            na=False
+    "STPA": (
+        "STP",
+        "STP_IN",
+        IN
+    ),
+
+    "STPN": (
+        "STP",
+        "STP_IN",
+        IN
+    ),
+
+    "STPO": (
+        "STP",
+        "STP_OUT",
+        OUT
+    ),
+
+    # -------------------------------------------------
+    # TRANSFER / TRANSMISSION
+    # -------------------------------------------------
+
+    "TRMI": (
+        "TRANSFER",
+        "TRANSFER_IN",
+        IN
+    ),
+
+    "TMI": (
+        "TRANSFER",
+        "TRANSFER_IN",
+        IN
+    ),
+
+    "TRMO": (
+        "TRANSFER",
+        "TRANSFER_OUT",
+        OUT
+    ),
+
+    "TMO": (
+        "TRANSFER",
+        "TRANSFER_OUT",
+        OUT
+    ),
+
+    # -------------------------------------------------
+    # DIVIDEND
+    # -------------------------------------------------
+
+    "DIR": (
+        "DIVIDEND",
+        "DIVIDEND_REINVESTMENT",
+        IN
+    ),
+
+    "DIV": (
+        "DIVIDEND",
+        "DIVIDEND_PAYOUT",
+        NONE
+    ),
+
+    "DSPI": (
+        "DIVIDEND",
+        "DIVIDEND_SWEEP_IN",
+        IN
+    ),
+
+    "DSPO": (
+        "DIVIDEND",
+        "DIVIDEND_SWEEP_OUT",
+        OUT
+    ),
+
+    "DRO": (
+        "DIVIDEND",
+        "DIVIDEND_SWEEP_OUT",
+        OUT
+    ),
+
+    # -------------------------------------------------
+    # BONUS
+    # -------------------------------------------------
+
+    "BNS": (
+        "BONUS",
+        "BONUS",
+        IN
+    ),
+
+    # -------------------------------------------------
+    # CONSOLIDATION
+    # -------------------------------------------------
+
+    "CNI": (
+        "CONSOLIDATION",
+        "CONSOLIDATION_IN",
+        IN
+    ),
+
+    # -------------------------------------------------
+    # NON-UNIT EVENTS
+    # -------------------------------------------------
+
+    "PLDO": (
+        "OTHER",
+        "PLEDGE",
+        NONE
+    ),
+
+    "UPLO": (
+        "OTHER",
+        "UNPLEDGE",
+        NONE
+    ),
+
+    "RFD": (
+        "OTHER",
+        "REFUND",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # PURCHASE REJECTIONS
+    # -------------------------------------------------
+
+    "NEWR": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    "NEWD": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    "ADDR": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    "ADDD": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    "IPOR": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    "IPOD": (
+        "OTHER",
+        "PURCHASE_REJECTION",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # SIP REJECTIONS
+    # -------------------------------------------------
+
+    "SINR": (
+        "OTHER",
+        "SIP_REJECTION",
+        NONE
+    ),
+
+    "SIND": (
+        "OTHER",
+        "SIP_REJECTION",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # REDEMPTION REJECTIONS
+    # -------------------------------------------------
+
+    "REDR": (
+        "OTHER",
+        "REDEMPTION_REJECTION",
+        NONE
+    ),
+
+    "FULR": (
+        "OTHER",
+        "REDEMPTION_REJECTION",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # STP REJECTIONS
+    # -------------------------------------------------
+
+    "STPAR": (
+        "OTHER",
+        "STP_IN_REJECTION",
+        NONE
+    ),
+
+    "STPAD": (
+        "OTHER",
+        "STP_IN_REJECTION",
+        NONE
+    ),
+
+    "STPOR": (
+        "OTHER",
+        "STP_OUT_REJECTION",
+        NONE
+    ),
+
+    "STPOD": (
+        "OTHER",
+        "STP_OUT_REJECTION",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # SWITCH REJECTIONS
+    # -------------------------------------------------
+
+    "LTINR": (
+        "OTHER",
+        "SWITCH_IN_REJECTION",
+        NONE
+    ),
+
+    "LTIAR": (
+        "OTHER",
+        "SWITCH_IN_REJECTION",
+        NONE
+    ),
+
+    "LTOFR": (
+        "OTHER",
+        "SWITCH_OUT_REJECTION",
+        NONE
+    ),
+
+    "LTOPR": (
+        "OTHER",
+        "SWITCH_OUT_REJECTION",
+        NONE
+    ),
+
+    # -------------------------------------------------
+    # DIVIDEND / BONUS REJECTIONS
+    # -------------------------------------------------
+
+    "DIRR": (
+        "OTHER",
+        "REINVESTMENT_REJECTION",
+        NONE
+    ),
+
+    "DIVR": (
+        "OTHER",
+        "DIVIDEND_REJECTION",
+        NONE
+    ),
+
+    "BNSR": (
+        "OTHER",
+        "BONUS_REJECTION",
+        NONE
+    ),
+}
+
+
+# =====================================================
+# CAMS PREFIX MAP
+#
+# CAMS codes may contain scheme-specific suffixes:
+#
+# SI13S
+# SO1
+# P80ES
+# DR1
+# etc.
+#
+# Longest prefix is checked first.
+# =====================================================
+
+TRANSACTION_CODE_PREFIX_MAP = {
+
+    "SI": (
+        "SWITCH",
+        "SWITCH_IN",
+        IN
+    ),
+
+    "SO": (
+        "SWITCH",
+        "SWITCH_OUT",
+        OUT
+    ),
+
+    "TI": (
+        "TRANSFER",
+        "TRANSFER_IN",
+        IN
+    ),
+
+    "TO": (
+        "TRANSFER",
+        "TRANSFER_OUT",
+        OUT
+    ),
+
+    "DR": (
+        "DIVIDEND",
+        "DIVIDEND_REINVESTMENT",
+        IN
+    ),
+
+    "DP": (
+        "DIVIDEND",
+        "DIVIDEND_PAYOUT",
+        NONE
+    ),
+
+    "P": (
+        "PURCHASE",
+        "PURCHASE",
+        IN
+    ),
+
+    "R": (
+        "REDEMPTION",
+        "REDEMPTION",
+        OUT
+    ),
+}
+
+
+# =====================================================
+# NORMALIZE RAW TRANSACTION CODE
+# =====================================================
+
+def normalize_transaction_code(value):
+
+    if value is None or pd.isna(value):
+
+        return ""
+
+    code = str(value).strip().upper()
+
+    if code.endswith(".0"):
+
+        code = code[:-2]
+
+    return code
+
+
+# =====================================================
+# CLASSIFY SINGLE TRANSACTION ROW
+# =====================================================
+
+def classify_transaction_row(row):
+
+    code = normalize_transaction_code(
+        row.get("trxntype")
+    )
+
+    nature = str(
+        row.get("trxn_nature") or ""
+    ).strip().lower()
+
+    td_purred = str(
+        row.get("td_purred") or ""
+    ).strip().lower()
+
+    src_of_txn = str(
+        row.get("src_of_txn") or ""
+    ).strip().lower()
+
+    trxnmode = str(
+        row.get("trxnmode") or ""
+    ).strip().lower()
+
+    trxn_type_flag = str(
+        row.get("trxn_type_flag") or ""
+    ).strip().lower()
+
+    transmission_flag = str(
+        row.get("transmission_flag") or ""
+    ).strip().lower()
+
+    sub_tran_type = str(
+        row.get("sub_tran_type") or ""
+    ).strip().lower()
+
+    switch_ref_no = str(
+        row.get("switch_ref_no") or ""
+    ).strip().lower()
+
+    # =================================================
+    # REJECTIONS FIRST
+    # =================================================
+
+    if code in TRANSACTION_CODE_MAP:
+
+        return TRANSACTION_CODE_MAP[code]
+
+    # =================================================
+    # PLEDGE / UNPLEDGE
+    # =================================================
+
+    if code == "PLDO":
+
+        return (
+            "OTHER",
+            "PLEDGE",
+            NONE
         )
-    ] = "STP"
 
-    # -------------------------------------------------
-    # TRANSFER IN
-    # -------------------------------------------------
+    if code == "UPLO":
 
-    result[
-        text.str.contains(
-            "transfer in|transfer-in",
-            regex=True,
-            na=False
+        return (
+            "OTHER",
+            "UNPLEDGE",
+            NONE
         )
-    ] = "TRANSFER_IN"
 
-    # -------------------------------------------------
-    # TRANSFER OUT
-    # -------------------------------------------------
+    # =================================================
+    # CONSOLIDATION
+    # =================================================
 
-    result[
-        text.str.contains(
-            "transfer out|transfer-out",
-            regex=True,
-            na=False
+    if code == "CNI":
+
+        return (
+            "CONSOLIDATION",
+            "CONSOLIDATION_IN",
+            IN
         )
-    ] = "TRANSFER_OUT"
 
-    return result
+    # =================================================
+    # TRANSMISSION
+    # =================================================
+
+    if (
+        code in {"TRMI", "TMI"}
+        or "transmission in" in nature
+    ):
+
+        return (
+            "TRANSFER",
+            "TRANSFER_IN",
+            IN
+        )
+
+    if (
+        code in {"TRMO", "TMO"}
+        or "transmission out" in nature
+    ):
+
+        return (
+            "TRANSFER",
+            "TRANSFER_OUT",
+            OUT
+        )
+
+    # =================================================
+    # SYSTEMATIC TRANSFER / STP
+    #
+    # Check this BEFORE generic SI/SO switch logic.
+    # =================================================
+
+    systematic_text = " ".join(
+        [
+            nature,
+            td_purred,
+            src_of_txn,
+            trxnmode,
+            trxn_type_flag,
+            sub_tran_type,
+            switch_ref_no,
+        ]
+    )
+
+    is_systematic = (
+        "systematic" in systematic_text
+        or "stp" in systematic_text
+        or "systematic" in code.lower()
+    )
+
+    if is_systematic:
+
+        if (
+            "switch in" in systematic_text
+            or "switch-in" in systematic_text
+            or code.startswith("SI")
+        ):
+
+            return (
+                "STP",
+                "STP_IN",
+                IN
+            )
+
+        if (
+            "switch out" in systematic_text
+            or "switch-out" in systematic_text
+            or code.startswith("SO")
+        ):
+
+            return (
+                "STP",
+                "STP_OUT",
+                OUT
+            )
+
+        if code in {"STPA", "STPN"}:
+
+            return (
+                "STP",
+                "STP_IN",
+                IN
+            )
+
+        if code == "STPO":
+
+            return (
+                "STP",
+                "STP_OUT",
+                OUT
+            )
+
+    # =================================================
+    # DRO DESCRIPTION-BASED HANDLING
+    # =================================================
+
+    if code == "DRO":
+
+        if (
+            "sweep out" in nature
+            or "transferout" in nature
+            or "transfer out" in nature
+            or "paid & transferred" in nature
+            or "reinvested in other scheme" in nature
+        ):
+
+            return (
+                "DIVIDEND",
+                "DIVIDEND_TRANSFER",
+                OUT
+            )
+
+        return (
+            "DIVIDEND",
+            "DIVIDEND_SWEEP_OUT",
+            OUT
+        )
+
+    # =================================================
+    # CAMS PREFIX
+    # =================================================
+
+    prefixes = sorted(
+        TRANSACTION_CODE_PREFIX_MAP.keys(),
+        key=len,
+        reverse=True
+    )
+
+    for prefix in prefixes:
+
+        if code.startswith(prefix):
+
+            txn_type, sub_type, direction = (
+                TRANSACTION_CODE_PREFIX_MAP[prefix]
+            )
+
+            # -----------------------------------------
+            # PURCHASE REFINEMENT
+            # -----------------------------------------
+
+            if txn_type == "PURCHASE":
+
+                if (
+                    "sip" in nature
+                    or "systematic" in nature
+                ):
+
+                    sub_type = "SIP"
+
+                elif (
+                    "fresh" in nature
+                    or "new purchase" in nature
+                ):
+
+                    sub_type = "NEW_PURCHASE"
+
+                elif "additional" in nature:
+
+                    sub_type = "ADDITIONAL_PURCHASE"
+
+            # -----------------------------------------
+            # REDEMPTION REFINEMENT
+            # -----------------------------------------
+
+            elif txn_type == "REDEMPTION":
+
+                if (
+                    "swp" in nature
+                    or "systematic" in nature
+                ):
+
+                    sub_type = "SWP"
+
+                elif (
+                    "full redemption" in nature
+                    or "full redeem" in nature
+                ):
+
+                    sub_type = "FULL_REDEMPTION"
+
+                elif (
+                    "partial redemption" in nature
+                    or "partial redeem" in nature
+                ):
+
+                    sub_type = "PARTIAL_REDEMPTION"
+
+            # -----------------------------------------
+            # SWITCH REFINEMENT
+            # -----------------------------------------
+
+            elif txn_type == "SWITCH":
+
+                if (
+                    "systematic" in nature
+                    or "stp" in nature
+                ):
+
+                    if direction == IN:
+
+                        txn_type = "STP"
+                        sub_type = "STP_IN"
+
+                    else:
+
+                        txn_type = "STP"
+                        sub_type = "STP_OUT"
+
+            return (
+                txn_type,
+                sub_type,
+                direction
+            )
+
+    # =================================================
+    # DESCRIPTION-BASED FALLBACK
+    # =================================================
+
+    if (
+        "swp" in nature
+        or "systematic withdrawal" in nature
+    ):
+
+        return (
+            "REDEMPTION",
+            "SWP",
+            OUT
+        )
+
+    if "sip" in nature:
+
+        return (
+            "PURCHASE",
+            "SIP",
+            IN
+        )
+
+    if (
+        "switch in" in nature
+        or "switch-in" in nature
+        or "lateral shift in" in nature
+    ):
+
+        return (
+            "SWITCH",
+            "SWITCH_IN",
+            IN
+        )
+
+    if (
+        "switch out" in nature
+        or "switch-out" in nature
+        or "lateral shift out" in nature
+    ):
+
+        return (
+            "SWITCH",
+            "SWITCH_OUT",
+            OUT
+        )
+
+    if "purchase" in nature:
+
+        return (
+            "PURCHASE",
+            "PURCHASE",
+            IN
+        )
+
+    if (
+        "redemption" in nature
+        or "redeem" in nature
+    ):
+
+        return (
+            "REDEMPTION",
+            "REDEMPTION",
+            OUT
+        )
+
+    if "dividend" in nature:
+
+        if (
+            "reinvest" in nature
+            or "reinvestment" in nature
+        ):
+
+            return (
+                "DIVIDEND",
+                "DIVIDEND_REINVESTMENT",
+                IN
+            )
+
+        return (
+            "DIVIDEND",
+            "DIVIDEND_PAYOUT",
+            NONE
+        )
+
+    # =================================================
+    # UNKNOWN
+    # =================================================
+
+    return (
+        "OTHER",
+        "UNMAPPED",
+        NONE
+    )
+
+
+# =====================================================
+# CLASSIFY ALL TRANSACTIONS
+# =====================================================
+
+def classify_transactions(df):
+
+    results = []
+
+    for _, row in df.iterrows():
+
+        txn_type, transaction_sub_type, direction = (
+            classify_transaction_row(row)
+        )
+
+        results.append(
+            {
+                "txn_type": txn_type,
+                "transaction_sub_type": transaction_sub_type,
+                "transaction_direction": direction,
+            }
+        )
+
+    if not results:
+
+        return pd.DataFrame(
+            columns=[
+                "txn_type",
+                "transaction_sub_type",
+                "transaction_direction",
+            ],
+            index=df.index,
+        )
+
+    return pd.DataFrame(
+        results,
+        index=df.index
+    )
+
+
+# =====================================================
+# UNMAPPED CODE REPORT
+# =====================================================
+
+def report_unmapped_codes(df, limit=30):
+
+    if (
+        "txn_type" not in df.columns
+        or "trxntype" not in df.columns
+    ):
+
+        return
+
+    unmapped = df.loc[
+        df["transaction_sub_type"].eq("UNMAPPED"),
+        "trxntype"
+    ]
+
+    if unmapped.empty:
+
+        print(
+            "Transaction classification: "
+            "all raw codes classified."
+        )
+
+        return
+
+    counts = (
+        unmapped
+        .map(normalize_transaction_code)
+        .value_counts()
+    )
+
+    print("=" * 80)
+    print(
+        "UNMAPPED TRANSACTION CODES : "
+        f"{len(counts)} distinct, "
+        f"{int(counts.sum())} rows"
+    )
+    print("=" * 80)
+
+    for code, count in counts.head(limit).items():
+
+        print(
+            f"  {code or '(blank)'} : {count}"
+        )
+
+    print("=" * 80)
 
 
 # =====================================================
@@ -539,24 +1334,77 @@ def transform_transactions(df):
     ] = None
 
     # =================================================
-    # TRANSACTION TYPE
+    # TRANSACTION CLASSIFICATION
+    #
+    # txn_type             = normalized transaction type
+    # txn_type_raw         = raw trxntype
+    # transaction_sub_type = normalized subtype
+    # transaction_direction= IN / OUT / NONE
     # =================================================
 
+    classified = classify_transactions(df)
+
     gold_df["txn_type"] = (
-        classify_transaction_fast(df)
+        classified["txn_type"]
+        .astype("string")
+    )
+
+    gold_df["transaction_sub_type"] = (
+        classified["transaction_sub_type"]
+        .astype("string")
+    )
+
+    gold_df["transaction_direction"] = (
+        classified["transaction_direction"]
+        .astype("string")
     )
 
     # =================================================
     # RAW TRANSACTION TYPE
     # =================================================
 
-    gold_df["txn_type_raw"] = df["trxntype"]
+    gold_df["txn_type_raw"] = (
+        df["trxntype"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
 
     # =================================================
     # DESCRIPTION
     # =================================================
 
-    gold_df["txn_desc"] = df["trxn_nature"]
+    gold_df["txn_desc"] = (
+        df["trxn_nature"]
+        .astype("string")
+        .str.strip()
+    )
+
+    # =================================================
+    # RAW TRANSACTION SUB TYPE
+    # =================================================
+
+    gold_df["txn_sub_type"] = (
+        df["trxnsubtyp"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    gold_df.loc[
+        gold_df["txn_sub_type"] == "",
+        "txn_sub_type"
+    ] = None
+
+    # =================================================
+    # UNMAPPED REPORT
+    # =================================================
+
+    report_unmapped_codes(
+        gold_df.assign(
+            trxntype=df["trxntype"]
+        )
+    )
 
     # =================================================
     # DATES
@@ -683,9 +1531,6 @@ def transform_transactions(df):
 
     # =================================================
     # ISIN
-    #
-    # Not every source file carries this (e.g. today's CAMS files don't) --
-    # stays null when absent, same as pan/arn below when blank.
     # =================================================
 
     gold_df["isin"] = (
@@ -704,15 +1549,13 @@ def transform_transactions(df):
     # SOURCE
     # =================================================
 
-    source = (
+    gold_df["source"] = (
         df["source"]
         .fillna("")
         .astype(str)
         .str.strip()
         .str.upper()
     )
-
-    gold_df["source"] = source
 
     # =================================================
     # SCHEME CODE
@@ -735,11 +1578,6 @@ def transform_transactions(df):
 
     # =================================================
     # SCHEME ID
-    #
-    # DIRECTLY FROM SILVER
-    #
-    # NO LOOKUP
-    # NO UUID GENERATION
     # =================================================
 
     print("=" * 80)
@@ -771,9 +1609,7 @@ def transform_transactions(df):
         gold_df["scheme_id"].isna().sum()
     )
 
-    print(
-        "Sample Gold scheme IDs:"
-    )
+    print("Sample Gold scheme IDs:")
 
     print(
         gold_df["scheme_id"]
@@ -790,13 +1626,6 @@ def transform_transactions(df):
 
     gold_df["amc_id"] = None
 
-    gold_df["txn_sub_type"] = (
-        df["trxnsubtyp"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
     gold_df["rta_txn_id"] = None
 
     gold_df["arn_id"] = None
@@ -807,14 +1636,12 @@ def transform_transactions(df):
 
     # =================================================
     # CREATED AT
-    #
-    # IMPORTANT:
-    # Gold created_at represents the load timestamp.
     # =================================================
 
-    # tz-aware UTC then dropped to naive: Timestamp.utcnow() is deprecated in
-    # pandas 3 and this column is `timestamp without time zone`.
-    gold_df["created_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    gold_df["created_at"] = (
+        pd.Timestamp.now(tz="UTC")
+        .tz_localize(None)
+    )
 
     # =================================================
     # GOLD COLUMN ORDER
@@ -826,11 +1653,17 @@ def transform_transactions(df):
             "rta_txn_no",
             "pan",
             "folio_number",
+
             "txn_type",
             "txn_type_raw",
             "txn_desc",
+            "transaction_sub_type",
+            "transaction_direction",
+            "txn_sub_type",
+
             "txn_date",
             "post_date",
+
             "amount",
             "units",
             "nav",
@@ -838,19 +1671,22 @@ def transform_transactions(df):
             "stt",
             "stamp_duty",
             "gst",
+
             "arn",
             "sub_arn",
             "euin",
             "sip_ref",
             "status",
             "isin",
+
             "client_id",
             "amc_id",
             "scheme_id",
-            "txn_sub_type",
+
             "rta_txn_id",
             "arn_id",
             "sip_id",
+
             "source",
             "source_file_id",
             "created_at",
@@ -861,9 +1697,8 @@ def transform_transactions(df):
     # =================================================
     # REMOVE INVALID
     #
-    # This is NOT duplicate removal.
-    # Only rows without required transaction identity
-    # are excluded.
+    # Only transaction identity is required.
+    # No date filtering.
     # =================================================
 
     gold_df = gold_df.dropna(
@@ -919,6 +1754,24 @@ def transform_transactions(df):
         .str[:120]
     )
 
+    gold_df["transaction_sub_type"] = (
+        gold_df["transaction_sub_type"]
+        .astype("string")
+        .str[:50]
+    )
+
+    gold_df["transaction_direction"] = (
+        gold_df["transaction_direction"]
+        .astype("string")
+        .str[:10]
+    )
+
+    gold_df["txn_sub_type"] = (
+        gold_df["txn_sub_type"]
+        .astype("string")
+        .str[:30]
+    )
+
     gold_df["arn"] = (
         gold_df["arn"]
         .astype("string")
@@ -928,7 +1781,7 @@ def transform_transactions(df):
     gold_df["sub_arn"] = (
         gold_df["sub_arn"]
         .astype("string")
-        .str[:20]
+        .str[:50]
     )
 
     gold_df["euin"] = (
@@ -953,6 +1806,67 @@ def transform_transactions(df):
         gold_df["isin"]
         .astype("string")
         .str[:20]
+    )
+
+    # =================================================
+    # DATE CHECK
+    # =================================================
+
+    print("=" * 80)
+    print("DATE CHECK")
+    print("=" * 80)
+
+    print(
+        "Transaction dates present:",
+        gold_df["txn_date"].notna().sum()
+    )
+
+    print(
+        "Transaction dates missing:",
+        gold_df["txn_date"].isna().sum()
+    )
+
+    print(
+        "Post dates present:",
+        gold_df["post_date"].notna().sum()
+    )
+
+    print(
+        "Post dates missing:",
+        gold_df["post_date"].isna().sum()
+    )
+
+    # =================================================
+    # CLASSIFICATION CHECK
+    # =================================================
+
+    print("=" * 80)
+    print("TRANSACTION CLASSIFICATION CHECK")
+    print("=" * 80)
+
+    print()
+    print("Transaction Types:")
+
+    print(
+        gold_df["txn_type"]
+        .value_counts(dropna=False)
+    )
+
+    print()
+    print("Transaction Sub Types:")
+
+    print(
+        gold_df["transaction_sub_type"]
+        .value_counts(dropna=False)
+        .head(50)
+    )
+
+    print()
+    print("Transaction Directions:")
+
+    print(
+        gold_df["transaction_direction"]
+        .value_counts(dropna=False)
     )
 
     # =================================================
@@ -986,17 +1900,9 @@ def transform_transactions(df):
     return gold_df
 
 
-# =================================================
+# =====================================================
 # LOAD GOLD TRANSACTIONS
-#
-# The timestamp watermark in extract_transactions() is a performance
-# pre-filter only, NOT the safety net -- it can (and on 2026-08-24, did)
-# return a false "gold is empty" result and re-extract the entire silver
-# table. The real safety net is the (rta, rta_txn_no, folio_number,
-# amount, units) unique constraint on gold.transactions: upsert_dataframe
-# below turns any such re-extraction into a no-op UPDATE instead of a
-# second copy of every row.
-# =================================================
+# =====================================================
 
 def load_transactions(gold_df):
 
@@ -1006,9 +1912,7 @@ def load_transactions(gold_df):
 
     if gold_df.empty:
 
-        print(
-            "No new records found."
-        )
+        print("No new records found.")
 
         return True
 
@@ -1021,9 +1925,7 @@ def load_transactions(gold_df):
         gold_df["scheme_id"].dtype
     )
 
-    print(
-        "Scheme IDs before INSERT:"
-    )
+    print("Scheme IDs before INSERT:")
 
     print(
         gold_df["scheme_id"]
@@ -1034,22 +1936,10 @@ def load_transactions(gold_df):
 
     # =================================================
     # NO EXISTING GOLD QUERY
-    #
-    # NO DUPLICATE CHECK.
-    # NO NATURAL KEY CHECK.
-    # NO ROW SIGNATURE.
-    # NO DROP DUPLICATES.
-    #
-    # The only incremental logic is:
-    #
-    # silver.created_at > MAX(gold.created_at)
-    #
     # =================================================
 
     print()
-    print(
-        "Duplicate filtering: DISABLED"
-    )
+    print("Duplicate filtering: DISABLED")
 
     print(
         "Timestamp-based incremental loading: ENABLED"
@@ -1076,13 +1966,14 @@ def load_transactions(gold_df):
             gold_df,
             schema="gold",
             table="transactions",
-            conflict_columns=["rta", "rta_txn_no", "folio_number", "amount", "units"],
+            conflict_columns=[
+                "rta",
+                "rta_txn_no",
+                "folio_number",
+                "amount",
+                "units"
+            ],
             chunksize=500,
-            # gold.transactions has no updated_at (or equivalent) column --
-            # confirmed via information_schema; passing the default here
-            # raises psycopg2.errors.UndefinedColumn on the first real
-            # conflict (hit live against gold.holdings during the Task 8
-            # functional test, same underlying cause).
             updated_at_column=None,
         )
 
@@ -1157,6 +2048,14 @@ if __name__ == "__main__":
                         "rta_txn_no",
                         "scheme_id",
                         "scheme_code",
+                        "txn_type",
+                        "txn_type_raw",
+                        "txn_desc",
+                        "transaction_sub_type",
+                        "transaction_direction",
+                        "txn_sub_type",
+                        "txn_date",
+                        "post_date",
                         "created_at"
                     ]
                 ].head(20)
