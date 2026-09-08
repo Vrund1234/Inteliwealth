@@ -1101,7 +1101,7 @@ def transform_investor_master(df):
                 pd.to_datetime(
                     df[col],
                     errors="coerce",
-                    dayfirst=True
+                    format="ISO8601"
                 )
                 .dt.date
             )
@@ -1115,6 +1115,79 @@ def transform_investor_master(df):
         pd.NA,
         regex=True
     )
+
+    # =================================================
+    # AGE CALCULATION
+    #
+    # Runs after the DATE COLUMNS block above, so dob
+    # is already a date and free of time-of-day noise.
+    # =================================================
+
+    if "dob" in df.columns:
+
+        today = pd.Timestamp.today().normalize()
+
+        dob = pd.to_datetime(
+            df["dob"],
+            errors="coerce"
+        )
+
+        df["age"] = (
+            today.year
+            - dob.dt.year
+            - (
+                (today.month < dob.dt.month)
+                |
+                (
+                    (today.month == dob.dt.month)
+                    & (today.day < dob.dt.day)
+                )
+            )
+        )
+
+        # If DOB is NULL, age should also be NULL
+        df.loc[dob.isna(), "age"] = None
+
+        # Plain Python int / None, built element-wise with
+        # dtype=object on purpose.
+        #
+        # Int64 would carry pd.NA, which survives
+        # process_table's df.where(pd.notnull(df), None) -- an
+        # extension column cannot hold None -- and psycopg2 has
+        # no adapter for NAType, so the whole silver INSERT
+        # fails and no rows land at all.
+        #
+        # Series.apply is no good either: it re-infers the
+        # result, and a mix of None and int collapses back to
+        # float64, turning 79 into 79.0 and the NULLs into NaN,
+        # which an integer column rejects.
+        df["age"] = pd.Series(
+            [
+                None if pd.isna(value) else int(value)
+                for value in df["age"]
+            ],
+            index=df.index,
+            dtype=object
+        )
+
+    # =================================================
+    # MINOR IDENTIFICATION
+    #
+    # Unknown age stays unknown -- NULL, not False.
+    # =================================================
+
+    if "age" in df.columns:
+
+        # Plain Python bool / None, for the same reason as age.
+        df["is_minor"] = pd.Series(
+            [
+                None if value is None or pd.isna(value)
+                else bool(value < 18)
+                for value in df["age"]
+            ],
+            index=df.index,
+            dtype=object
+        )
 
     return df
 

@@ -543,6 +543,36 @@ def load_gold():
 
 
     # =====================================================
+    # CLIENT IDENTITY MAPPING
+    #
+    # Runs before the clients load, so bronze.client_mapping_review
+    # reflects the same silver data the gold load is about to use.
+    # A failure here is reported but never blocks the load: the
+    # mapping is a review artefact, not a dependency.
+    # =====================================================
+
+    try:
+
+        print("\nMapping client identities")
+
+        import client_mapping
+
+        mapping_df = client_mapping.extract_folios()
+
+        if not mapping_df.empty:
+
+            mapped = client_mapping.map_clients(mapping_df)
+
+            mapped = client_mapping.collapse_to_clients(mapped)
+
+            client_mapping.load_review(mapped)
+
+    except Exception as e:
+
+        print("Client identity mapping failed (continuing)")
+        print(e)
+
+    # =====================================================
     # GOLD CLIENTS
     # =====================================================
 
@@ -576,9 +606,21 @@ def load_gold():
                         loaded
                     )
 
-                    print(
-                        "Clients loaded successfully"
-                    )
+                    # load_clients returns False on failure --
+                    # printing success regardless reported a
+                    # successful load while nothing was inserted.
+                    if loaded:
+
+                        print(
+                            "Clients loaded successfully"
+                        )
+
+                    else:
+
+                        print(
+                            "Clients Gold FAILED -- nothing was "
+                            "inserted, see the error above"
+                        )
 
             else:
 

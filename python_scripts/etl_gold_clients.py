@@ -604,20 +604,63 @@ def transform_clients(df):
     # ========================================================
     # FINAL PAN
     #
-    # SAME EXISTING LOGIC
+    # silver.investor_master.pan_no  ->  gold.clients.pan
     #
-    # Investor PAN
-    #     ↓
-    # Transaction PAN
-    #     ↓
-    # SIP PAN
+    # Straight across, with no transaction or SIP fallback.
+    #
+    # Those fallbacks were how a guardian's PAN ended up in the
+    # pan column: CAMS puts the guardian's PAN into the ordinary
+    # transaction `pan` field with no flag at all, so a folio
+    # with no PAN of its own silently picked it up and the minor
+    # was stored as though the PAN were theirs. A folio's own
+    # PAN is the one the registry recorded against the investor,
+    # and that is pan_no.
     # ========================================================
 
-    df["pan"] = (
-        df["pan_no"]
-        .fillna(df["txn_pan"])
-        .fillna(df["sip_pan"])
+    df["pan"] = clean_pan(df["pan_no"])
+
+    # ========================================================
+    # GUARDIAN PAN
+    #
+    # Carried through as an attribute only. Deciding WHICH
+    # client a folio belongs to -- including the guardian-PAN
+    # rule for minors -- is not done here: that lives in
+    # python_scripts/client_mapping.py and is recorded in
+    # bronze.client_mapping_review.
+    # ========================================================
+
+    if "guardian_pan" in df.columns:
+
+        df["guardian_pan"] = clean_pan(df["guardian_pan"])
+
+    else:
+
+        df["guardian_pan"] = pd.NA
+
+    # A guardian's PAN belongs in guardian_pan, never in pan.
+    #
+    # CAMS puts the guardian's PAN into the ordinary transaction
+    # `pan` field with no flag at all, so the txn_pan fallback
+    # above silently adopts it as the investor's own. Whenever
+    # the resolved PAN is this folio's own guardian_pan, it is
+    # not the investor's PAN and is cleared.
+    borrowed = (
+        df["pan"].notna()
+        &
+        df["guardian_pan"].notna()
+        &
+        (df["pan"] == df["guardian_pan"])
     )
+
+    if borrowed.any():
+
+        print(
+            "Guardian PAN cleared from pan :",
+            int(borrowed.sum())
+        )
+
+    df["pan"] = df["pan"].where(~borrowed, pd.NA)
+
 
     print("\nPAN Statistics")
     print("-" * 80)
@@ -820,6 +863,8 @@ def transform_clients(df):
 
     gold["pan_verified_at"] = None
 
+    gold["guardian_pan"] = df["guardian_pan"]
+
     # ========================================================
     # EMAIL
     # ========================================================
@@ -852,6 +897,24 @@ def transform_clients(df):
     else:
 
         gold["date_of_birth"] = pd.NaT
+
+    # ========================================================
+    # AGE
+    # ========================================================
+
+    if "age" in df.columns:
+        gold["age"] = df["age"].astype("Int64")
+    else:
+        gold["age"] = pd.NA
+
+    # ========================================================
+    # IS MINOR
+    # ========================================================
+
+    if "is_minor" in df.columns:
+        gold["is_minor"] = df["is_minor"].astype("boolean")
+    else:
+        gold["is_minor"] = pd.NA
 
     # ========================================================
     # APP MANAGED
@@ -1291,10 +1354,13 @@ def transform_clients(df):
             "pan",
             "pan_verified",
             "pan_verified_at",
+            "guardian_pan",
             "arn",
             "sub_arn",
             "email",
             "date_of_birth",
+            "age",
+            "is_minor",
             "marital_status",
             "anniversary_date",
             "blood_group",
@@ -1577,38 +1643,110 @@ def load_clients(gold_df):
     )
 
     # ========================================================
-    # REMOVE NULL PAN
+    # DROP ROWS WITH NO IDENTITY AT ALL
+    #
+    # A missing PAN is no longer a reason to discard a client.
+    # A minor has no PAN of their own -- the registry records
+    # only the guardian's -- so requiring one deleted every
+    # minor along with their address and bank rows.
+    #
+    # A row still needs SOMETHING to be identified by: a PAN, or
+    # failing that a name.
     # ========================================================
 
     before = len(gold_df)
 
     gold_df = gold_df[
         gold_df["pan"].notna()
+        |
+        gold_df["full_name"].notna()
     ].copy()
 
     print(
-        "Rows without PAN removed:",
+        "Rows with no identity removed:",
         before - len(gold_df)
     )
 
     # ========================================================
     # REMOVE DUPLICATES
+    #
+    # Two populations, two keys:
+    #   pan present -> the PAN identifies the person
+    #   pan absent  -> guardian PAN + name + date of birth does
     # ========================================================
+
+    has_pan = gold_df["pan"].notna()
 
     before = len(gold_df)
 
-    gold_df = (
-        gold_df
-        .drop_duplicates(
-            subset=["pan"],
-            keep="last"
-        )
+    with_pan = (
+        gold_df[has_pan]
+        .drop_duplicates(subset=["pan"], keep="last")
         .copy()
     )
 
+    # The same person arrives under several spellings:
+    #   "Agam Singh Saini"  / "AGAM SINGH SAINI"   (case)
+    #   "Dhyani N Patel"    / "DHYANI PATEL"       (middle initial)
+    #
+    # client_mapping normalises exactly this, so its helpers are
+    # reused rather than reimplemented here -- one matcher, one
+    # place to fix.
+    from client_mapping import norm_name
+
+    without_pan = gold_df[~has_pan].copy()
+
+    # Inside one guardian's family the first name identifies the
+    # child: it survives middle-name drift while still keeping
+    # twins apart (NIVAA / NIVAAN).
+    without_pan["_name_key"] = (
+        norm_name(without_pan["full_name"])
+        .fillna("")
+        .str.split(" ")
+        .str[0]
+    )
+
+    # With no guardian PAN there is no family to disambiguate
+    # within, so the whole name is the key.
+    no_guardian = without_pan["guardian_pan"].isna()
+
+    without_pan.loc[no_guardian, "_name_key"] = (
+        norm_name(without_pan.loc[no_guardian, "full_name"])
+        .fillna("")
+    )
+
+    without_pan = (
+        without_pan
+        .drop_duplicates(
+            subset=[
+                "guardian_pan",
+                "_name_key",
+                "date_of_birth"
+            ],
+            keep="last"
+        )
+        .drop(columns=["_name_key"])
+        .copy()
+    )
+
+    gold_df = pd.concat(
+        [with_pan, without_pan],
+        ignore_index=True
+    )
+
     print(
-        "Duplicate PAN rows removed:",
+        "Duplicate rows removed:",
         before - len(gold_df)
+    )
+
+    print(
+        "  keyed on PAN                   :",
+        len(with_pan)
+    )
+
+    print(
+        "  keyed on guardian PAN + name   :",
+        len(without_pan)
     )
 
     print(
@@ -1642,30 +1780,121 @@ def load_clients(gold_df):
     existing = safe_read(
         """
         SELECT
-            pan
+            pan,
+            guardian_pan,
+            full_name,
+            date_of_birth
         FROM gold.clients
-        WHERE pan IS NOT NULL
         """
     )
 
     if not existing.empty:
 
-        existing["pan"] = clean_pan(
-            existing["pan"]
+        existing_pans = set(
+            clean_pan(existing["pan"]).dropna().tolist()
         )
 
-        existing_pans = set(
-            existing["pan"]
-            .dropna()
-            .tolist()
+        # PAN-less clients are recognised by the same key they
+        # are de-duplicated on, so a re-run does not insert them
+        # a second time.
+        def person_key(guardian, name, dob):
+
+            return (
+                None if pd.isna(guardian) else str(guardian).upper(),
+                None if pd.isna(name)
+                else " ".join(str(name).upper().split()),
+                None if pd.isna(dob) else str(dob),
+            )
+
+        existing_people = {
+            person_key(row[0], row[1], row[2])
+            for row in existing.loc[
+                existing["pan"].isna(),
+                ["guardian_pan", "full_name", "date_of_birth"]
+            ].to_numpy()
+        }
+
+        # Someone who already has a client row under their own
+        # PAN is not a new PAN-less client just because ONE of
+        # their folios is missing that PAN. Animesh J Mehta,
+        # Saleel Y Bhatt, Sureel Yogendra Bhatt and Pritipal
+        # Shah each have such a folio; without this they are
+        # stored twice.
+        #
+        # Matched with client_mapping's scorer, not string
+        # equality: the PAN row reads "Saleel Yogendra Bhatt"
+        # while the PAN-less folio reads "Saleel Y Bhatt".
+        from client_mapping import (
+            norm_name as _norm_name,
+            name_match_score as _name_match_score,
+            dob_conflicts as _dob_conflicts,
+            NAME_MATCH_MERGE as _NAME_MATCH_MERGE,
         )
+
+        named = existing.loc[
+            existing["pan"].notna(),
+            ["full_name", "date_of_birth"]
+        ].copy()
+
+        named["_norm"] = _norm_name(named["full_name"])
+
+        existing_named = [
+            (
+                row[0],
+                None if pd.isna(row[1]) else str(row[1]),
+            )
+            for row in named[["_norm", "date_of_birth"]].to_numpy()
+            if row[0] is not None and not pd.isna(row[0])
+        ]
 
         before = len(gold_df)
 
+        def already_loaded(row):
+
+            if pd.notna(row["pan"]):
+
+                return row["pan"] in existing_pans
+
+            if person_key(
+                row["guardian_pan"],
+                row["full_name"],
+                row["date_of_birth"],
+            ) in existing_people:
+
+                return True
+
+            # already a client under their own PAN?
+            if pd.notna(row["full_name"]):
+
+                mine = _norm_name(
+                    pd.Series([row["full_name"]])
+                ).iloc[0]
+
+                if mine is None or pd.isna(mine):
+
+                    return False
+
+                my_dob = (
+                    None if pd.isna(row["date_of_birth"])
+                    else str(row["date_of_birth"])
+                )
+
+                for other_name, other_dob in existing_named:
+
+                    if _dob_conflicts(my_dob, other_dob):
+
+                        continue
+
+                    if _name_match_score(
+                        mine, other_name
+                    ) >= _NAME_MATCH_MERGE:
+
+                        return True
+
+            return False
+
         gold_df = gold_df[
-            ~gold_df["pan"].isin(
-                existing_pans
-            )
+            ~gold_df.apply(already_loaded, axis=1)
         ].copy()
 
         print(
@@ -1777,16 +2006,62 @@ def load_clients(gold_df):
 
         from utils.db import upsert_dataframe
 
-        upsert_result = upsert_dataframe(
-            gold_df,
-            schema="gold",
-            table="clients",
-            conflict_columns=["pan"],
-            chunksize=100,
-            updated_at_column=None,
-        )
+        # uq_clients_pan is a plain unique index on pan, so
+        # Postgres treats NULLs as DISTINCT: real PANs stay
+        # unique, and any number of PAN-less clients is allowed.
+        #
+        # A PAN-less row therefore never matches ON CONFLICT and
+        # is simply inserted -- which is correct, because the
+        # ones already in the table were filtered out above on
+        # guardian_pan + name + date_of_birth. The partial index
+        # uq_clients_pan_absent backstops that check.
+        # Rows WITH a PAN go through the upsert, keyed on pan.
+        #
+        # Rows WITHOUT one cannot: upsert_dataframe de-duplicates
+        # the batch with PARTITION BY <conflict column>, and
+        # every PAN-less row has pan = NULL, so all of them fall
+        # into a single partition and 35 of 36 are silently
+        # discarded. They are plain-inserted instead, which is
+        # safe because the ones already in the table were
+        # filtered out above on guardian_pan + name + dob, and
+        # uq_clients_pan_absent backstops that check.
+        with_pan = gold_df[gold_df["pan"].notna()]
 
-        inserted_rows = upsert_result["inserted"]
+        without_pan = gold_df[gold_df["pan"].isna()]
+
+        inserted_rows = 0
+
+        if not with_pan.empty:
+
+            upsert_result = upsert_dataframe(
+                with_pan,
+                schema="gold",
+                table="clients",
+                conflict_columns=["pan"],
+                chunksize=100,
+                updated_at_column=None,
+            )
+
+            inserted_rows += upsert_result["inserted"]
+
+        if not without_pan.empty:
+
+            without_pan.to_sql(
+                "clients",
+                engine,
+                schema="gold",
+                if_exists="append",
+                index=False,
+                method="multi",
+                chunksize=100,
+            )
+
+            inserted_rows += len(without_pan)
+
+            print(
+                "PAN-less clients inserted:",
+                len(without_pan)
+            )
 
         print(
             f"Inserted {inserted_rows} / "
