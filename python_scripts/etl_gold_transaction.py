@@ -1410,17 +1410,23 @@ def transform_transactions(df):
     # DATES
     # =================================================
 
-    gold_df["txn_date"] = pd.to_datetime(
-        df["traddate"],
-        errors="coerce",
-        dayfirst=True
-    ).dt.date
+    gold_df["txn_date"] = (
+        pd.to_datetime(
+            df["traddate"],
+            errors="coerce",
+            format="ISO8601"
+        )
+        .dt.date
+    )
 
-    gold_df["post_date"] = pd.to_datetime(
-        df["postdate"],
-        errors="coerce",
-        dayfirst=True
-    ).dt.date
+    gold_df["post_date"] = (
+        pd.to_datetime(
+            df["postdate"],
+            errors="coerce",
+            format="ISO8601"
+        )
+        .dt.date
+    )
 
     # =================================================
     # NUMERIC FIELDS

@@ -6,6 +6,7 @@ from pyparsing import col
 # from sqlalchemy import create_engine
 # from utils.db import engine, master_engine
 from mapping import INVESTOR_MASTER_MAPPING
+from raw_ingestion import parse_source_date
 
 # =====================================================
 # CLEAN COLUMN NAMES
@@ -205,7 +206,14 @@ def clean_identifier_columns(df):
 # FORMAT DATE COLUMNS
 # =====================================================
 
-def format_dates(df):
+def format_dates(df, source=None):
+    """Parse DATE_COLUMNS with the shared RTA-aware parser from
+    raw_ingestion.py, which reads CAMS as M/D/YYYY and KFIN as D/M/YYYY.
+
+    This used to be pd.to_datetime(df[col], errors="coerce", dayfirst=True),
+    which read every source day-first. CAMS is month-first, so each of its
+    dates was either coerced to None (day > 12 read as an impossible month)
+    or silently transposed."""
 
     if df is None:
         return df
@@ -216,13 +224,14 @@ def format_dates(df):
 
         if col in df.columns:
 
-            parsed = pd.to_datetime(
-                df[col],
-                errors="coerce",
-                dayfirst=True
+            df[col] = df[col].apply(
+                lambda v: parse_source_date(v, source)
+            ).apply(
+                lambda d:
+                d.strftime("%Y-%m-%d")
+                if d is not None
+                else None
             )
-
-            df[col] = parsed.dt.strftime("%Y-%m-%d").where(parsed.notna(), None)
 
     return df
 
@@ -230,19 +239,29 @@ def format_dates(df):
 # NORMALIZE FOR HASH
 # =====================================================
 
+def compare_date(value):
+    """One date column value as a comparison string, "" when absent.
+
+    Mirrors etl_sip.dedupe_compare_date: the hash comparison joins every
+    column straight into one string key, where "" is the established
+    "no value" representation.
+    """
+
+    parsed = parse_source_date(value)
+
+    return parsed.strftime("%Y-%m-%d") if parsed is not None else ""
+
+
 def normalize_for_hash(df, compare_cols):
     df = df[compare_cols].copy()
     for col in compare_cols:
         if col in DATE_COLUMNS:
-            parsed = pd.to_datetime(
-                df[col],
-                errors="coerce",
-                dayfirst=True
-            )
-            df[col] = (
-                parsed.dt.strftime("%Y-%m-%d")
-                .fillna("")
-            )
+            # format_dates() has already normalized these to YYYY-MM-DD, so
+            # parse_source_date's ISO branch returns them untouched. Using it
+            # rather than pd.to_datetime(dayfirst=True) keeps the comparison
+            # deterministic: dayfirst inference on ISO input depends on which
+            # value pandas sees first, which made the hash order-dependent.
+            df[col] = df[col].apply(compare_date)
         else:
             df[col] = df[col].fillna("").astype(str).str.strip()
     return df
@@ -358,7 +377,7 @@ def process_investor_master(cams=None, kfin=None):
         # CLEAN ALL IDENTIFIER COLUMNS
         cams_df = clean_identifier_columns(cams_df)
 
-        cams_df = format_dates(cams_df)
+        cams_df = format_dates(cams_df, "CAMS")
 
         dfs.append(cams_df)
 
@@ -379,7 +398,7 @@ def process_investor_master(cams=None, kfin=None):
         # CLEAN ALL IDENTIFIER COLUMNS
         kfin_df = clean_identifier_columns(kfin_df)
 
-        kfin_df = format_dates(kfin_df)
+        kfin_df = format_dates(kfin_df, "KFIN")
 
         dfs.append(kfin_df)
 
