@@ -67,6 +67,19 @@ GOLD_ENTITY_DEPENDENCIES = {
     # Reads all three silver tables, so a clients failure fails every file in
     # the run. That is the widest blast radius here, and it is correct.
     "clients": frozenset({"transaction", "investor", "sip"}),
+    # Same three tables as clients: silver.investor_master is the base, with
+    # transaction_master_new and sip_master_new LEFT JOINed on folio_no purely
+    # to recover a PAN the investor row is missing (etl_gold_client_bank.py:173-228,
+    # etl_gold_client_address.py:122-178). The PAN is what resolves client_id
+    # against gold.clients, so a failure in either silver feed can starve these
+    # entities the same way it starves clients.
+    "client_bank": frozenset({"transaction", "investor", "sip"}),
+    "client_address": frozenset({"transaction", "investor", "sip"}),
+    # Detection reads gold.client_address, which client_address itself built
+    # from all three silver tables, so it inherits the same dependencies. It
+    # writes only the review queue -- a failure here means pairs went
+    # undetected, not that any address is wrong.
+    "client_address_review": frozenset({"transaction", "investor", "sip"}),
 }
 
 # The six values POST/PATCH accepts (app/modules/etl_handoff/constants.py).
