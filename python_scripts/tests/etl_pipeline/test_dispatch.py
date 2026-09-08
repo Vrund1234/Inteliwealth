@@ -94,6 +94,9 @@ def test_gold_dependency_map_matches_the_spec():
         "sip": frozenset({"sip", "transaction"}),
         "folio_nominees": frozenset({"investor"}),
         "clients": frozenset({"transaction", "investor", "sip"}),
+        "client_bank": frozenset({"transaction", "investor", "sip"}),
+        "client_address": frozenset({"transaction", "investor", "sip"}),
+        "client_address_review": frozenset({"transaction", "investor", "sip"}),
     }
 
 

@@ -94,6 +94,21 @@ except ImportError:
 
 
 # =====================================================
+# OPTIONAL CLIENT ADDRESS REVIEW DETECTION
+# =====================================================
+
+try:
+
+    from detect_client_address_duplicates import detect as detect_address_duplicates
+
+    ADDRESS_REVIEW_AVAILABLE = True
+
+except ImportError:
+
+    ADDRESS_REVIEW_AVAILABLE = False
+
+
+# =====================================================
 # OPTIONAL GOLD CLIENT ADDRESS
 # =====================================================
 
@@ -158,6 +173,7 @@ GOLD_ENTITIES = (
     "clients",
     "client_bank",
     "client_address",
+    "client_address_review",
     "folio_nominees",
 )
 
@@ -737,6 +753,78 @@ def load_gold():
 
         print(
             "\nGold Client Address module not available"
+        )
+
+
+    # =====================================================
+    # CLIENT ADDRESS REVIEW QUEUE
+    # =====================================================
+    #
+    # Detection only -- it queues pairs that are the same address but cannot
+    # be proven so by exact matching, and MERGES NOTHING. A fuzzy rule that
+    # merged on its own would eventually collapse two addresses that genuinely
+    # differ, so the decision stays with a person, exactly as scheme mapping
+    # keeps fuzzy matches out of promote_approved()
+    # (etl_pipeline/runner.py:157).
+    #
+    # A non-empty queue is NOT a failure: reporting one would blame source
+    # files for a human's inbox and march them to ABANDONED after three
+    # attempts. The count goes in the log line instead.
+    #
+    # The queue is a published detection, not a decision log -- the app owns
+    # the decisions -- so the same pairs are re-detected every run and the
+    # size holds steady. A stable count is the healthy reading.
+    # =====================================================
+
+    if ADDRESS_REVIEW_AVAILABLE:
+
+        try:
+
+            print("\nDetecting similar client addresses")
+
+            outcome = detect_address_duplicates()
+
+            if outcome is None:
+
+                results["client_address_review"] = _gold_result(
+                    "client_address_review",
+                    "FAILED",
+                    error="client_address_review: detection reported failure"
+                )
+
+            else:
+
+                results["client_address_review"] = _gold_result(
+                    "client_address_review",
+                    "COMPLETED",
+                    total=outcome["detected"],
+                    upserts=[{
+                        "inserted": outcome["newly_queued"],
+                        "updated": 0
+                    }],
+                )
+
+                print(
+                    "Client address review queue:",
+                    outcome["queued"],
+                    "pair(s) published for review"
+                )
+
+        except Exception as e:
+
+            print("Client Address Review Detection Failed")
+            print(e)
+
+            results["client_address_review"] = _gold_result(
+                "client_address_review",
+                "FAILED",
+                error=f"{type(e).__name__}: {e}"
+            )
+
+    else:
+
+        print(
+            "\nClient address review detection not available"
         )
 
 

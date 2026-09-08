@@ -8,6 +8,7 @@ import pytest
 
 import gold_loader
 from gold_loader import GOLD_ENTITIES, load_gold
+from etl_pipeline.dispatch import GOLD_ENTITY_DEPENDENCIES
 
 
 def test_every_entity_is_named():
@@ -19,8 +20,19 @@ def test_every_entity_is_named():
         "holdings",
         "sip",
         "clients",
+        "client_bank",
+        "client_address",
+        "client_address_review",
         "folio_nominees",
     )
+
+
+def test_every_entity_has_a_dependency_entry():
+    """An entity load_gold() runs but dispatch.py has never heard of reports
+    FAILED into a frozenset() -- failed_dtypes() looks it up with .get(entity,
+    frozenset()) -- so no reserved file is blamed and none is ever retried.
+    Adding an entity to GOLD_ENTITIES without adding it here is silent."""
+    assert set(GOLD_ENTITIES) == set(GOLD_ENTITY_DEPENDENCIES)
 
 
 def test_a_raising_entity_is_reported_failed_and_does_not_propagate(monkeypatch):

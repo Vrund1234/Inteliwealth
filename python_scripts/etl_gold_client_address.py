@@ -3,7 +3,10 @@ import traceback
 
 from datetime import datetime, timezone
 
+from sqlalchemy import text
+
 from utils.db import engine
+from utils.address_key import address_key_series
 
 
 # ============================================================
@@ -556,24 +559,31 @@ def transform_client_address(df):
     # Different addresses for same client are allowed.
     # ========================================================
 
-    address_key = [
-        "client_id",
+    # utils/address_key.py is the single definition of what makes two rows the
+    # same address, and gold.client_address.address_key is GENERATED from the
+    # identical expression. Keying on the raw strings -- as this did until
+    # 2026-09-07 -- let one physical address survive once per RTA spelling:
+    # 502 of 1186 rows were formatting variants of a row already present.
+    #
+    # city / state / country / pincode / mobile_no are NOT part of the key.
+    # They are enriched below instead, because a field that arrives blank in
+    # one feed and filled in the next would change the key and insert a
+    # duplicate rather than match the row already there.
+    df = df.copy()
+
+    df["address_key"] = address_key_series(
+        df,
         "address1",
         "address2",
-        "address3",
-        "city",
-        "state",
-        "country",
-        "pincode",
-        "mobile_no"
-    ]
+        "address3"
+    )
 
     before = len(df)
 
     df = (
         df
         .drop_duplicates(
-            subset=address_key,
+            subset=["client_id", "address_key"],
             keep="first"
         )
     )
@@ -590,6 +600,10 @@ def transform_client_address(df):
     gold = pd.DataFrame()
 
     gold["client_id"] = df["client_id"]
+
+    # Matching key only -- dropped before the INSERT, because the column in
+    # gold.client_address is GENERATED ALWAYS and rejects a supplied value.
+    gold["address_key"] = df["address_key"]
 
     gold["address_type"] = "CURRENT"
 
@@ -618,6 +632,126 @@ def transform_client_address(df):
     return gold.reset_index(
         drop=True
     )
+
+
+# ============================================================
+# ENRICH EXISTING CLIENT ADDRESS
+# ============================================================
+
+def enrich_client_address(rows):
+
+    """Fill blanks on addresses gold already holds.
+
+    An RTA feed that describes an address a second time usually differs only
+    in which optional fields it bothered to populate -- one dump carries the
+    pincode, another the country, a third neither. Because those fields are
+    not part of address_key, all of them land on the SAME row, and this is
+    where the extra values are picked up.
+
+    COALESCE(existing, new) fills blanks ONLY. A value already recorded wins,
+    so a later feed cannot quietly replace a populated field with a different
+    one, and cannot blank it either: a NULL arriving from gold is "no opinion",
+    never "clear it". That is the same rule the app's gold_sync applies in
+    _gold_client_updates, and reversing the COALESCE arguments would make the
+    newest feed authoritative instead -- a deliberate choice, not a detail.
+
+    id, seq and is_main are untouched.
+    """
+
+    if rows is None or rows.empty:
+
+        print("No existing client addresses to enrich")
+
+        return 0
+
+    statement = text(
+        """
+        UPDATE gold.client_address
+        SET area         = COALESCE(area,         :area),
+            city         = COALESCE(city,         :city),
+            state        = COALESCE(state,        :state),
+            country      = COALESCE(country,      :country),
+            pincode      = COALESCE(pincode,      :pincode),
+            mobile_no    = COALESCE(mobile_no,    :mobile_no),
+            whatsapp_no  = COALESCE(whatsapp_no,  :whatsapp_no),
+            updated_at   = now()
+        WHERE client_id = :client_id
+          AND address_key = :address_key
+          AND is_deleted = false
+          AND (
+                (area        IS NULL AND :area        IS NOT NULL)
+             OR (city        IS NULL AND :city        IS NOT NULL)
+             OR (state       IS NULL AND :state       IS NOT NULL)
+             OR (country     IS NULL AND :country     IS NOT NULL)
+             OR (pincode     IS NULL AND :pincode     IS NOT NULL)
+             OR (mobile_no   IS NULL AND :mobile_no   IS NOT NULL)
+             OR (whatsapp_no IS NULL AND :whatsapp_no IS NOT NULL)
+          )
+        """
+    )
+
+    # The trailing predicate keeps this idempotent in the way that matters:
+    # a re-run with nothing new to contribute touches no rows and leaves
+    # updated_at alone, so `updated_at` stays a real signal of change for the
+    # app's incremental gold_sync rather than being bumped on every run.
+
+    fields = [
+        "area", "city", "state", "country",
+        "pincode", "mobile_no", "whatsapp_no"
+    ]
+
+    payload = []
+
+    for row in rows.to_dict("records"):
+
+        item = {
+            "client_id": row["client_id"],
+            "address_key": row["address_key"]
+        }
+
+        for field in fields:
+
+            value = row.get(field)
+
+            item[field] = (
+                None
+                if value is None or pd.isna(value)
+                else value
+            )
+
+        payload.append(item)
+
+    updated = 0
+
+    try:
+
+        with engine.begin() as connection:
+
+            for chunk_start in range(0, len(payload), 500):
+
+                result = connection.execute(
+                    statement,
+                    payload[chunk_start:chunk_start + 500]
+                )
+
+                updated += result.rowcount or 0
+
+    except Exception as e:
+
+        print("Client address enrichment FAILED")
+
+        print(e)
+
+        traceback.print_exc(limit=5)
+
+        return 0
+
+    print(
+        "Existing client addresses enriched :",
+        updated
+    )
+
+    return updated
 
 
 # ============================================================
@@ -671,7 +805,11 @@ def load_client_address(gold_df):
             country,
             pincode,
             mobile_no,
-            whatsapp_no
+            whatsapp_no,
+
+            address_key,
+
+            is_deleted
 
         FROM gold.client_address
 
@@ -687,72 +825,110 @@ def load_client_address(gold_df):
     )
 
     # ========================================================
-    # ADDRESS KEY
+    # REFUSE TO RUN AGAINST A PRE-MIGRATION SCHEMA
+    # ========================================================
+    #
+    # safe_read() swallows a SQL error and returns an empty frame, so without
+    # this guard a database still missing gold.client_address.address_key
+    # would look like a table with no rows: every address would be classed as
+    # new and re-inserted, silently restoring the duplicates this file exists
+    # to remove.
+    #
+    # Bail out instead. load_gold() reads the False and reports the entity
+    # FAILED, which is the correct outcome -- the loader and
+    # sql_scripts/client_address_dedup_2026-09-07.sql have to ship together.
     # ========================================================
 
-    address_key = [
-        "client_id",
-        "line1",
-        "line2",
-        "line3",
-        "city",
-        "state",
-        "country",
-        "pincode",
-        "mobile_no"
-    ]
+    if not existing.empty and "address_key" not in existing.columns:
+
+        print(
+            "gold.client_address.address_key is missing. Apply "
+            "sql_scripts/client_address_dedup_2026-09-07.sql before running "
+            "this loader."
+        )
+
+        return False
+
+    if existing.empty:
+
+        probe = safe_read(
+            "SELECT COUNT(*) AS n FROM gold.client_address"
+        )
+
+        if probe.empty or int(probe["n"].iloc[0]) > 0:
+
+            print(
+                "Could not read gold.client_address (missing address_key "
+                "column, or the read failed). Apply "
+                "sql_scripts/client_address_dedup_2026-09-07.sql first."
+            )
+
+            return False
 
     # ========================================================
-    # REMOVE EXISTING ADDRESSES
+    # SPLIT: ENRICH WHAT EXISTS, INSERT WHAT DOES NOT
     # ========================================================
     #
-    # Existing records are NOT updated or recreated.
+    # Matching is on (client_id, address_key) -- the same key the UNIQUE index
+    # uq_client_address_natural enforces, so what this code treats as one
+    # address and what the database treats as one address cannot diverge.
     #
-    # This preserves:
+    # An address already present is ENRICHED, not skipped. Skipping was the
+    # old behaviour and it threw away real data: the first feed to describe an
+    # address won permanently, so a later dump supplying the pincode or the
+    # country it was missing changed nothing. COALESCE(existing, new) fills
+    # blanks only -- a value already recorded is never overwritten, matching
+    # what etl_gold_clients.py:1490 does for ckyc_no.
     #
-    #   client_address.id
-    #   seq
-    #   is_main
-    #
-    # Existing address values remain unchanged.
+    # id, seq and is_main are deliberately untouched on an enrich: rows
+    # elsewhere reference them.
     # ========================================================
+
+    to_enrich = pd.DataFrame()
 
     if not existing.empty:
 
-        existing_keys = existing[
-            address_key
-        ].drop_duplicates()
+        # Live rows only. A soft-deleted address must not match -- it is
+        # retired, and the UNIQUE index is partial on is_deleted = false, so
+        # the same address is allowed to come back as a new row.
+        existing_keys = (
+            existing.loc[
+                existing["is_deleted"] != True,
+                ["client_id", "address_key"]
+            ]
+            .drop_duplicates()
+            .assign(already_exists=True)
+        )
 
         gold_df = gold_df.merge(
-            existing_keys.assign(
-                already_exists=True
-            ),
-            on=address_key,
+            existing_keys,
+            on=["client_id", "address_key"],
             how="left"
         )
 
-        existing_count = (
-            gold_df["already_exists"]
-            .eq(True)
-            .sum()
-        )
+        matched = gold_df["already_exists"].eq(True)
+
+        to_enrich = gold_df[matched].copy()
 
         print(
-            "Existing client addresses skipped :",
-            existing_count
+            "Existing client addresses to enrich :",
+            len(to_enrich)
         )
 
-        gold_df = gold_df[
-            gold_df["already_exists"]
-            != True
-        ].copy()
+        gold_df = gold_df[~matched].copy()
 
         gold_df.drop(
-            columns=[
-                "already_exists"
-            ],
+            columns=["already_exists"],
             inplace=True
         )
+
+        to_enrich.drop(
+            columns=["already_exists"],
+            inplace=True,
+            errors="ignore"
+        )
+
+    enrich_client_address(to_enrich)
 
     # ========================================================
     # CHECK WHETHER ANYTHING IS LEFT
@@ -786,6 +962,10 @@ def load_client_address(gold_df):
             errors="coerce"
         )
 
+        # Every row, soft-deleted included: uq_client_address_seq is
+        # UNIQUE (client_id, seq) over the whole table, not partial like
+        # uq_client_address_natural, so a retired row still owns its seq and
+        # reusing it raises a unique violation.
         max_seq = (
             existing
             .groupby("client_id")["seq"]
@@ -859,7 +1039,8 @@ def load_client_address(gold_df):
 
         existing_main_clients = set(
             existing.loc[
-                existing["is_main"] == True,
+                (existing["is_main"] == True)
+                & (existing["is_deleted"] != True),
                 "client_id"
             ]
         )
@@ -972,6 +1153,15 @@ def load_client_address(gold_df):
 
     ]
 
+    # Counted before the reduction: address_key is dropped by it, because the
+    # column in gold.client_address is GENERATED ALWAYS and Postgres rejects an
+    # INSERT that supplies one.
+    unique_addresses = (
+        gold_df[["client_id", "address_key"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+
     gold_df = gold_df[
         final_columns
     ].copy()
@@ -996,11 +1186,7 @@ def load_client_address(gold_df):
 
     print(
         "Unique addresses :",
-        gold_df[
-            address_key
-        ]
-        .drop_duplicates()
-        .shape[0]
+        unique_addresses
     )
 
     print(

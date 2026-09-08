@@ -1,4 +1,5 @@
 import pandas as pd
+import sys
 import traceback
 
 from utils.db import engine
@@ -78,13 +79,42 @@ def get_last_gold_timestamp():
 # NO NATURAL KEY COMPARISON.
 # =====================================================
 
-def extract_transactions():
+def extract_transactions(full=False):
+
+    """Silver transactions to load. Incremental unless `full` is set.
+
+    The incremental path takes MAX(created_at) from gold.transactions and reads
+    only newer silver rows, which is right for the nightly run: 128,009 rows do
+    not need reprocessing to pick up a handful of new ones.
+
+    `full=True` re-reads everything. It exists because that watermark makes a
+    NEW COLUMN unreachable: transaction_direction and transaction_sub_type were
+    added to gold.transactions on 2026-09-07 and the classification that fills
+    them already existed in transform_transactions, but every run reported
+    "No new Silver transactions found" and the columns stayed empty on all
+    128,009 rows. Nothing is wrong with the incremental logic -- it simply has
+    no way to know a column was added.
+
+    Backfilling is safe to repeat: load_transactions upserts on
+    (rta, rta_txn_no, folio_number, amount, units) with DO UPDATE, so a full
+    run corrects existing rows rather than duplicating them.
+
+        venv/bin/python etl_gold_transaction.py --full
+    """
 
     print("=" * 80)
     print("EXTRACTING SILVER TRANSACTIONS")
     print("=" * 80)
 
-    last_gold_timestamp = get_last_gold_timestamp()
+    last_gold_timestamp = None if full else get_last_gold_timestamp()
+
+    if full:
+
+        print()
+        print(
+            "FULL RE-EXTRACT requested: ignoring the gold watermark and "
+            "reading every silver transaction."
+        )
 
     # =================================================
     # FIRST RUN
@@ -2013,7 +2043,9 @@ if __name__ == "__main__":
         # EXTRACT
         # =================================================
 
-        df = extract_transactions()
+        df = extract_transactions(
+            full="--full" in sys.argv
+        )
 
         if df.empty:
 

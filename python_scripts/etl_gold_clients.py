@@ -52,6 +52,39 @@ def clean_string(series):
 
 
 # ============================================================
+# CLEAN IDENTIFIER
+# ============================================================
+
+def clean_identifier(series):
+
+    """clean_string, plus: a value that is nothing but zeros is ABSENT.
+
+    Both RTAs write "0" where they have no value to send, and clean_string
+    does not catch it -- it maps "", NAN, NONE, NULL and NAT to NA, but a
+    literal zero survives and is then stored as though it were data.
+
+    Measured 2026-09-07 on silver.investor_master: ckyc_no is "0" on 480 of
+    the 1297 rows that look populated, and those 480 span 207 different PANs.
+    Before this function, 159 of the 355 clients gold reported as having a
+    CKYC number carried "0" -- 45% false positives for anything downstream
+    filtering on `ckyc_no IS NOT NULL`, and the same "0" would have appeared
+    against 159 unrelated clients in the app once these columns are synced.
+
+    The same convention shows up across this feed: pincode arrives as "0" or
+    "000000" for overseas addresses, and account numbers are zero-padded to
+    each RTA's own width. Only fields that are IDENTIFIERS should use this --
+    a genuine zero is meaningful in an amount or a unit count.
+    """
+
+    cleaned = clean_string(series)
+
+    return cleaned.where(
+        ~cleaned.fillna("").astype(str).str.fullmatch(r"0+"),
+        pd.NA
+    )
+
+
+# ============================================================
 # CLEAN PAN
 # ============================================================
 
@@ -432,7 +465,12 @@ def get_ckyc_dp_lookup():
     SELECT
         pan_no,
         ckyc_no,
-        dp_id
+        dp_id,
+        -- The RTA calls this client_id, but it is the DEPOSITORY BENEFICIARY
+        -- ACCOUNT, not a client key. It arrives on the same row as dp_id and
+        -- is useless without it: a DP ID alone identifies the depository
+        -- participant, not the account.
+        client_id AS beneficiary_ac_no
     FROM silver.investor_master
     WHERE pan_no IS NOT NULL
       AND TRIM(pan_no) <> ''
@@ -468,12 +506,18 @@ def get_ckyc_dp_lookup():
     # CLEAN CKYC / DP ID
     # ========================================================
 
-    lookup["ckyc_no"] = clean_string(
+    # clean_identifier, not clean_string: "0" is this feed's "not supplied",
+    # and storing it makes 159 unrelated clients appear to share one CKYC.
+    lookup["ckyc_no"] = clean_identifier(
         lookup["ckyc_no"]
     )
 
-    lookup["dp_id"] = clean_string(
+    lookup["dp_id"] = clean_identifier(
         lookup["dp_id"]
+    )
+
+    lookup["beneficiary_ac_no"] = clean_identifier(
+        lookup["beneficiary_ac_no"]
     )
 
     lookup = lookup[
@@ -520,7 +564,8 @@ def get_ckyc_dp_lookup():
             [
                 "pan",
                 "ckyc_no",
-                "dp_id"
+                "dp_id",
+                "beneficiary_ac_no"
             ]
         ]
     )
@@ -679,10 +724,55 @@ def transform_clients(df):
             )
         )
 
+        # ====================================================
+        # TAKE THE LOOKUP'S VALUE, NOT THE ROW'S OWN
+        # ====================================================
+        #
+        # extract_clients() already selects ckyc_no and dp_id per row, so the
+        # merge above collides on both names. An EMPTY first suffix means the
+        # frame's own column keeps the plain name and the lookup's lands in
+        # *_lookup -- so without these two lines the whole lookup is computed,
+        # merged, and then never read.
+        #
+        # That is not cosmetic. The lookup resolves ONE value per PAN from all
+        # of that PAN's silver rows; the raw column carries it only on the row
+        # that happened to have it. load_clients() then keeps one row per PAN
+        # with drop_duplicates(keep="last"), so whether a client kept its CKYC
+        # came down to which of its rows sorted last.
+        #
+        # Measured 2026-09-07, before this fix: PAN AMEPP9018M has 41 silver
+        # rows and exactly one carries dp_id IN301549 -- it was not last, so
+        # gold.clients.dp_id was 0 of 593. CKYC lost 31 clients the same way,
+        # 324 in gold against 355 the lookup resolves.
+        #
+        # Assigned explicitly rather than by flipping the suffixes: which side
+        # wins is then visible here, instead of depending on argument order.
+
+        df["ckyc_no"] = df["ckyc_no_lookup"]
+
+        df["dp_id"] = df["dp_id_lookup"]
+
+        # beneficiary_ac_no has no same-named column on df to collide with, so
+        # the merge brings it in unsuffixed -- but assign defensively in case
+        # extract_clients ever selects one.
+        if "beneficiary_ac_no_lookup" in df.columns:
+            df["beneficiary_ac_no"] = df["beneficiary_ac_no_lookup"]
+
+        df.drop(
+            columns=[
+                "ckyc_no_lookup",
+                "dp_id_lookup",
+                "beneficiary_ac_no_lookup"
+            ],
+            inplace=True,
+            errors="ignore"
+        )
+
     else:
 
         df["ckyc_no"] = pd.NA
         df["dp_id"] = pd.NA
+        df["beneficiary_ac_no"] = pd.NA
 
     print("\nPAN Based CKYC / DP ID Mapping")
     print("-" * 80)
@@ -1071,7 +1161,7 @@ def transform_clients(df):
     # CKYC NO
     # ========================================================
 
-    gold["ckyc_no"] = clean_string(
+    gold["ckyc_no"] = clean_identifier(
         df["ckyc_no"]
     )
 
@@ -1079,8 +1169,19 @@ def transform_clients(df):
     # DP ID
     # ========================================================
 
-    gold["dp_id"] = clean_string(
+    gold["dp_id"] = clean_identifier(
         df["dp_id"]
+    )
+
+    # ========================================================
+    # BENEFICIARY ACCOUNT NUMBER
+    # ========================================================
+    #
+    # Travels with dp_id: the app's client_demat holds the pair as one record,
+    # and a DP ID on its own names a depository participant, not an account.
+
+    gold["beneficiary_ac_no"] = clean_identifier(
+        df["beneficiary_ac_no"]
     )
 
     # ========================================================
@@ -1310,6 +1411,7 @@ def transform_clients(df):
             "kyc_status",
             "ckyc_no",
             "dp_id",
+            "beneficiary_ac_no",
             "risk_profile",
             "rm_id",
             "branch_id",
@@ -1359,12 +1461,15 @@ def update_existing_ckyc_dp(gold_df):
             gold_df["ckyc_no"].notna()
             |
             gold_df["dp_id"].notna()
+            |
+            gold_df["beneficiary_ac_no"].notna()
         )
     ][
         [
             "pan",
             "ckyc_no",
-            "dp_id"
+            "dp_id",
+            "beneficiary_ac_no"
         ]
     ].copy()
 
@@ -1386,7 +1491,8 @@ def update_existing_ckyc_dp(gold_df):
             id,
             pan,
             ckyc_no,
-            dp_id
+            dp_id,
+            beneficiary_ac_no
         FROM gold.clients
         WHERE pan IS NOT NULL
         """
@@ -1414,7 +1520,8 @@ def update_existing_ckyc_dp(gold_df):
                 "id",
                 "pan",
                 "ckyc_no",
-                "dp_id"
+                "dp_id",
+                "beneficiary_ac_no"
             ]
         ],
         on="pan",
@@ -1460,6 +1567,12 @@ def update_existing_ckyc_dp(gold_df):
             &
             update_df["dp_id_new"].notna()
         )
+        |
+        (
+            update_df["beneficiary_ac_no_existing"].isna()
+            &
+            update_df["beneficiary_ac_no_new"].notna()
+        )
     ].copy()
 
     if changed.empty:
@@ -1488,7 +1601,10 @@ def update_existing_ckyc_dp(gold_df):
 
                 SET
                     ckyc_no = COALESCE(:ckyc_no, ckyc_no),
-                    dp_id = COALESCE(:dp_id, dp_id)
+                    dp_id = COALESCE(:dp_id, dp_id),
+                    beneficiary_ac_no = COALESCE(
+                        :beneficiary_ac_no, beneficiary_ac_no
+                    )
 
                 WHERE id = :id
 
@@ -1515,6 +1631,15 @@ def update_existing_ckyc_dp(gold_df):
                             )
                             else str(
                                 row["dp_id_new"]
+                            )
+                        ),
+                        "beneficiary_ac_no": (
+                            None
+                            if pd.isna(
+                                row["beneficiary_ac_no_new"]
+                            )
+                            else str(
+                                row["beneficiary_ac_no_new"]
                             )
                         ),
                         "id": row["id"]

@@ -147,10 +147,19 @@ def test_load_gold_still_prints_its_error(monkeypatch, capsys):
     assert "AMC Gold Failed" in capsys.readouterr().out
 
 
-def test_gold_loader_still_has_eight_swallowing_blocks():
+def test_every_entity_still_swallows_its_own_failure():
+    """One `except Exception as e:` per entity, so a failure is recorded as
+    that entity's FAILED result and never propagates. app.py:665 discards
+    load_gold()'s return value, so anything that escaped would surface as a
+    broken Streamlit Transform button rather than a bad row count.
+
+    Counted against GOLD_ENTITIES rather than a literal: the old assertion
+    said 8 and had been failing since client_bank and client_address were
+    added in ec47f2a, which is exactly the drift a magic number invites.
+    """
     source = inspect.getsource(gold_loader.load_gold)
 
-    assert source.count("except Exception as e:") == 8
+    assert source.count("except Exception as e:") == len(gold_loader.GOLD_ENTITIES)
 
 
 # ---- app.py itself -------------------------------------------------------
