@@ -1226,6 +1226,83 @@ def collapse_to_clients(result):
 # LOAD
 # ============================================================
 
+# The mapper owns this DDL so a fresh database needs nothing run
+# by hand. Keyed on client_ref because that is the grain
+# collapse_to_clients() emits -- one row per CLIENT, carrying its
+# representative folio and folio_count. The older
+# sql_scripts/client_mapping_review_2026-09-08.sql keyed on
+# (source, folio_no) and had no folio_count column, so the upsert
+# below could never have targeted it.
+#
+# pan_no and guard_pan are deliberately SEPARATE columns: a
+# guardian's PAN is never folded into the investor's own. That
+# separation is what lets the GPAN: rules and this queue tell a
+# minor apart from their guardian.
+REVIEW_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS bronze.client_mapping_review (
+    review_id           UUID         PRIMARY KEY
+                                     DEFAULT gen_random_uuid(),
+
+    source              VARCHAR(20)  NOT NULL,
+    folio_no            TEXT         NOT NULL,
+
+    name                TEXT,
+    pan_no              TEXT,
+    guard_pan           TEXT,
+    dob                 DATE,
+
+    client_ref          TEXT         NOT NULL,
+    rule_name           VARCHAR(40)  NOT NULL,
+    mapping_confidence  INTEGER,
+    mapping_status      VARCHAR(20)  NOT NULL
+        CHECK (mapping_status IN ('MAPPED', 'REVIEW')),
+    folio_count         INTEGER,
+
+    review_reason       VARCHAR(20),
+    review_detail       TEXT,
+
+    reviewer_decision   VARCHAR(20)
+        CHECK (reviewer_decision IS NULL
+               OR reviewer_decision IN ('APPROVED', 'REJECTED')),
+    reviewed_by         VARCHAR(80),
+    reviewed_at         TIMESTAMP,
+
+    created_at          TIMESTAMP    NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_client_mapping_review_client
+    ON bronze.client_mapping_review (client_ref);
+
+CREATE INDEX IF NOT EXISTS client_mapping_review_pending_idx
+    ON bronze.client_mapping_review (review_reason)
+    WHERE mapping_status = 'REVIEW' AND reviewer_decision IS NULL;
+
+CREATE INDEX IF NOT EXISTS client_mapping_review_rule_idx
+    ON bronze.client_mapping_review (rule_name);
+
+CREATE INDEX IF NOT EXISTS client_mapping_review_folio_idx
+    ON bronze.client_mapping_review (source, folio_no);
+"""
+
+
+def ensure_review_table():
+
+    """Create the review table if it is not there yet."""
+
+    with engine.begin() as connection:
+
+        connection.execute(
+            text("CREATE SCHEMA IF NOT EXISTS bronze")
+        )
+
+        for statement in REVIEW_TABLE_DDL.split(";"):
+
+            if statement.strip():
+
+                connection.execute(text(statement))
+
+
 def load_review(result):
 
     print()
@@ -1233,36 +1310,27 @@ def load_review(result):
     print("WRITING bronze.client_mapping_review")
     print("=" * 80)
 
-    exists = pd.read_sql(
-        """
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'bronze'
-          AND table_name = 'client_mapping_review'
-        """,
-        engine,
-    )
+    ensure_review_table()
 
-    if exists.empty:
-
-        print(
-            "Table not found -- run "
-            "sql_scripts/client_mapping_review_2026-09-08.sql first."
-        )
-
-        return False
-
-    # The table is a REVIEW QUEUE, not a copy of every mapping:
-    # only clients a human still has to look at belong in it.
-    pending = result[result["mapping_status"] == "REVIEW"].copy()
+    # EVERY mapping is recorded, not just the review queue. The
+    # rules decide which client each of 3,567 folios belongs to,
+    # and that answer IS the mapping -- keeping only the handful
+    # a human still has to look at discarded all 616 client
+    # identities and left the table empty precisely when the
+    # rules did well.
+    #
+    # mapping_status separates the two populations: MAPPED for
+    # the settled ones, REVIEW for the queue, which the partial
+    # index client_mapping_review_pending_idx still serves.
+    pending = result[result["mapping_status"] == "REVIEW"]
 
     print("Clients mapped        :", len(result))
 
     print("Needing review        :", len(pending))
 
-    # Clear out anything that no longer needs review -- but never
-    # a row somebody has already decided on.
-    keep = tuple(pending["client_ref"].tolist())
+    # Drop only clients the rules no longer produce at all -- and
+    # never a row somebody has already decided on.
+    keep = tuple(result["client_ref"].tolist())
 
     with engine.begin() as connection:
 
@@ -1290,15 +1358,9 @@ def load_review(result):
                 )
             ).rowcount
 
-    print("Resolved, removed     :", removed)
+    print("Stale clients removed :", removed)
 
-    if pending.empty:
-
-        print("Nothing to review.")
-
-        return True
-
-    result = pending
+    result = result.copy()
 
     result["updated_at"] = pd.Timestamp.now()
 

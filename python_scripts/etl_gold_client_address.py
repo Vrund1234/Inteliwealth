@@ -99,6 +99,12 @@ def extract_client_address():
 
             i.pan_no,
 
+            i.guardian_pan,
+
+            i.investor_name,
+
+            i.dob,
+
             txn.txn_pan,
 
             sip.sip_pan,
@@ -322,25 +328,44 @@ def transform_client_address(df):
     # ========================================================
     # FINAL PAN
     # ========================================================
+    #
+    # pan_no only -- no transaction or SIP fallback.
+    #
+    # This is what gold.clients does, and the comment above used
+    # to claim this file matched it while the fallback below said
+    # otherwise. CAMS writes the GUARDIAN's PAN into the ordinary
+    # transaction pan field with no flag, so falling back to it
+    # resolved a minor's folio to the guardian's PAN and filed
+    # the MINOR's address under the GUARDIAN's client_id.
+    #
+    # A folio with no PAN of its own is a minor, and is matched
+    # to its client below on guardian PAN + name + date of birth
+    # -- the same key gold.clients de-duplicates them on.
+    # ========================================================
 
-    df["pan"] = (
-        df["pan_no"]
-        .fillna(df["txn_pan"])
-        .fillna(df["sip_pan"])
-    )
+    df["pan"] = df["pan_no"]
 
     # ========================================================
     # REMOVE INVALID RECORDS
     # ========================================================
 
+    # A missing PAN is not a reason to discard an address. A
+    # minor has no PAN of their own, and dropping them here --
+    # before the client mapping even runs -- is what left every
+    # minor in gold.clients with no address at all. Rows that
+    # genuinely resolve to no client are removed after the
+    # mapping below, where the guardian-identity match has had
+    # its chance.
     before = len(df)
 
     df = df[
         df["pan"].notna()
+        |
+        df["guardian_pan"].notna()
     ].copy()
 
     print(
-        "Rows removed due to missing PAN :",
+        "Rows removed with neither PAN nor guardian PAN :",
         before - len(df)
     )
 
@@ -396,11 +421,15 @@ def transform_client_address(df):
 
             id,
 
-            pan
+            pan,
+
+            guardian_pan,
+
+            full_name,
+
+            date_of_birth
 
         FROM gold.clients
-
-        WHERE pan IS NOT NULL
 
     """
 
@@ -420,16 +449,8 @@ def transform_client_address(df):
         clients["pan"]
     )
 
-    clients = clients[
-        clients["pan"].notna()
-    ].copy()
-
-    # --------------------------------------------------------
-    # REMOVE DUPLICATE CLIENT PANs
-    # --------------------------------------------------------
-
-    clients = (
-        clients
+    with_pan = (
+        clients[clients["pan"].notna()]
         .drop_duplicates(
             subset=["pan"],
             keep="first"
@@ -437,11 +458,11 @@ def transform_client_address(df):
     )
 
     # --------------------------------------------------------
-    # MAP CLIENT UUID
+    # MAP CLIENT UUID -- BY PAN
     # --------------------------------------------------------
 
     df = df.merge(
-        clients[
+        with_pan[
             [
                 "pan",
                 "id"
@@ -457,6 +478,73 @@ def transform_client_address(df):
         },
         inplace=True
     )
+
+    # --------------------------------------------------------
+    # MAP CLIENT UUID -- MINORS, BY GUARDIAN IDENTITY
+    # --------------------------------------------------------
+    #
+    # A minor has no PAN, so the merge above leaves client_id
+    # null and every one of their addresses was dropped as
+    # "client does not exist". They are matched instead on the
+    # key gold.clients stores them under.
+    # --------------------------------------------------------
+
+    minor_key = [
+        "guardian_pan",
+        "full_name",
+        "date_of_birth"
+    ]
+
+    minors = (
+        clients[clients["pan"].isna()]
+        .dropna(subset=["guardian_pan"])
+        .drop_duplicates(
+            subset=minor_key,
+            keep="first"
+        )
+    )
+
+    if not minors.empty:
+
+        df["guardian_pan"] = clean_pan(
+            df["guardian_pan"]
+        )
+
+        df["full_name"] = clean_string(
+            df["investor_name"]
+        )
+
+        df["date_of_birth"] = (
+            pd.to_datetime(
+                df["dob"],
+                errors="coerce",
+                format="ISO8601"
+            )
+            .dt.date
+        )
+
+        df = df.merge(
+            minors[minor_key + ["id"]],
+            on=minor_key,
+            how="left"
+        )
+
+        df["client_id"] = (
+            df["client_id"]
+            .fillna(df["id"])
+        )
+
+        df = df.drop(columns=["id"])
+
+        print(
+            "Client IDs mapped via guardian identity :",
+            int(
+                (
+                    df["pan"].isna()
+                    & df["client_id"].notna()
+                ).sum()
+            )
+        )
 
     print(
         "Client IDs mapped :",
@@ -671,9 +759,13 @@ def load_client_address(gold_df):
             country,
             pincode,
             mobile_no,
-            whatsapp_no
+            whatsapp_no,
+
+            address_key
 
         FROM gold.client_address
+
+        WHERE is_deleted = FALSE
 
     """
 
@@ -690,17 +782,66 @@ def load_client_address(gold_df):
     # ADDRESS KEY
     # ========================================================
 
+    # The database decides what a duplicate address IS, and it
+    # does not use these columns. gold.client_address.address_key
+    # is a GENERATED column --
+    #
+    #   upper(regexp_replace(line1 || line2 || line3,
+    #                        '[^A-Za-z0-9]', '', 'g'))
+    #
+    # -- and uq_client_address_natural is UNIQUE (client_id,
+    # address_key) WHERE is_deleted = false.
+    #
+    # Keying on the raw columns instead is strictly weaker in two
+    # ways, and both let a row through that Postgres then
+    # rejects, failing the whole batch insert and leaving
+    # gold.client_address empty:
+    #
+    #   - it includes city/state/country/pincode/mobile_no, which
+    #     the index ignores, so two rows differing only in
+    #     pincode look distinct here and collide there;
+    #   - it compares line1-3 literally, so "7 PANCHSHIL SOC."
+    #     and "7 PANCHSHIL SOC" look distinct here and normalize
+    #     to one key there.
+    #
+    # Matching the generated expression exactly is what keeps the
+    # batch loadable.
+    def build_address_key(frame):
+
+        joined = (
+            frame["line1"].fillna("").astype(str)
+            + frame["line2"].fillna("").astype(str)
+            + frame["line3"].fillna("").astype(str)
+        )
+
+        return (
+            joined
+            .str.replace(
+                r"[^A-Za-z0-9]",
+                "",
+                regex=True
+            )
+            .str.upper()
+        )
+
     address_key = [
         "client_id",
-        "line1",
-        "line2",
-        "line3",
-        "city",
-        "state",
-        "country",
-        "pincode",
-        "mobile_no"
+        "address_key"
     ]
+
+    gold_df["address_key"] = build_address_key(gold_df)
+
+    before = len(gold_df)
+
+    gold_df = gold_df.drop_duplicates(
+        subset=address_key,
+        keep="first"
+    )
+
+    print(
+        "Same-address rows collapsed on the database key :",
+        before - len(gold_df)
+    )
 
     # ========================================================
     # REMOVE EXISTING ADDRESSES
@@ -765,6 +906,14 @@ def load_client_address(gold_df):
         )
 
         return
+
+    # address_key was only ever needed to match the database's
+    # own notion of a duplicate. It is GENERATED ALWAYS, so
+    # Postgres computes it on insert and rejects any attempt to
+    # supply a value for it.
+    gold_df = gold_df.drop(
+        columns=["address_key"]
+    )
 
     # ========================================================
     # GET CURRENT MAX SEQUENCE PER CLIENT
@@ -997,7 +1146,12 @@ def load_client_address(gold_df):
     print(
         "Unique addresses :",
         gold_df[
-            address_key
+            [
+                "client_id",
+                "line1",
+                "line2",
+                "line3"
+            ]
         ]
         .drop_duplicates()
         .shape[0]

@@ -143,6 +143,12 @@ def extract_client_bank():
 
             i.pan_no,
 
+            i.guardian_pan,
+
+            i.investor_name,
+
+            i.dob,
+
             txn.txn_pan,
 
             sip.sip_pan,
@@ -326,11 +332,13 @@ def transform_client_bank(df):
     # FINAL PAN
     # --------------------------------------------------------
 
-    df["pan"] = (
-        df["pan_no"]
-        .fillna(df["txn_pan"])
-        .fillna(df["sip_pan"])
-    )
+    # pan_no only -- no transaction or SIP fallback, matching
+    # gold.clients. CAMS writes the GUARDIAN's PAN into the
+    # ordinary transaction pan field with no flag, so the
+    # fallback filed a MINOR's bank account under the GUARDIAN's
+    # client_id. PAN-less folios are matched below on guardian
+    # PAN + name + date of birth instead.
+    df["pan"] = df["pan_no"]
 
     # --------------------------------------------------------
     # CLEAN ACCOUNT NUMBER
@@ -351,13 +359,24 @@ def transform_client_bank(df):
 
     before = len(df)
 
+    # A missing PAN is not a reason to discard a bank account. A
+    # minor has no PAN of their own, and dropping them here --
+    # before the client mapping runs -- left every minor in
+    # gold.clients with no bank row at all. An account number is
+    # still required, since a bank row without one carries
+    # nothing. Rows that resolve to no client are removed after
+    # the mapping below.
     df = df[
-        df["pan"].notna()
+        (
+            df["pan"].notna()
+            | df["guardian_pan"].notna()
+        )
         & df["account_number"].notna()
     ].copy()
 
     print(
-        "Rows removed due to missing PAN/account :",
+        "Rows removed with no account, or neither PAN "
+        "nor guardian PAN :",
         before - len(df)
     )
 
@@ -471,11 +490,15 @@ def transform_client_bank(df):
 
             id,
 
-            pan
+            pan,
+
+            guardian_pan,
+
+            full_name,
+
+            date_of_birth
 
         FROM gold.clients
-
-        WHERE pan IS NOT NULL
 
     """
 
@@ -495,16 +518,8 @@ def transform_client_bank(df):
         clients["pan"]
     )
 
-    clients = clients[
-        clients["pan"].notna()
-    ].copy()
-
-    # --------------------------------------------------------
-    # REMOVE DUPLICATE CLIENT PANs
-    # --------------------------------------------------------
-
-    clients = (
-        clients
+    with_pan = (
+        clients[clients["pan"].notna()]
         .drop_duplicates(
             subset=["pan"],
             keep="first"
@@ -512,11 +527,11 @@ def transform_client_bank(df):
     )
 
     # --------------------------------------------------------
-    # MAP CLIENT UUID
+    # MAP CLIENT UUID -- BY PAN
     # --------------------------------------------------------
 
     df = df.merge(
-        clients[
+        with_pan[
             [
                 "pan",
                 "id"
@@ -532,6 +547,73 @@ def transform_client_bank(df):
         },
         inplace=True
     )
+
+    # --------------------------------------------------------
+    # MAP CLIENT UUID -- MINORS, BY GUARDIAN IDENTITY
+    # --------------------------------------------------------
+    #
+    # A minor has no PAN, so the merge above leaves client_id
+    # null and their bank accounts were dropped as "client does
+    # not exist". They are matched on the key gold.clients
+    # stores them under instead.
+    # --------------------------------------------------------
+
+    minor_key = [
+        "guardian_pan",
+        "full_name",
+        "date_of_birth"
+    ]
+
+    minors = (
+        clients[clients["pan"].isna()]
+        .dropna(subset=["guardian_pan"])
+        .drop_duplicates(
+            subset=minor_key,
+            keep="first"
+        )
+    )
+
+    if not minors.empty:
+
+        df["guardian_pan"] = clean_pan(
+            df["guardian_pan"]
+        )
+
+        df["full_name"] = clean_string(
+            df["investor_name"]
+        )
+
+        df["date_of_birth"] = (
+            pd.to_datetime(
+                df["dob"],
+                errors="coerce",
+                format="ISO8601"
+            )
+            .dt.date
+        )
+
+        df = df.merge(
+            minors[minor_key + ["id"]],
+            on=minor_key,
+            how="left"
+        )
+
+        df["client_id"] = (
+            df["client_id"]
+            .fillna(df["id"])
+        )
+
+        df = df.drop(columns=["id"])
+
+        print(
+            "Client IDs mapped via guardian identity :",
+            int(
+                (
+                    df["pan"].isna()
+                    & df["client_id"].notna()
+                ).sum()
+            )
+        )
 
     print(
         "Client IDs mapped :",
@@ -697,9 +779,13 @@ def load_client_bank(gold_df):
 
             account_number,
 
-            is_main
+            is_main,
+
+            account_key
 
         FROM gold.client_bank
+
+        WHERE is_deleted = FALSE
 
     """
 
@@ -738,12 +824,65 @@ def load_client_bank(gold_df):
     # Existing account values are not modified.
     # ========================================================
 
+    # As in etl_gold_client_address, the database decides what a
+    # duplicate account IS. gold.client_bank.account_key is a
+    # GENERATED column --
+    #
+    #   COALESCE(NULLIF(ltrim(upper(regexp_replace(
+    #       account_number, '[^A-Za-z0-9]', '', 'g')), '0'), ''), '')
+    #
+    # -- and uq_client_bank_natural is UNIQUE (client_id,
+    # account_key) WHERE is_deleted = false AND account_key <> ''.
+    #
+    # Note the ltrim of '0': '0030409457813' and '30409457813'
+    # are the SAME account to Postgres and two different ones to
+    # a raw account_number comparison. Keying on the raw value
+    # let both into one batch, and the insert then failed as a
+    # whole -- leaving gold.client_bank empty.
+    def build_account_key(frame):
+
+        return (
+            frame["account_number"]
+            .fillna("")
+            .astype(str)
+            .str.replace(
+                r"[^A-Za-z0-9]",
+                "",
+                regex=True
+            )
+            .str.upper()
+            .str.lstrip("0")
+        )
+
+    gold_df["account_key"] = build_account_key(gold_df)
+
+    # account_key = '' is excluded from the unique index, so
+    # those rows are never duplicates and are all kept.
+    keyed = gold_df["account_key"] != ""
+
+    before = len(gold_df)
+
+    gold_df = pd.concat(
+        [
+            gold_df[keyed].drop_duplicates(
+                subset=["client_id", "account_key"],
+                keep="first"
+            ),
+            gold_df[~keyed],
+        ]
+    )
+
+    print(
+        "Same-account rows collapsed on the database key :",
+        before - len(gold_df)
+    )
+
     if not existing.empty:
 
         existing_keys = existing[
             [
                 "client_id",
-                "account_number"
+                "account_key"
             ]
         ].drop_duplicates()
 
@@ -753,7 +892,7 @@ def load_client_bank(gold_df):
             ),
             on=[
                 "client_id",
-                "account_number"
+                "account_key"
             ],
             how="left"
         )
@@ -792,6 +931,13 @@ def load_client_bank(gold_df):
         )
 
         return
+
+    # account_key was only needed to match the database's own
+    # notion of a duplicate. It is GENERATED ALWAYS, so Postgres
+    # computes it and rejects any supplied value.
+    gold_df = gold_df.drop(
+        columns=["account_key"]
+    )
 
     # ========================================================
     # GET CURRENT MAX SEQUENCE PER CLIENT

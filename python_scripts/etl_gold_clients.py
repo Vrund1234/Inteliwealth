@@ -629,9 +629,21 @@ def transform_clients(df):
     # bronze.client_mapping_review.
     # ========================================================
 
+    # Validated to the PAN format, not just cleaned: clean_pan
+    # accepts anything non-blank, and six KFIN folios carry the
+    # placeholder guard_pan '0'. Left in, that placeholder is
+    # stored as a real guardian PAN and -- because the PAN-less
+    # dedup key below is guardian_pan + name + dob -- becomes a
+    # family key filing unrelated minors under one guardian.
+    #
+    # client_mapping.valid_pan is the same check the mapper
+    # applies when it builds GPAN: keys, reused rather than
+    # reimplemented so the two cannot drift apart.
+    from client_mapping import valid_pan
+
     if "guardian_pan" in df.columns:
 
-        df["guardian_pan"] = clean_pan(df["guardian_pan"])
+        df["guardian_pan"] = valid_pan(df["guardian_pan"])
 
     else:
 
@@ -1408,14 +1420,28 @@ def transform_clients(df):
 
 
 # ============================================================
-# UPDATE EXISTING CLIENT CKYC / DP ID
+# UPDATE EXISTING CLIENT ATTRIBUTES
 # ============================================================
 
-def update_existing_ckyc_dp(gold_df):
+def update_existing_client_attributes(gold_df):
+
+    """Backfill registry-derived attributes onto already-loaded clients.
+
+    load_clients() below drops every row whose PAN is already in
+    gold.clients, so its upsert never reaches an existing client
+    and a newly mapped column cannot arrive by re-running the
+    pipeline. That is how guardian_pan stayed NULL for all 594
+    clients loaded before it was mapped: the value was correct in
+    silver, survived extract and transform, and was then filtered
+    out one step short of the table.
+
+    Only ever fills a NULL, so a value the app or a human has
+    already set is never disturbed and this stays safe to re-run.
+    """
 
     print()
     print("=" * 80)
-    print("UPDATING EXISTING CLIENT CKYC / DP ID")
+    print("UPDATING EXISTING CLIENT ATTRIBUTES")
     print("=" * 80)
 
     update_df = gold_df[
@@ -1425,19 +1451,22 @@ def update_existing_ckyc_dp(gold_df):
             gold_df["ckyc_no"].notna()
             |
             gold_df["dp_id"].notna()
+            |
+            gold_df["guardian_pan"].notna()
         )
     ][
         [
             "pan",
             "ckyc_no",
-            "dp_id"
+            "dp_id",
+            "guardian_pan"
         ]
     ].copy()
 
     if update_df.empty:
 
         print(
-            "No existing clients have CKYC / DP ID values to update."
+            "No existing clients have attribute values to update."
         )
 
         return 0
@@ -1452,7 +1481,8 @@ def update_existing_ckyc_dp(gold_df):
             id,
             pan,
             ckyc_no,
-            dp_id
+            dp_id,
+            guardian_pan
         FROM gold.clients
         WHERE pan IS NOT NULL
         """
@@ -1480,7 +1510,8 @@ def update_existing_ckyc_dp(gold_df):
                 "id",
                 "pan",
                 "ckyc_no",
-                "dp_id"
+                "dp_id",
+                "guardian_pan"
             ]
         ],
         on="pan",
@@ -1526,12 +1557,18 @@ def update_existing_ckyc_dp(gold_df):
             &
             update_df["dp_id_new"].notna()
         )
+        |
+        (
+            update_df["guardian_pan_existing"].isna()
+            &
+            update_df["guardian_pan_new"].notna()
+        )
     ].copy()
 
     if changed.empty:
 
         print(
-            "No existing client CKYC / DP ID values required updating."
+            "No existing client attributes required updating."
         )
 
         return 0
@@ -1553,8 +1590,11 @@ def update_existing_ckyc_dp(gold_df):
                 UPDATE gold.clients
 
                 SET
-                    ckyc_no = COALESCE(:ckyc_no, ckyc_no),
-                    dp_id = COALESCE(:dp_id, dp_id)
+                    ckyc_no = COALESCE(ckyc_no, :ckyc_no),
+                    dp_id = COALESCE(dp_id, :dp_id),
+                    guardian_pan = COALESCE(
+                        guardian_pan, :guardian_pan
+                    )
 
                 WHERE id = :id
 
@@ -1583,6 +1623,15 @@ def update_existing_ckyc_dp(gold_df):
                                 row["dp_id_new"]
                             )
                         ),
+                        "guardian_pan": (
+                            None
+                            if pd.isna(
+                                row["guardian_pan_new"]
+                            )
+                            else str(
+                                row["guardian_pan_new"]
+                            )
+                        ),
                         "id": row["id"]
                     }
                 )
@@ -1599,7 +1648,7 @@ def update_existing_ckyc_dp(gold_df):
     except Exception as e:
 
         print(
-            "Existing CKYC / DP ID update failed:",
+            "Existing client attribute update failed:",
             str(e)[:3000]
         )
 
@@ -1729,6 +1778,88 @@ def load_clients(gold_df):
         .copy()
     )
 
+    # A PAN-less folio may belong to somebody who is ALREADY in
+    # this same batch under their own PAN -- one folio of theirs
+    # simply did not carry it. Animesh J Mehta, Pritipal Shah,
+    # Saleel Y Bhatt and Sureel Yogendra Bhatt each have such a
+    # folio, and without this each is stored TWICE: once as
+    # "PRITIPAL MANUBHAI SHAH" with ACWPS4328K and once as
+    # "Pritipal Shah" with no PAN.
+    #
+    # The existing-clients check further down does exactly this
+    # comparison, but only against rows ALREADY in gold.clients,
+    # and it is skipped entirely when that table is empty -- so a
+    # load into a freshly truncated table created the very
+    # duplicates that check exists to prevent. Matching inside
+    # the batch is what makes the result independent of whether
+    # the table happened to be empty.
+    #
+    # This is also what reconciles the count with
+    # client_mapping.py, whose NAME_ATTACH rules fold these same
+    # four folios into their PAN client: 616 clients, not 620.
+    from client_mapping import (
+        name_match_score as _name_match_score,
+        dob_conflicts as _dob_conflicts,
+        NAME_MATCH_MERGE as _NAME_MATCH_MERGE,
+    )
+
+    if not with_pan.empty and not without_pan.empty:
+
+        batch_named = [
+            (row[0], None if pd.isna(row[1]) else str(row[1]))
+            for row in with_pan.assign(
+                _norm=norm_name(with_pan["full_name"])
+            )[["_norm", "date_of_birth"]].to_numpy()
+            if row[0] is not None and not pd.isna(row[0])
+        ]
+
+        def attaches_to_pan_client(row):
+
+            if pd.isna(row["full_name"]):
+
+                return False
+
+            mine = norm_name(
+                pd.Series([row["full_name"]])
+            ).iloc[0]
+
+            if mine is None or pd.isna(mine):
+
+                return False
+
+            my_dob = (
+                None if pd.isna(row["date_of_birth"])
+                else str(row["date_of_birth"])
+            )
+
+            for other_name, other_dob in batch_named:
+
+                if _dob_conflicts(my_dob, other_dob):
+
+                    continue
+
+                if _name_match_score(
+                    mine, other_name
+                ) >= _NAME_MATCH_MERGE:
+
+                    return True
+
+            return False
+
+        attached = without_pan.apply(
+            attaches_to_pan_client,
+            axis=1
+        )
+
+        if attached.any():
+
+            print(
+                "PAN-less rows folded into their PAN client:",
+                int(attached.sum())
+            )
+
+            without_pan = without_pan[~attached].copy()
+
     gold_df = pd.concat(
         [with_pan, without_pan],
         ignore_index=True
@@ -1766,7 +1897,7 @@ def load_clients(gold_df):
     # UPDATE EXISTING CLIENTS FIRST
     # ========================================================
 
-    update_existing_ckyc_dp(
+    update_existing_client_attributes(
         gold_df
     )
 
@@ -2006,9 +2137,18 @@ def load_clients(gold_df):
 
         from utils.db import upsert_dataframe
 
-        # uq_clients_pan is a plain unique index on pan, so
-        # Postgres treats NULLs as DISTINCT: real PANs stay
-        # unique, and any number of PAN-less clients is allowed.
+        # This needs uq_gold_clients_pan to be a NULLS DISTINCT
+        # unique constraint on pan, so that real PANs stay unique
+        # while any number of PAN-less clients is allowed.
+        #
+        # Built as NULLS NOT DISTINCT it permits exactly ONE
+        # PAN-less client in the entire table and every minor
+        # after the first is rejected -- a minor has no PAN of
+        # their own, so there is no code-side way around it:
+        #   ALTER TABLE gold.clients
+        #     DROP CONSTRAINT uq_gold_clients_pan;
+        #   ALTER TABLE gold.clients
+        #     ADD CONSTRAINT uq_gold_clients_pan UNIQUE (pan);
         #
         # A PAN-less row therefore never matches ON CONFLICT and
         # is simply inserted -- which is correct, because the
@@ -2046,22 +2186,56 @@ def load_clients(gold_df):
 
         if not without_pan.empty:
 
-            without_pan.to_sql(
-                "clients",
-                engine,
-                schema="gold",
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=100,
-            )
+            # Row at a time, each in its own transaction.
+            #
+            # Sent as one batch, a single rejected row aborts the
+            # whole statement AND the surrounding transaction, so
+            # nothing at all reaches gold.clients and the ETL
+            # returns False -- which is how a full run could
+            # print every statistic and still leave the table
+            # empty. One unloadable row must not cost the other
+            # 27, nor the client_address and client_bank loads
+            # that depend on this table being populated.
+            blocked = []
 
-            inserted_rows += len(without_pan)
+            for _, one in without_pan.iterrows():
+
+                try:
+
+                    with engine.begin() as connection:
+
+                        pd.DataFrame([one]).to_sql(
+                            "clients",
+                            connection,
+                            schema="gold",
+                            if_exists="append",
+                            index=False,
+                        )
+
+                    inserted_rows += 1
+
+                except Exception as row_error:
+
+                    blocked.append(
+                        (one.get("full_name"), row_error)
+                    )
 
             print(
                 "PAN-less clients inserted:",
-                len(without_pan)
+                len(without_pan) - len(blocked)
             )
+
+            if blocked:
+
+                print(
+                    "PAN-less clients REJECTED:",
+                    len(blocked)
+                )
+
+                print(
+                    "  first reason:",
+                    str(blocked[0][1])[:300]
+                )
 
         print(
             f"Inserted {inserted_rows} / "
