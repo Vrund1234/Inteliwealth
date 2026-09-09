@@ -143,7 +143,9 @@ def normalize_mobile(series):
         dtype="object"
     )
 
-    # 91 + 10 digits
+    # ========================================================
+    # 91 + 10 DIGITS
+    # ========================================================
 
     mask_91 = (
         (digits.str.len() == 12)
@@ -157,7 +159,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_91] = "91"
 
-    # 10 digits
+    # ========================================================
+    # 10 DIGITS
+    # ========================================================
 
     mask_10 = (
         digits.str.len() == 10
@@ -169,7 +173,9 @@ def normalize_mobile(series):
 
     mobile_isd.loc[mask_10] = "91"
 
-    # International
+    # ========================================================
+    # INTERNATIONAL
+    # ========================================================
 
     mask_other = (
         (digits.str.len() > 10)
@@ -447,20 +453,69 @@ def transform_clients(df):
     # PAN
     # ========================================================
 
-    df["pan_no"] = clean_pan(
-        df["pan_no"]
-    )
+    if "pan_no" in df.columns:
 
-    df["txn_pan"] = clean_pan(
-        df["txn_pan"]
-    )
+        df["pan_no"] = clean_pan(
+            df["pan_no"]
+        )
 
-    df["sip_pan"] = clean_pan(
-        df["sip_pan"]
-    )
+    else:
+
+        df["pan_no"] = pd.Series(
+            pd.NA,
+            index=df.index,
+            dtype="object"
+        )
+
+    if "txn_pan" in df.columns:
+
+        df["txn_pan"] = clean_pan(
+            df["txn_pan"]
+        )
+
+    else:
+
+        df["txn_pan"] = pd.Series(
+            pd.NA,
+            index=df.index,
+            dtype="object"
+        )
+
+    if "sip_pan" in df.columns:
+
+        df["sip_pan"] = clean_pan(
+            df["sip_pan"]
+        )
+
+    else:
+
+        df["sip_pan"] = pd.Series(
+            pd.NA,
+            index=df.index,
+            dtype="object"
+        )
+
+    if "guardian_pan" in df.columns:
+
+        df["guardian_pan"] = clean_pan(
+            df["guardian_pan"]
+        )
+
+    else:
+
+        df["guardian_pan"] = pd.Series(
+            pd.NA,
+            index=df.index,
+            dtype="object"
+        )
+
+    # ========================================================
+    # FINAL PAN
+    # ========================================================
 
     df["pan"] = (
         df["pan_no"]
+        .fillna(df["guardian_pan"])
         .fillna(df["txn_pan"])
         .fillna(df["sip_pan"])
     )
@@ -599,6 +654,8 @@ def transform_clients(df):
 
     gold["pan_verified"] = False
 
+    gold["guardian_pan"] = df["guardian_pan"]
+
     gold["pan_verified_at"] = None
 
     # ========================================================
@@ -638,19 +695,469 @@ def transform_clients(df):
     # AGE
     # ========================================================
 
-    if "age" in df.columns:
-        gold["age"] = df["age"].astype("Int64")
+    if "age" in df.columns and df["age"].notna().any():
+
+        gold["age"] = (
+            pd.to_numeric(
+                df["age"],
+                errors="coerce"
+            )
+            .astype("Int64")
+        )
+
+    elif (
+        "date_of_birth" in gold.columns
+        and
+        gold["date_of_birth"].notna().any()
+    ):
+
+        today = (
+            pd.Timestamp
+            .today()
+            .normalize()
+            .date()
+        )
+
+        dob_series = pd.to_datetime(
+            gold["date_of_birth"],
+            errors="coerce"
+        )
+
+        age_series = (
+            today.year
+            - dob_series.dt.year
+            -
+            (
+                (today.month < dob_series.dt.month)
+                |
+                (
+                    (today.month == dob_series.dt.month)
+                    &
+                    (today.day < dob_series.dt.day)
+                )
+            ).astype(int)
+        )
+
+        gold["age"] = (
+            age_series
+            .where(
+                dob_series.notna(),
+                pd.NA
+            )
+            .astype("Int64")
+        )
+
     else:
-        gold["age"] = pd.NA
+
+        gold["age"] = pd.Series(
+            pd.NA,
+            index=df.index,
+            dtype="Int64"
+        )
+
+    # ========================================================
+    # MINOR + DOCUMENT UPDATE STATUS
+    # ========================================================
+    #
+    # BUSINESS LOGIC
+    #
+    # The document update status is determined using:
+    #
+    #     1. Age
+    #     2. Own PAN (pan_no)
+    #     3. Guardian PAN
+    #
+    # --------------------------------------------------------
+    # AGE < 18
+    # --------------------------------------------------------
+    #
+    #     is_updatedocument = FALSE
+    #     is_minor = TRUE
+    #
+    # --------------------------------------------------------
+    # AGE >= 18
+    # --------------------------------------------------------
+    #
+    # If guardian PAN is still being used:
+    #
+    #     pan_no == guardian_pan
+    #
+    #     OR
+    #
+    #     pan_no is NULL and guardian_pan exists
+    #
+    # Then:
+    #
+    #     is_updatedocument = FALSE
+    #     is_minor = TRUE
+    #
+    # --------------------------------------------------------
+    # AGE >= 18 AND OWN PAN IS BEING USED
+    # --------------------------------------------------------
+    #
+    # If:
+    #
+    #     pan_no exists
+    #
+    # AND
+    #
+    #     guardian_pan is NULL
+    #
+    # OR
+    #
+    #     guardian_pan != pan_no
+    #
+    # Then:
+    #
+    #     is_updatedocument = TRUE
+    #     is_minor = FALSE
+    #
+    # --------------------------------------------------------
+    # BOTH PANs MISSING
+    # --------------------------------------------------------
+    #
+    # We cannot determine whether the document was updated.
+    #
+    #     is_updatedocument = NULL
+    #
+    # is_minor may then use source/tax-status fallback.
+    #
+    # ========================================================
+
+    # ========================================================
+    # CLEAN PAN VALUES FOR COMPARISON
+    # ========================================================
+
+    own_pan = clean_pan(
+        df["pan_no"]
+    )
+
+    guardian_pan = clean_pan(
+        df["guardian_pan"]
+    )
+
+    # ========================================================
+    # AGE MASKS
+    # ========================================================
+
+    age_under_18 = (
+        gold["age"].notna()
+        &
+        (gold["age"] < 18)
+    )
+
+    age_18_or_over = (
+        gold["age"].notna()
+        &
+        (gold["age"] >= 18)
+    )
+
+    # ========================================================
+    # GUARDIAN PAN STILL BEING USED
+    # ========================================================
+    #
+    # CASE 1:
+    # Own PAN and Guardian PAN are the same.
+    #
+    # Example:
+    #
+    # PAN          = ABCDE1234F
+    # Guardian PAN = ABCDE1234F
+    #
+    # This means guardian PAN is still being used.
+    #
+    # --------------------------------------------------------
+    # CASE 2:
+    # Own PAN is missing but Guardian PAN exists.
+    #
+    # This also means we do not have evidence of own PAN
+    # being updated.
+    #
+    # ========================================================
+
+    guardian_pan_still_used = (
+        (
+            own_pan.notna()
+            &
+            guardian_pan.notna()
+            &
+            (own_pan == guardian_pan)
+        )
+        |
+        (
+            own_pan.isna()
+            &
+            guardian_pan.notna()
+        )
+    )
+
+    # ========================================================
+    # OWN PAN IS BEING USED
+    # ========================================================
+    #
+    # Age >= 18 and:
+    #
+    #     own PAN exists
+    #
+    # AND
+    #
+    #     guardian PAN is missing
+    #
+    # OR
+    #
+    #     guardian PAN is different from own PAN
+    #
+    # ========================================================
+
+    own_pan_is_being_used = (
+        own_pan.notna()
+        &
+        (
+            guardian_pan.isna()
+            |
+            (
+                guardian_pan.notna()
+                &
+                (guardian_pan != own_pan)
+            )
+        )
+    )
+
+    # ========================================================
+    # DOCUMENT UPDATE STATUS
+    # ========================================================
+
+    is_updatedocument = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="boolean"
+    )
+
+    # --------------------------------------------------------
+    # RULE 1:
+    # Age < 18
+    #
+    # Document update is not applicable.
+    # --------------------------------------------------------
+
+    is_updatedocument.loc[
+        age_under_18
+    ] = False
+
+    # --------------------------------------------------------
+    # RULE 2:
+    # Age >= 18 + guardian PAN still being used
+    #
+    # Document has NOT been updated.
+    # --------------------------------------------------------
+
+    is_updatedocument.loc[
+        age_18_or_over
+        &
+        guardian_pan_still_used
+    ] = False
+
+    # --------------------------------------------------------
+    # RULE 3:
+    # Age >= 18 + own PAN is being used
+    #
+    # Document has been updated.
+    # --------------------------------------------------------
+
+    is_updatedocument.loc[
+        age_18_or_over
+        &
+        own_pan_is_being_used
+    ] = True
+
+    # ========================================================
+    # SAVE DOCUMENT STATUS
+    # ========================================================
+
+    gold["is_updatedocument"] = (
+        is_updatedocument
+    )
 
     # ========================================================
     # IS MINOR
     # ========================================================
 
-    if "is_minor" in df.columns:
-        gold["is_minor"] = df["is_minor"].astype("boolean")
-    else:
-        gold["is_minor"] = pd.NA
+    is_minor = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="boolean"
+    )
+
+    # --------------------------------------------------------
+    # RULE 1:
+    # Age below 18 -> Minor
+    # --------------------------------------------------------
+
+    # is_minor.loc[
+    #     age_under_18
+    # ] = True
+
+    # --------------------------------------------------------
+    # RULE 2:
+    # Age >= 18 + document NOT updated
+    #
+    # Still treated as minor.
+    # --------------------------------------------------------
+
+    is_minor.loc[
+        age_18_or_over
+        &
+        (gold["is_updatedocument"] == False)
+    ] = True
+
+    # --------------------------------------------------------
+    # RULE 3:
+    # Age >= 18 + document updated
+    #
+    # Treated as major.
+    # --------------------------------------------------------
+
+    is_minor.loc[
+        age_18_or_over
+        &
+        (gold["is_updatedocument"] == True)
+    ] = False
+
+    # ========================================================
+    # FALLBACK TO SOURCE IS_MINOR
+    # ========================================================
+    #
+    # Only used when our PAN-based logic cannot determine
+    # the status.
+    #
+    # ========================================================
+
+    if (
+        "is_minor" in df.columns
+        and
+        df["is_minor"].notna().any()
+    ):
+
+        source_is_minor = (
+            df["is_minor"]
+            .astype("boolean")
+        )
+
+        is_minor = (
+            is_minor
+            .fillna(source_is_minor)
+        )
+
+    # ========================================================
+    # FALLBACK TO TAX STATUS
+    # ========================================================
+
+    # if "tax_status" in df.columns:
+
+    #     tax_minor = (
+    #         clean_string(
+    #             df["tax_status"]
+    #         )
+    #         .str.upper()
+    #         .isin(
+    #             [
+    #                 "M",
+    #                 "MINOR",
+    #                 "ON BEHALF OF MINOR"
+    #             ]
+    #         )
+    #     )
+
+    #     is_minor.loc[
+    #         is_minor.isna()
+    #         &
+    #         tax_minor
+    #     ] = True
+
+    # ========================================================
+    # FINAL MINOR STATUS
+    # ========================================================
+
+    gold["is_minor"] = is_minor
+
+    # ========================================================
+    # MINOR / DOCUMENT UPDATE STATISTICS
+    # ========================================================
+
+    print("\nMinor / Document Update Statistics")
+    print("-" * 80)
+
+    print(
+        "Age < 18                         :",
+        age_under_18.sum()
+    )
+
+    print(
+        "Age >= 18                        :",
+        age_18_or_over.sum()
+    )
+
+    print(
+        "Own PAN available                :",
+        own_pan.notna().sum()
+    )
+
+    print(
+        "Guardian PAN available           :",
+        guardian_pan.notna().sum()
+    )
+
+    print(
+        "Guardian PAN still being used    :",
+        guardian_pan_still_used.sum()
+    )
+
+    print(
+        "Own PAN being used               :",
+        own_pan_is_being_used.sum()
+    )
+
+    print(
+        "Document updated = TRUE          :",
+        gold["is_updatedocument"]
+        .eq(True)
+        .sum()
+    )
+
+    print(
+        "Document updated = FALSE         :",
+        gold["is_updatedocument"]
+        .eq(False)
+        .sum()
+    )
+
+    print(
+        "Document update status = NULL    :",
+        gold["is_updatedocument"]
+        .isna()
+        .sum()
+    )
+
+    print(
+        "Final minor clients              :",
+        gold["is_minor"]
+        .eq(True)
+        .sum()
+    )
+
+    print(
+        "Final adult clients              :",
+        gold["is_minor"]
+        .eq(False)
+        .sum()
+    )
+
+    print(
+        "Final minor status = NULL        :",
+        gold["is_minor"]
+        .isna()
+        .sum()
+    )
 
     # ========================================================
     # APP MANAGED
@@ -813,7 +1320,9 @@ def transform_clients(df):
 
     gold["investor_type"] = (
         investor_type_source
-        .apply(derive_investor_type)
+        .apply(
+            derive_investor_type
+        )
     )
 
     # ========================================================
@@ -848,7 +1357,9 @@ def transform_clients(df):
         ] = "Not Verified"
 
         gold.loc[
-            cams_mask & cams_ckyc.notna(),
+            cams_mask
+            &
+            cams_ckyc.notna(),
             "kyc_status"
         ] = "Verified"
 
@@ -880,12 +1391,14 @@ def transform_clients(df):
         ] = "Not Verified"
 
         gold.loc[
-            kfin_mask & kfin_verified,
+            kfin_mask
+            &
+            kfin_verified,
             "kyc_status"
         ] = "Verified"
 
     # ========================================================
-    # APP MANAGED
+    # RISK / RM / BRANCH
     # ========================================================
 
     gold["risk_profile"] = None
@@ -898,11 +1411,20 @@ def transform_clients(df):
 
     gold["arn"] = (
         clean_string(
-            df["txn_brokcode"]
+            df.get(
+                "txn_brokcode",
+                pd.Series(
+                    pd.NA,
+                    index=df.index
+                )
+            )
         )
         .str.upper()
         .str.strip()
-        .replace("", pd.NA)
+        .replace(
+            "",
+            pd.NA
+        )
         .str[:50]
     )
 
@@ -912,11 +1434,20 @@ def transform_clients(df):
 
     gold["sub_arn"] = (
         clean_string(
-            df["txn_src_brk_code"]
+            df.get(
+                "txn_src_brk_code",
+                pd.Series(
+                    pd.NA,
+                    index=df.index
+                )
+            )
         )
         .str.upper()
         .str.strip()
-        .replace("", pd.NA)
+        .replace(
+            "",
+            pd.NA
+        )
         .str[:50]
     )
 
@@ -950,7 +1481,13 @@ def transform_clients(df):
     gold["arn_id"] = None
 
     broker_code = clean_string(
-        df["txn_brokcode"]
+        df.get(
+            "txn_brokcode",
+            pd.Series(
+                pd.NA,
+                index=df.index
+            )
+        )
     )
 
     if broker_code.notna().any():
@@ -982,7 +1519,9 @@ def transform_clients(df):
                 .drop_duplicates(
                     subset=["arn_code"]
                 )
-                .set_index("arn_code")["arn_id"]
+                .set_index(
+                    "arn_code"
+                )["arn_id"]
             )
 
             gold["arn_id"] = (
@@ -1068,10 +1607,11 @@ def transform_clients(df):
     # CREATED AT
     # ========================================================
 
-    # UTC, not naive local time: this column is `timestamp without time zone`,
-    # so a naive IST value is stored verbatim as IST while every other
-    # loader stores UTC -- which made cross-table time-window queries wrong.
-    gold["created_at"] = datetime.now(timezone.utc).replace(tzinfo=None)
+    gold["created_at"] = (
+        datetime
+        .now(timezone.utc)
+        .replace(tzinfo=None)
+    )
 
     # ========================================================
     # FINAL COLUMN ORDER
@@ -1090,6 +1630,7 @@ def transform_clients(df):
             "whatsapp_no",
             "aadhaar",
             "pan",
+            "guardian_pan",
             "pan_verified",
             "pan_verified_at",
             "arn",
@@ -1097,6 +1638,7 @@ def transform_clients(df):
             "email",
             "date_of_birth",
             "age",
+            "is_updatedocument",
             "is_minor",
             "marital_status",
             "anniversary_date",
@@ -1131,6 +1673,7 @@ def transform_clients(df):
 
     return gold
 
+
 # ============================================================
 # LOAD CLIENTS INTO DATABASE
 # ============================================================
@@ -1142,7 +1685,9 @@ def load_clients(gold_df):
     print("=" * 80)
 
     if gold_df.empty:
+
         print("No client rows generated.")
+
         return False
 
     gold_df = gold_df.copy()
@@ -1208,7 +1753,9 @@ def load_clients(gold_df):
     # ========================================================
 
     print()
-    print("Checking existing clients in gold.clients...")
+    print(
+        "Checking existing clients in gold.clients..."
+    )
 
     existing = safe_read(
         """
@@ -1257,12 +1804,14 @@ def load_clients(gold_df):
 
         print()
         print(
-            "All client records already exist in gold.clients."
+            "All client records already exist "
+            "in gold.clients."
         )
 
         count_df = safe_read(
             """
-            SELECT COUNT(*) AS total_clients
+            SELECT
+                COUNT(*) AS total_clients
             FROM gold.clients
             """
         )
@@ -1283,7 +1832,9 @@ def load_clients(gold_df):
     # ========================================================
 
     print()
-    print("Checking gold.clients table columns...")
+    print(
+        "Checking gold.clients table columns..."
+    )
 
     table_columns = safe_read(
         """
@@ -1323,6 +1874,7 @@ def load_clients(gold_df):
         )
 
         for col in missing_database_columns:
+
             print(
                 " -",
                 col
@@ -1344,16 +1896,12 @@ def load_clients(gold_df):
 
     # ========================================================
     # INSERT
-    #
-    # NOTE: pandas NULL -> database NULL conversion and chunking are both
-    # handled inside upsert_dataframe() itself (it takes a chunksize
-    # parameter and applies astype(object).where(pd.notnull(...), None)
-    # right before building the insert records), so no pre-conversion or
-    # manual batching loop is needed here.
     # ========================================================
 
     print()
-    print("Starting database insert...")
+    print(
+        "Starting database insert..."
+    )
 
     inserted_rows = 0
 
@@ -1367,13 +1915,12 @@ def load_clients(gold_df):
             table="clients",
             conflict_columns=["pan"],
             chunksize=100,
-            # gold.clients has no updated_at (or equivalent) column.
             updated_at_column=None,
         )
 
-        # upsert_dataframe() now returns a breakdown rather than a bare count;
-        # "inserted" is the number of rows that did not already exist.
-        inserted_rows = upsert_result["inserted"]
+        inserted_rows = (
+            upsert_result["inserted"]
+        )
 
         print(
             f"Inserted {inserted_rows} / "
@@ -1423,6 +1970,10 @@ def load_clients(gold_df):
                 sub_arn,
                 email,
                 date_of_birth,
+                age,
+                is_updatedocument,
+                is_minor,
+                guardian_pan,
                 investor_type,
                 tax_status,
                 kyc_status,
@@ -1458,7 +2009,9 @@ def load_clients(gold_df):
 
         print()
         print("=" * 80)
-        print("GOLD.CLIENTS DATABASE INSERT SUCCESSFUL")
+        print(
+            "GOLD.CLIENTS DATABASE INSERT SUCCESSFUL"
+        )
         print("=" * 80)
 
         return True
@@ -1467,17 +2020,15 @@ def load_clients(gold_df):
 
         print()
         print("=" * 80)
-        print("GOLD.CLIENTS DATABASE INSERT FAILED")
+        print(
+            "GOLD.CLIENTS DATABASE INSERT FAILED"
+        )
         print("=" * 80)
 
         print(
             "Error type:",
             type(e).__name__
         )
-
-        # IMPORTANT:
-        # Print only the actual error.
-        # Do NOT print the complete SQLAlchemy parameter list.
 
         error_text = str(e)
 
@@ -1507,7 +2058,10 @@ def load_clients(gold_df):
 
         return False
 
-#Main Function#
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
 
 def main():
 
@@ -1585,7 +2139,9 @@ def main():
 
         print()
         print("=" * 80)
-        print("GOLD CLIENTS ETL ERROR")
+        print(
+            "GOLD CLIENTS ETL ERROR"
+        )
         print("=" * 80)
 
         print(
