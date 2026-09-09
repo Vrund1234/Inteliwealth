@@ -278,6 +278,239 @@ def extract_client_address():
 
 
 # ============================================================
+# APPLY APPROVED ADDRESS ALIASES
+# ============================================================
+
+def read_address_aliases():
+
+    """Merges already approved, as (client_id, alias key) -> canonical key."""
+
+    return safe_read(
+        """
+        SELECT
+
+            client_id,
+
+            address_key_alias,
+
+            address_key_canonical
+
+        FROM gold.client_address_alias
+        """
+    )
+
+
+def apply_address_aliases(df, aliases):
+
+    """Rewrite alias address_keys to the canonical key of their merge.
+
+    Runs BEFORE dedupe, and that ordering is the whole point. A merge cannot
+    be recorded by soft-deleting the loser: silver.investor_master keeps every
+    spelling forever, and load_client_address deliberately excludes deleted
+    rows from existing_keys (uq_client_address_natural is partial on
+    is_deleted = false), so the row would simply come back on the next run.
+    Rewriting the key instead means the variant never reaches the INSERT --
+    the existing drop_duplicates collapses it onto the canonical row, and the
+    variant's city / state / pincode / mobile_no reach that row through
+    enrich_client_address rather than being lost with it.
+
+    Scoped per client: two people can live at one address, and a merge
+    approved for one of them says nothing about the other.
+    """
+
+    if df.empty or aliases is None or aliases.empty:
+
+        return df
+
+    mapping = (
+        aliases
+        .drop_duplicates(
+            subset=["client_id", "address_key_alias"]
+        )
+        .set_index(
+            ["client_id", "address_key_alias"]
+        )["address_key_canonical"]
+    )
+
+    lookup = pd.MultiIndex.from_arrays(
+        [df["client_id"], df["address_key"]]
+    )
+
+    canonical = mapping.reindex(lookup).to_numpy()
+
+    df = df.copy()
+
+    df["address_key"] = [
+        original if pd.isna(replacement) else replacement
+        for replacement, original in zip(
+            canonical, df["address_key"]
+        )
+    ]
+
+    return df
+
+
+def retire_aliased_addresses():
+
+    """Apply approved merges to the rows already in gold.client_address.
+
+    Idempotent: a pass with nothing to merge touches no rows and leaves
+    updated_at alone, so the column stays a real signal of change for the
+    app's incremental gold_sync.
+    """
+
+    live = safe_read(
+        """
+        SELECT id, client_id, address_key, is_main
+        FROM gold.client_address
+        WHERE is_deleted = false
+        """
+    )
+
+    retire, promote = plan_alias_retirement(
+        live,
+        read_address_aliases()
+    )
+
+    if not retire and not promote:
+
+        print("No aliased addresses to retire")
+
+        return 0
+
+    with engine.begin() as connection:
+
+        # Promote before retiring, so the client is never momentarily left
+        # without a main address.
+        for client_id, address_key in promote:
+
+            connection.execute(
+                text(
+                    """
+                    UPDATE gold.client_address
+                    SET is_main    = true,
+                        updated_at = now()
+                    WHERE client_id   = :client_id
+                      AND address_key = :address_key
+                      AND is_deleted  = false
+                    """
+                ),
+                {"client_id": client_id, "address_key": address_key},
+            )
+
+        for row_id in retire:
+
+            connection.execute(
+                text(
+                    """
+                    UPDATE gold.client_address
+                    SET is_deleted = true,
+                        deleted_at = now(),
+                        is_main    = false,
+                        updated_at = now()
+                    WHERE id = :id
+                      AND is_deleted = false
+                    """
+                ),
+                {"id": row_id},
+            )
+
+    print("Main address moved to survivor :", len(promote))
+    print("Addresses retired into a merge :", len(retire))
+
+    return len(retire)
+
+
+def plan_alias_retirement(live_rows, aliases):
+
+    """Which live address rows a merge makes redundant, and where is_main goes.
+
+    Rewriting keys stops a variant being inserted again, but the rows that
+    predate the merge are already in gold.client_address and would stay live
+    forever -- the client would keep showing three addresses no matter how
+    many times the pipeline ran.
+
+    Returns (ids to soft-delete, [(client_id, canonical key) to promote]).
+    The promotion matters: Aashutosh's is_main sits on the typo'd spelling
+    while the survivor is a different row, and retiring the flagged row
+    without moving the flag leaves the client with no main address.
+    """
+
+    empty = ([], [])
+
+    if live_rows is None or live_rows.empty:
+
+        return empty
+
+    if aliases is None or aliases.empty:
+
+        return empty
+
+    alias_keys = set(
+        zip(aliases["client_id"], aliases["address_key_alias"])
+    )
+
+    canonical_of = dict(
+        zip(
+            zip(aliases["client_id"], aliases["address_key_alias"]),
+            aliases["address_key_canonical"],
+        )
+    )
+
+    # A merge is only safe to apply once the survivor is actually here.
+    # Retiring a row whose canonical is absent -- which a restore that
+    # regenerates client ids can cause -- would leave a client with no
+    # address at all.
+    live_keys = set(
+        zip(live_rows["client_id"], live_rows["address_key"])
+    )
+
+    retire = []
+    promote = []
+
+    main_is_being_retired = set()
+
+    for row in live_rows.itertuples():
+
+        key = (row.client_id, row.address_key)
+
+        if key not in alias_keys:
+
+            continue
+
+        if (row.client_id, canonical_of[key]) not in live_keys:
+
+            continue
+
+        retire.append(row.id)
+
+        if row.is_main:
+
+            main_is_being_retired.add(
+                (row.client_id, canonical_of[key])
+            )
+
+    if main_is_being_retired:
+
+        # Only promote a survivor that is not already main: rewriting the flag
+        # on every pass would bump updated_at forever, and the app's
+        # incremental gold_sync reads that column to find real changes.
+        already_main = {
+            (row.client_id, row.address_key)
+            for row in live_rows.itertuples()
+            if row.is_main
+        }
+
+        promote = [
+            target
+            for target in sorted(main_is_being_retired)
+            if target not in already_main
+        ]
+
+    return retire, promote
+
+
+# ============================================================
 # TRANSFORM CLIENT ADDRESS DATA
 # ============================================================
 
@@ -578,6 +811,14 @@ def transform_client_address(df):
         "address3"
     )
 
+    # Merges a person already approved. Applied BEFORE the dedupe below so a
+    # variant spelling collapses onto its canonical row instead of insisting
+    # on a row of its own -- see apply_address_aliases.
+    df = apply_address_aliases(
+        df,
+        read_address_aliases()
+    )
+
     before = len(df)
 
     df = (
@@ -763,6 +1004,11 @@ def load_client_address(gold_df):
     print("=" * 80)
     print("LOADING DATA INTO GOLD.CLIENT_ADDRESS")
     print("=" * 80)
+
+    # Before anything else, and regardless of whether this batch has rows:
+    # merges approved since the last pass still have to be applied to the
+    # rows already here.
+    retire_aliased_addresses()
 
     if gold_df.empty:
 
