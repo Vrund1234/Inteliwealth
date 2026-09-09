@@ -920,13 +920,267 @@ def transform_clients(df):
         gold["age"] = pd.NA
 
     # ========================================================
+    # AGE BANDS
+    # ========================================================
+    #
+    # fillna(False) because age is Int64: a null age compares to
+    # pd.NA, and an NA mask cannot be used with .loc at all.
+    # A client with no age falls into NEITHER band and keeps a
+    # null status, which is what the source fallback is for.
+    # ========================================================
+
+    age_under_18 = (
+        gold["age"] < 18
+    ).fillna(False)
+
+    age_18_or_over = (
+        gold["age"] >= 18
+    ).fillna(False)
+
+    own_pan = df["pan"]
+
+    guardian_pan = df["guardian_pan"]
+
+    # ========================================================
+    # GUARDIAN PAN STILL BEING USED
+    # ========================================================
+    #
+    # CASE 1:
+    # Own PAN and Guardian PAN are the same.
+    #
+    #   PAN          = ABCDE1234F
+    #   Guardian PAN = ABCDE1234F
+    #
+    # CASE 2:
+    # Own PAN is missing but Guardian PAN exists -- no evidence
+    # the investor's own PAN was ever recorded.
+    #
+    # Both mean the guardian's PAN is still the one in use.
+    #
+    # CASE 1 is kept for completeness but cannot fire here: the
+    # FINAL PAN block above already clears pan wherever it equals
+    # this folio's guardian_pan, which turns every CASE 1 row
+    # into a CASE 2 row before it reaches this point. The answer
+    # is identical either way.
+    # ========================================================
+
+    guardian_pan_still_used = (
+        (
+            own_pan.notna()
+            &
+            guardian_pan.notna()
+            &
+            (own_pan == guardian_pan)
+        )
+        |
+        (
+            own_pan.isna()
+            &
+            guardian_pan.notna()
+        )
+    )
+
+    # ========================================================
+    # OWN PAN IS BEING USED
+    # ========================================================
+
+    own_pan_is_being_used = (
+        own_pan.notna()
+        &
+        (
+            guardian_pan.isna()
+            |
+            (
+                guardian_pan.notna()
+                &
+                (guardian_pan != own_pan)
+            )
+        )
+    )
+
+    # ========================================================
+    # DOCUMENT UPDATE REQUIRED
+    # ========================================================
+    #
+    # TRUE means the document STILL HAS TO BE UPDATED, matching
+    # the column name is_documentupdaterequired.
+    #
+    # Note this is the inverse of an "is the document updated?"
+    # flag: an adult still operating on their guardian's PAN has
+    # NOT updated, so an update IS required (True), while an
+    # adult on their own PAN has updated, so none is required
+    # (False). Storing it the other way round would make the
+    # column say the opposite of what it is named.
+    # ========================================================
+
+    is_documentupdaterequired = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="boolean"
+    )
+
+    # --------------------------------------------------------
+    # RULE 1: Age < 18
+    #
+    # A minor is SUPPOSED to be on the guardian's PAN, so
+    # nothing is outstanding.
+    # --------------------------------------------------------
+
+    is_documentupdaterequired.loc[
+        age_under_18
+    ] = False
+
+    # --------------------------------------------------------
+    # RULE 2: Age >= 18 + guardian PAN still being used
+    #
+    # They have come of age without the PAN being updated.
+    # --------------------------------------------------------
+
+    is_documentupdaterequired.loc[
+        age_18_or_over
+        &
+        guardian_pan_still_used
+    ] = True
+
+    # --------------------------------------------------------
+    # RULE 3: Age >= 18 + own PAN is being used
+    #
+    # Already updated.
+    # --------------------------------------------------------
+
+    is_documentupdaterequired.loc[
+        age_18_or_over
+        &
+        own_pan_is_being_used
+    ] = False
+
+    gold["is_documentupdaterequired"] = (
+        is_documentupdaterequired
+    )
+
+    # ========================================================
     # IS MINOR
     # ========================================================
 
-    if "is_minor" in df.columns:
-        gold["is_minor"] = df["is_minor"].astype("boolean")
-    else:
-        gold["is_minor"] = pd.NA
+    is_minor = pd.Series(
+        pd.NA,
+        index=df.index,
+        dtype="boolean"
+    )
+
+    # --------------------------------------------------------
+    # RULE 1: Age >= 18 but the PAN was never updated.
+    #
+    # Still TREATED as a minor: every registry record still
+    # stands in the guardian's name.
+    # --------------------------------------------------------
+
+    is_minor.loc[
+        age_18_or_over
+        &
+        (gold["is_documentupdaterequired"] == True)
+    ] = True
+
+    # --------------------------------------------------------
+    # RULE 2: Age >= 18 and operating on their own PAN -> major.
+    # --------------------------------------------------------
+
+    is_minor.loc[
+        age_18_or_over
+        &
+        (gold["is_documentupdaterequired"] == False)
+    ] = False
+
+    # ========================================================
+    # FALLBACK TO SOURCE IS_MINOR
+    # ========================================================
+    #
+    # Only where the PAN-based rules above reached no verdict --
+    # which is every client under 18 (deliberately not decided
+    # here) and every client with no age at all.
+    # ========================================================
+
+    if (
+        "is_minor" in df.columns
+        and
+        df["is_minor"].notna().any()
+    ):
+
+        source_is_minor = (
+            df["is_minor"]
+            .astype("boolean")
+        )
+
+        is_minor = is_minor.fillna(source_is_minor)
+
+    gold["is_minor"] = is_minor
+
+    # ========================================================
+    # MINOR / DOCUMENT UPDATE STATISTICS
+    # ========================================================
+
+    print("\nMinor / Document Update Statistics")
+    print("-" * 80)
+
+    print(
+        "Age < 18                         :",
+        int(age_under_18.sum())
+    )
+
+    print(
+        "Age >= 18                        :",
+        int(age_18_or_over.sum())
+    )
+
+    print(
+        "Own PAN available                :",
+        int(own_pan.notna().sum())
+    )
+
+    print(
+        "Guardian PAN available           :",
+        int(guardian_pan.notna().sum())
+    )
+
+    print(
+        "Guardian PAN still being used    :",
+        int(guardian_pan_still_used.sum())
+    )
+
+    print(
+        "Own PAN being used               :",
+        int(own_pan_is_being_used.sum())
+    )
+
+    print(
+        "Document update required = TRUE  :",
+        int(gold["is_documentupdaterequired"].eq(True).sum())
+    )
+
+    print(
+        "Document update required = FALSE :",
+        int(gold["is_documentupdaterequired"].eq(False).sum())
+    )
+
+    print(
+        "Document update status = NULL    :",
+        int(gold["is_documentupdaterequired"].isna().sum())
+    )
+
+    print(
+        "Final minor clients              :",
+        int(gold["is_minor"].eq(True).sum())
+    )
+
+    print(
+        "Final adult clients              :",
+        int(gold["is_minor"].eq(False).sum())
+    )
+
+    print(
+        "Final minor status = NULL        :",
+        int(gold["is_minor"].isna().sum())
+    )
 
     # ========================================================
     # APP MANAGED
@@ -1373,6 +1627,7 @@ def transform_clients(df):
             "date_of_birth",
             "age",
             "is_minor",
+            "is_documentupdaterequired",
             "marital_status",
             "anniversary_date",
             "blood_group",
@@ -1778,87 +2033,19 @@ def load_clients(gold_df):
         .copy()
     )
 
-    # A PAN-less folio may belong to somebody who is ALREADY in
-    # this same batch under their own PAN -- one folio of theirs
-    # simply did not carry it. Animesh J Mehta, Pritipal Shah,
-    # Saleel Y Bhatt and Sureel Yogendra Bhatt each have such a
-    # folio, and without this each is stored TWICE: once as
-    # "PRITIPAL MANUBHAI SHAH" with ACWPS4328K and once as
-    # "Pritipal Shah" with no PAN.
+    # A PAN-less row is NEVER folded into a client who has a PAN.
     #
-    # The existing-clients check further down does exactly this
-    # comparison, but only against rows ALREADY in gold.clients,
-    # and it is skipped entirely when that table is empty -- so a
-    # load into a freshly truncated table created the very
-    # duplicates that check exists to prevent. Matching inside
-    # the batch is what makes the result independent of whether
-    # the table happened to be empty.
+    # This used to match the two by name, mirroring
+    # client_mapping's NAME_ATTACH rule. Both have been removed:
+    # a different PAN means a different person, and a folio
+    # carrying no PAN is not evidence that it belongs to someone
+    # who has one. Names here differ by one letter between
+    # different people -- SUREEL BHATT (AQEPB6066F, 1977) and
+    # SALEEL BHATT (AAYPB0139M, 1971) -- and a null DOB cannot
+    # conflict, so the DOB veto did not guard it.
     #
-    # This is also what reconciles the count with
-    # client_mapping.py, whose NAME_ATTACH rules fold these same
-    # four folios into their PAN client: 616 clients, not 620.
-    from client_mapping import (
-        name_match_score as _name_match_score,
-        dob_conflicts as _dob_conflicts,
-        NAME_MATCH_MERGE as _NAME_MATCH_MERGE,
-    )
-
-    if not with_pan.empty and not without_pan.empty:
-
-        batch_named = [
-            (row[0], None if pd.isna(row[1]) else str(row[1]))
-            for row in with_pan.assign(
-                _norm=norm_name(with_pan["full_name"])
-            )[["_norm", "date_of_birth"]].to_numpy()
-            if row[0] is not None and not pd.isna(row[0])
-        ]
-
-        def attaches_to_pan_client(row):
-
-            if pd.isna(row["full_name"]):
-
-                return False
-
-            mine = norm_name(
-                pd.Series([row["full_name"]])
-            ).iloc[0]
-
-            if mine is None or pd.isna(mine):
-
-                return False
-
-            my_dob = (
-                None if pd.isna(row["date_of_birth"])
-                else str(row["date_of_birth"])
-            )
-
-            for other_name, other_dob in batch_named:
-
-                if _dob_conflicts(my_dob, other_dob):
-
-                    continue
-
-                if _name_match_score(
-                    mine, other_name
-                ) >= _NAME_MATCH_MERGE:
-
-                    return True
-
-            return False
-
-        attached = without_pan.apply(
-            attaches_to_pan_client,
-            axis=1
-        )
-
-        if attached.any():
-
-            print(
-                "PAN-less rows folded into their PAN client:",
-                int(attached.sum())
-            )
-
-            without_pan = without_pan[~attached].copy()
+    # A PAN-less row therefore stays its own client, keyed on
+    # guardian PAN + name + date of birth above.
 
     gold_df = pd.concat(
         [with_pan, without_pan],
@@ -1945,39 +2132,18 @@ def load_clients(gold_df):
             ].to_numpy()
         }
 
-        # Someone who already has a client row under their own
-        # PAN is not a new PAN-less client just because ONE of
-        # their folios is missing that PAN. Animesh J Mehta,
-        # Saleel Y Bhatt, Sureel Yogendra Bhatt and Pritipal
-        # Shah each have such a folio; without this they are
-        # stored twice.
+        # A PAN-less row is matched ONLY against other PAN-less
+        # clients, on guardian PAN + name + date of birth.
         #
-        # Matched with client_mapping's scorer, not string
-        # equality: the PAN row reads "Saleel Yogendra Bhatt"
-        # while the PAN-less folio reads "Saleel Y Bhatt".
-        from client_mapping import (
-            norm_name as _norm_name,
-            name_match_score as _name_match_score,
-            dob_conflicts as _dob_conflicts,
-            NAME_MATCH_MERGE as _NAME_MATCH_MERGE,
-        )
-
-        named = existing.loc[
-            existing["pan"].notna(),
-            ["full_name", "date_of_birth"]
-        ].copy()
-
-        named["_norm"] = _norm_name(named["full_name"])
-
-        existing_named = [
-            (
-                row[0],
-                None if pd.isna(row[1]) else str(row[1]),
-            )
-            for row in named[["_norm", "date_of_birth"]].to_numpy()
-            if row[0] is not None and not pd.isna(row[0])
-        ]
-
+        # It used to also be name-matched against clients who
+        # HAVE a PAN, so that a folio of theirs missing its PAN
+        # would not create a second row. That has been removed
+        # along with client_mapping's NAME_ATTACH rule: a
+        # different PAN means a different person, and a name is
+        # not an identifier -- SUREEL BHATT (AQEPB6066F, 1977)
+        # and SALEEL BHATT (AAYPB0139M, 1971) are two men whose
+        # names differ by one letter. A null date of birth
+        # cannot conflict, so the DOB veto never guarded it.
         before = len(gold_df)
 
         def already_loaded(row):
@@ -1986,43 +2152,11 @@ def load_clients(gold_df):
 
                 return row["pan"] in existing_pans
 
-            if person_key(
+            return person_key(
                 row["guardian_pan"],
                 row["full_name"],
                 row["date_of_birth"],
-            ) in existing_people:
-
-                return True
-
-            # already a client under their own PAN?
-            if pd.notna(row["full_name"]):
-
-                mine = _norm_name(
-                    pd.Series([row["full_name"]])
-                ).iloc[0]
-
-                if mine is None or pd.isna(mine):
-
-                    return False
-
-                my_dob = (
-                    None if pd.isna(row["date_of_birth"])
-                    else str(row["date_of_birth"])
-                )
-
-                for other_name, other_dob in existing_named:
-
-                    if _dob_conflicts(my_dob, other_dob):
-
-                        continue
-
-                    if _name_match_score(
-                        mine, other_name
-                    ) >= _NAME_MATCH_MERGE:
-
-                        return True
-
-            return False
+            ) in existing_people
 
         gold_df = gold_df[
             ~gold_df.apply(already_loaded, axis=1)

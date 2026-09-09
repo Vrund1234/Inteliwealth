@@ -40,8 +40,6 @@ RULE_ORDER = [
     "PAN_EXACT",
     "GUARDIAN_PAN",
     "GUARDIAN_PAN_NO_DOB",
-    "NAME_ATTACH_EXACT",
-    "NAME_ATTACH_SUBSUME",
     "NAME_CLUSTER",
     "FOLIO_FALLBACK",
 ]
@@ -50,8 +48,6 @@ CONFIDENCE = {
     "PAN_EXACT": 100,
     "GUARDIAN_PAN": 98,
     "GUARDIAN_PAN_NO_DOB": 92,
-    "NAME_ATTACH_EXACT": 95,
-    "NAME_ATTACH_SUBSUME": 90,
     "NAME_CLUSTER": 85,
     "FOLIO_FALLBACK": 60,
 }
@@ -60,12 +56,10 @@ CONFIDENCE = {
 # evidence behind it is a name rather than a registry identifier.
 REVIEW_CONFIDENCE = 95
 
-# Rule 3 in all its forms. A client identified this way has no
-# PAN and no guardian PAN -- only a name -- so the mapping is
-# always put in front of a reviewer, unique or not.
+# Rule 3. A client identified this way has no PAN and no
+# guardian PAN -- only a name -- so the mapping is always put in
+# front of a reviewer, unique or not.
 NAME_BASED_RULES = frozenset({
-    "NAME_ATTACH_EXACT",
-    "NAME_ATTACH_SUBSUME",
     "NAME_CLUSTER",
 })
 
@@ -468,64 +462,28 @@ def rule_guardian_pan(row, context):
     return []
 
 
-def rule_name_attach(row, context):
-    """RULE 3a -- this person already has an identity.
-
-    A folio of theirs may simply be missing a PAN their other
-    folios carry. Pritipal Shah holds four rows under ACWPS4328K
-    and one CAMS row reading "NON RESIDENT"; without this he
-    becomes two clients.
-
-    A conflicting DOB anywhere on a candidate rules that client
-    out entirely. Row by row is not enough -- one row of theirs
-    carrying a null DOB would let it through, which is how MINA
-    JITENDRA DESAI (1961) was absorbed into JITENDRA DESAI (1956).
-    """
-
-    if row["own_pan"] is not None or row["guard_pan"] is not None:
-
-        return []
-
-    if row["name"] is None:
-
-        return []
-
-    known = context.get("known", [])
-
-    vetoed = {
-        ref
-        for _, other_dob, ref in known
-        if dob_conflicts(row["dob"], other_dob)
-    }
-
-    best = {}
-
-    for other_name, _, ref in known:
-
-        if ref in vetoed:
-
-            continue
-
-        score = name_match_score(row["name"], other_name)
-
-        if score < NAME_MATCH_MERGE:
-
-            continue
-
-        if score > best.get(ref, 0.0):
-
-            best[ref] = score
-
-    return [
-        Candidate(
-            ref,
-            score,
-            "NAME_ATTACH_EXACT"
-            if score >= NAME_MATCH_EXACT
-            else "NAME_ATTACH_SUBSUME",
-        )
-        for ref, score in best.items()
-    ]
+# RULE 3a -- NAME_ATTACH -- REMOVED DELIBERATELY.
+#
+# It attached a PAN-less folio to a client who already had a
+# PAN, on the strength of a name match. A different PAN means a
+# different person, and a folio carrying no PAN is not evidence
+# that it belongs to someone who has one.
+#
+# The DOB veto was not enough of a guard, because a null DOB
+# cannot conflict with anything: three of the four merges it made
+# here (SUREEL YOGENDRA BHATT, ANIMESH J MEHTA, PRITIPAL SHAH)
+# had no DOB at all and rested on the name alone. Names in this
+# data differ by a single letter between different people --
+# SUREEL BHATT (AQEPB6066F, 1977) and SALEEL BHATT (AAYPB0139M,
+# 1971) are two men -- so a name is not an identifier.
+#
+# A PAN-less folio now falls through to rule 3b (full name + DOB
+# clustered with its PAN-less peers) and then to rule 4
+# (source + folio), never onto somebody else's PAN.
+#
+# The consequence is accepted and intended: a person whose folio
+# genuinely lost its PAN is stored as a second, PAN-less client
+# rather than being silently merged into the first.
 
 
 def rule_name_cluster(row, context):
@@ -567,7 +525,6 @@ def rule_folio_fallback(row, context):
 RULE_REGISTRY = [
     rule_pan_exact,
     rule_guardian_pan,
-    rule_name_attach,
     rule_name_cluster,
     rule_folio_fallback,
 ]
