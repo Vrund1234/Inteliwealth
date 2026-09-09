@@ -3,7 +3,10 @@ import traceback
 
 from datetime import datetime, timezone
 
+from sqlalchemy import text
+
 from utils.db import engine
+from utils.account_key import account_key_series
 
 
 # ============================================================
@@ -663,6 +666,20 @@ def transform_client_bank(df):
     # Different accounts for the same client are allowed.
     # ========================================================
 
+    # utils/account_key.py is the single definition of what makes two rows the
+    # same account, and gold.client_bank.account_key is GENERATED from the
+    # identical expression. Keying on the raw string -- as this did until
+    # 2026-09-07 -- let one account survive once per RTA zero-padding:
+    # 00691060000052 and 0691060000052 are the same HDFC account.
+    #
+    # ifsc / bank_name / bank_branch / account_type / bank_city are NOT part of
+    # the key. They are enriched below, because a field that arrives blank in
+    # one feed and filled in the next would change the key and insert a
+    # duplicate rather than match the row already there.
+    df = df.copy()
+
+    df["account_key"] = account_key_series(df["account_number"])
+
     before = len(df)
 
     df = (
@@ -670,7 +687,7 @@ def transform_client_bank(df):
         .drop_duplicates(
             subset=[
                 "client_id",
-                "account_number"
+                "account_key"
             ],
             keep="first"
         )
@@ -688,6 +705,10 @@ def transform_client_bank(df):
     gold = pd.DataFrame()
 
     gold["client_id"] = df["client_id"]
+
+    # Matching key only -- dropped before the INSERT, because the column in
+    # gold.client_bank is GENERATED ALWAYS and rejects a supplied value.
+    gold["account_key"] = df["account_key"]
 
     gold["bank_name"] = df["bank_name"]
 
@@ -727,6 +748,126 @@ def transform_client_bank(df):
     return gold.reset_index(
         drop=True
     )
+
+
+# ============================================================
+# ENRICH EXISTING CLIENT BANK
+# ============================================================
+
+def enrich_client_bank(rows):
+
+    """Fill blanks on bank accounts gold already holds.
+
+    An RTA feed describing the same account a second time usually differs only
+    in which optional fields it populated. Because those fields are not part of
+    account_key, the row lands on the SAME account, and this is where the extra
+    values are picked up -- PAN ACUPS2047M is the worked example: one feed
+    carries ifsc HDFC0000069, the other leaves it blank.
+
+    COALESCE(existing, new) fills blanks ONLY. A value already recorded wins,
+    so a later feed cannot replace a populated field with a different one, and
+    a NULL arriving from gold is "no opinion", never "clear it" -- the same
+    rule the app's gold_sync applies in _gold_client_updates.
+
+    id, seq and is_main are untouched.
+    """
+
+    if rows is None or rows.empty:
+
+        print("No existing bank accounts to enrich")
+
+        return 0
+
+    statement = text(
+        """
+        UPDATE gold.client_bank
+        SET bank_name    = COALESCE(bank_name,    :bank_name),
+            bank_branch  = COALESCE(bank_branch,  :bank_branch),
+            bank_address = COALESCE(bank_address, :bank_address),
+            account_type = COALESCE(account_type, :account_type),
+            bank_city    = COALESCE(bank_city,    :bank_city),
+            pincode      = COALESCE(pincode,      :pincode),
+            micr         = COALESCE(micr,         :micr),
+            ifsc         = COALESCE(ifsc,         :ifsc),
+            updated_at   = now()
+        WHERE client_id = :client_id
+          AND account_key = :account_key
+          AND is_deleted = false
+          AND (
+                (bank_name    IS NULL AND :bank_name    IS NOT NULL)
+             OR (bank_branch  IS NULL AND :bank_branch  IS NOT NULL)
+             OR (bank_address IS NULL AND :bank_address IS NOT NULL)
+             OR (account_type IS NULL AND :account_type IS NOT NULL)
+             OR (bank_city    IS NULL AND :bank_city    IS NOT NULL)
+             OR (pincode      IS NULL AND :pincode      IS NOT NULL)
+             OR (micr         IS NULL AND :micr         IS NOT NULL)
+             OR (ifsc         IS NULL AND :ifsc         IS NOT NULL)
+          )
+        """
+    )
+
+    # The trailing predicate keeps this idempotent where it matters: a re-run
+    # with nothing new to contribute touches no rows and leaves updated_at
+    # alone, so updated_at stays a real change signal for the app's
+    # incremental gold_sync rather than being bumped every run.
+
+    fields = [
+        "bank_name", "bank_branch", "bank_address", "account_type",
+        "bank_city", "pincode", "micr", "ifsc"
+    ]
+
+    payload = []
+
+    for row in rows.to_dict("records"):
+
+        item = {
+            "client_id": row["client_id"],
+            "account_key": row["account_key"]
+        }
+
+        for field in fields:
+
+            value = row.get(field)
+
+            item[field] = (
+                None
+                if value is None or pd.isna(value)
+                else value
+            )
+
+        payload.append(item)
+
+    updated = 0
+
+    try:
+
+        with engine.begin() as connection:
+
+            for chunk_start in range(0, len(payload), 500):
+
+                result = connection.execute(
+                    statement,
+                    payload[chunk_start:chunk_start + 500]
+                )
+
+                updated += result.rowcount or 0
+
+    except Exception as e:
+
+        print("Client bank enrichment FAILED")
+
+        print(e)
+
+        traceback.print_exc(limit=5)
+
+        return 0
+
+    print(
+        "Existing bank accounts enriched :",
+        updated
+    )
+
+    return updated
 
 
 # ============================================================
@@ -781,7 +922,9 @@ def load_client_bank(gold_df):
 
             is_main,
 
-            account_key
+            account_key,
+
+            is_deleted
 
         FROM gold.client_bank
 
@@ -824,101 +967,103 @@ def load_client_bank(gold_df):
     # Existing account values are not modified.
     # ========================================================
 
-    # As in etl_gold_client_address, the database decides what a
-    # duplicate account IS. gold.client_bank.account_key is a
-    # GENERATED column --
+    # ========================================================
+    # REFUSE TO RUN AGAINST A PRE-MIGRATION SCHEMA
+    # ========================================================
     #
-    #   COALESCE(NULLIF(ltrim(upper(regexp_replace(
-    #       account_number, '[^A-Za-z0-9]', '', 'g')), '0'), ''), '')
-    #
-    # -- and uq_client_bank_natural is UNIQUE (client_id,
-    # account_key) WHERE is_deleted = false AND account_key <> ''.
-    #
-    # Note the ltrim of '0': '0030409457813' and '30409457813'
-    # are the SAME account to Postgres and two different ones to
-    # a raw account_number comparison. Keying on the raw value
-    # let both into one batch, and the insert then failed as a
-    # whole -- leaving gold.client_bank empty.
-    def build_account_key(frame):
+    # safe_read() swallows a SQL error and returns an empty frame, so a
+    # database still missing gold.client_bank.account_key would look like an
+    # empty table: every account would be classed as new and re-inserted.
+    # Bail out instead -- load_gold() reads the False and reports the entity
+    # FAILED, which is correct: this loader and
+    # sql_scripts/client_bank_dedup_2026-09-07.sql ship together.
+    # ========================================================
 
-        return (
-            frame["account_number"]
-            .fillna("")
-            .astype(str)
-            .str.replace(
-                r"[^A-Za-z0-9]",
-                "",
-                regex=True
-            )
-            .str.upper()
-            .str.lstrip("0")
+    if not existing.empty and "account_key" not in existing.columns:
+
+        print(
+            "gold.client_bank.account_key is missing. Apply "
+            "sql_scripts/client_bank_dedup_2026-09-07.sql before running "
+            "this loader."
         )
 
-    gold_df["account_key"] = build_account_key(gold_df)
+        return False
 
-    # account_key = '' is excluded from the unique index, so
-    # those rows are never duplicates and are all kept.
-    keyed = gold_df["account_key"] != ""
+    if existing.empty:
 
-    before = len(gold_df)
+        probe = safe_read(
+            "SELECT COUNT(*) AS n FROM gold.client_bank"
+        )
 
-    gold_df = pd.concat(
-        [
-            gold_df[keyed].drop_duplicates(
-                subset=["client_id", "account_key"],
-                keep="first"
-            ),
-            gold_df[~keyed],
-        ]
-    )
+        if probe.empty or int(probe["n"].iloc[0]) > 0:
 
-    print(
-        "Same-account rows collapsed on the database key :",
-        before - len(gold_df)
-    )
+            print(
+                "Could not read gold.client_bank (missing account_key "
+                "column, or the read failed). Apply "
+                "sql_scripts/client_bank_dedup_2026-09-07.sql first."
+            )
+
+            return False
+
+    # ========================================================
+    # SPLIT: ENRICH WHAT EXISTS, INSERT WHAT DOES NOT
+    # ========================================================
+    #
+    # Matching is on (client_id, account_key) -- the same key the UNIQUE index
+    # uq_client_bank_natural enforces, so what this code treats as one account
+    # and what the database treats as one account cannot diverge.
+    #
+    # An account already present is ENRICHED, not skipped. Skipping was the old
+    # behaviour and it discarded real data: PAN ACUPS2047M has the same HDFC
+    # account from two feeds, one carrying the IFSC and one not, and whichever
+    # arrived first won permanently.
+    # ========================================================
+
+    to_enrich = pd.DataFrame()
 
     if not existing.empty:
 
-        existing_keys = existing[
-            [
-                "client_id",
-                "account_key"
+        # Live rows only -- a soft-deleted account is retired, and the UNIQUE
+        # index is partial on is_deleted = false, so the same account is
+        # allowed to come back as a new row.
+        existing_keys = (
+            existing.loc[
+                existing["is_deleted"] != True,
+                ["client_id", "account_key"]
             ]
-        ].drop_duplicates()
+            .drop_duplicates()
+            .assign(already_exists=True)
+        )
 
         gold_df = gold_df.merge(
-            existing_keys.assign(
-                already_exists=True
-            ),
-            on=[
-                "client_id",
-                "account_key"
-            ],
+            existing_keys,
+            on=["client_id", "account_key"],
             how="left"
         )
 
-        existing_count = (
-            gold_df["already_exists"]
-            .eq(True)
-            .sum()
-        )
+        matched = gold_df["already_exists"].eq(True)
+
+        to_enrich = gold_df[matched].copy()
 
         print(
-            "Existing bank accounts skipped :",
-            existing_count
+            "Existing bank accounts to enrich :",
+            len(to_enrich)
         )
 
-        gold_df = gold_df[
-            gold_df["already_exists"]
-            != True
-        ].copy()
+        gold_df = gold_df[~matched].copy()
 
         gold_df.drop(
-            columns=[
-                "already_exists"
-            ],
+            columns=["already_exists"],
             inplace=True
         )
+
+        to_enrich.drop(
+            columns=["already_exists"],
+            inplace=True,
+            errors="ignore"
+        )
+
+    enrich_client_bank(to_enrich)
 
     # ========================================================
     # CHECK WHETHER ANYTHING IS LEFT
@@ -959,6 +1104,10 @@ def load_client_bank(gold_df):
             errors="coerce"
         )
 
+        # Every row, soft-deleted included: uq_client_bank_seq is
+        # UNIQUE (client_id, seq) over the whole table, not partial like
+        # uq_client_bank_natural, so a retired row still owns its seq and
+        # reusing it raises a unique violation.
         max_seq = (
             existing
             .groupby("client_id")["seq"]
@@ -1032,7 +1181,8 @@ def load_client_bank(gold_df):
 
         existing_main_clients = set(
             existing.loc[
-                existing["is_main"] == True,
+                (existing["is_main"] == True)
+                & (existing["is_deleted"] != True),
                 "client_id"
             ]
         )
@@ -1141,6 +1291,15 @@ def load_client_bank(gold_df):
 
     ]
 
+    # Counted before the reduction: account_key is dropped by it, because the
+    # column in gold.client_bank is GENERATED ALWAYS and Postgres rejects an
+    # INSERT that supplies one.
+    unique_accounts = (
+        gold_df[["client_id", "account_key"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+
     gold_df = gold_df[
         final_columns
     ].copy()
@@ -1175,14 +1334,7 @@ def load_client_bank(gold_df):
 
     print(
         "Unique accounts :",
-        gold_df[
-            [
-                "client_id",
-                "account_number"
-            ]
-        ]
-        .drop_duplicates()
-        .shape[0]
+        unique_accounts
     )
 
     print(
