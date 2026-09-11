@@ -64,7 +64,9 @@ try:
     from etl_gold_clients import (
         extract_clients,
         transform_clients,
-        load_clients
+        load_clients,
+        link_client_folios,
+        merge_duplicate_clients
     )
 
     CLIENT_AVAILABLE = True
@@ -559,6 +561,36 @@ def load_gold():
 
 
     # =====================================================
+    # CLIENT IDENTITY MAPPING
+    #
+    # Runs before the clients load, so bronze.client_mapping_review
+    # reflects the same silver data the gold load is about to use.
+    # A failure here is reported but never blocks the load: the
+    # mapping is a review artefact, not a dependency.
+    # =====================================================
+
+    try:
+
+        print("\nMapping client identities")
+
+        import client_mapping
+
+        mapping_df = client_mapping.extract_folios()
+
+        if not mapping_df.empty:
+
+            mapped = client_mapping.map_clients(mapping_df)
+
+            mapped = client_mapping.collapse_to_clients(mapped)
+
+            client_mapping.load_review(mapped)
+
+    except Exception as e:
+
+        print("Client identity mapping failed (continuing)")
+        print(e)
+
+    # =====================================================
     # GOLD CLIENTS
     # =====================================================
 
@@ -592,9 +624,21 @@ def load_gold():
                         loaded
                     )
 
-                    print(
-                        "Clients loaded successfully"
-                    )
+                    # load_clients returns False on failure --
+                    # printing success regardless reported a
+                    # successful load while nothing was inserted.
+                    if loaded:
+
+                        print(
+                            "Clients loaded successfully"
+                        )
+
+                    else:
+
+                        print(
+                            "Clients Gold FAILED -- nothing was "
+                            "inserted, see the error above"
+                        )
 
             else:
 
@@ -775,6 +819,34 @@ def load_gold():
     # the decisions -- so the same pairs are re-detected every run and the
     # size holds steady. A stable count is the healthy reading.
     # =====================================================
+
+    # =====================================================
+    # CLIENT IDENTITY: link folios, then fold duplicates
+    #
+    # HERE, and not inside the clients block above, because the
+    # merge sweep will only join two rows that share a bank
+    # account or a postal address -- and neither table has been
+    # written yet at that point. Run too early it finds no
+    # evidence, reports nothing, and the duplicate survives
+    # until the next pipeline run.
+    #
+    # link_client_folios() comes first: the sweep reads folio
+    # counts to decide which of two rows survives, and a merge
+    # repoints folios, so the map wants to be current.
+    # =====================================================
+
+    if CLIENT_AVAILABLE:
+
+        try:
+
+            link_client_folios()
+
+            merge_duplicate_clients()
+
+        except Exception as e:
+
+            print("Client identity maintenance failed")
+            print(e)
 
     if ADDRESS_REVIEW_AVAILABLE:
 

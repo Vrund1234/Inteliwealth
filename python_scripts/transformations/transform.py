@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 
 from utils.db import engine
@@ -1139,8 +1141,13 @@ def transform_investor_master(df):
 
         if col in df.columns:
 
-            df[col] = parse_bronze_date_series(
-                df[col]
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    errors="coerce",
+                    format="ISO8601"
+                )
+                .dt.date
             )
 
     # =================================================
@@ -1153,7 +1160,282 @@ def transform_investor_master(df):
         regex=True
     )
 
+    # =================================================
+    # AGE CALCULATION
+    #
+    # Runs after the DATE COLUMNS block above, so dob
+    # is already a date and free of time-of-day noise.
+    # =================================================
+
+    if "dob" in df.columns:
+
+        today = pd.Timestamp.today().normalize()
+
+        dob = pd.to_datetime(
+            df["dob"],
+            errors="coerce"
+        )
+
+        df["age"] = (
+            today.year
+            - dob.dt.year
+            - (
+                (today.month < dob.dt.month)
+                |
+                (
+                    (today.month == dob.dt.month)
+                    & (today.day < dob.dt.day)
+                )
+            )
+        )
+
+        # If DOB is NULL, age should also be NULL
+        df.loc[dob.isna(), "age"] = None
+
+        # Plain Python int / None, built element-wise with
+        # dtype=object on purpose.
+        #
+        # Int64 would carry pd.NA, which survives
+        # process_table's df.where(pd.notnull(df), None) -- an
+        # extension column cannot hold None -- and psycopg2 has
+        # no adapter for NAType, so the whole silver INSERT
+        # fails and no rows land at all.
+        #
+        # Series.apply is no good either: it re-infers the
+        # result, and a mix of None and int collapses back to
+        # float64, turning 79 into 79.0 and the NULLs into NaN,
+        # which an integer column rejects.
+        df["age"] = pd.Series(
+            [
+                None if pd.isna(value) else int(value)
+                for value in df["age"]
+            ],
+            index=df.index,
+            dtype=object
+        )
+
+    # =================================================
+    # MINOR IDENTIFICATION
+    #
+    # Unknown age stays unknown -- NULL, not False.
+    # =================================================
+
+    if "age" in df.columns:
+
+        # Plain Python bool / None, for the same reason as age.
+        df["is_minor"] = pd.Series(
+            [
+                None if value is None or pd.isna(value)
+                else bool(value < 18)
+                for value in df["age"]
+            ],
+            index=df.index,
+            dtype=object
+        )
+
+    # =================================================
+    # INDIVIDUAL CATEGORY TYPE
+    #
+    # The assessee's constitution, as a stable upper-case
+    # constant. The PAN decides; tax_status is consulted only
+    # when there is no valid PAN.
+    #
+    # The 4th character of a PAN is the Income Tax Department's
+    # holder-type code, issued against the assessee's actual
+    # constitution. tax_status is whatever the RTA typed, and in
+    # this data it contradicts the PAN constantly -- "Individual"
+    # appears against PAN 4th characters {P,T}, "Body Corporate"
+    # against {C,T}, "Sole Proprietorship" against {H,P}. So the
+    # PAN wins wherever there is one.
+    #
+    # See sql_scripts/add_individual_category_type.sql, which
+    # applies this same rule as a one-off backfill -- the
+    # bronze -> silver step is incremental and would otherwise
+    # never revisit a folio that receives no new registry file.
+    # =================================================
+
+    df["individual_category_type"] = _individual_category_type(
+        df.get("pan_no"),
+        df.get("tax_status"),
+        df.index
+    )
+
+    # =================================================
+    # AADHAAR SEEDING STATUS
+    #
+    # holder_1_aadhaar_info is a STATUS, not a number. The
+    # source says Y / N / DELINKED / AVAILABLE / INVALID, and
+    # this warehouse holds no Aadhaar number anywhere -- so the
+    # value is carried, upper-cased, into a column named for
+    # what it actually is.
+    #
+    # gold.clients.aadhaar used to receive the literal 'Y' for
+    # mere PRESENCE, which reported a DELINKED or explicitly
+    # un-seeded client as seeded, and leaked 'Y' into the app's
+    # VARCHAR(12) aadhaar column via map_gold_client.
+    #
+    # See sql_scripts/fix_aadhaar_seeding_status.sql, the
+    # one-off backfill for rows already in silver -- the
+    # bronze -> silver step is incremental, so without it a
+    # folio that receives no new registry file would never be
+    # revisited.
+    # =================================================
+
+    if "holder_1_aadhaar_info" in df.columns:
+
+        status = (
+            df["holder_1_aadhaar_info"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+            .replace("", pd.NA)
+        )
+
+        # Plain Python str / None, for the same reason as age:
+        # a pandas extension dtype carries pd.NA through
+        # process_table's None-coercion, and psycopg2 has no
+        # adapter for NAType.
+        df["aadhaar_seeding_status"] = pd.Series(
+            [
+                None if pd.isna(value) else str(value)
+                for value in status
+            ],
+            index=df.index,
+            dtype=object
+        )
+
     return df
+
+
+# Constants, not free text: the value is an enum for consumers.
+PAN_HOLDER_TYPE = {
+    "A": "AOP",
+    "B": "BOI",
+    "C": "COMPANY",
+    "F": "FIRM",
+    "G": "GOVERNMENT",
+    "H": "HUF",
+    "J": "ARTIFICIAL_JURIDICAL_PERSON",
+    "L": "LOCAL_AUTHORITY",
+    "P": "INDIVIDUAL",
+    "T": "TRUST",
+}
+
+
+# Substring rules, so the many spellings of one status collapse
+# together ("NRI - Repatriable", "NRI-Repatriable (NRE)", ...).
+# Order matters: the first match wins, so the more specific
+# phrase must come first -- "LIMITED LIABILITY PARTNERSHIP"
+# before "PARTNERSHIP", and both before "COMPANY", or an LLP
+# would be filed as a company.
+TAX_STATUS_PHRASES = (
+    ("MINOR", "INDIVIDUAL"),
+    ("HUF", "HUF"),
+    ("TRUST", "TRUST"),
+    ("LIABILITY PARTNERSHIP", "FIRM"),
+    ("LLP", "FIRM"),
+    ("PARTNERSHIP", "FIRM"),
+    ("BODY CORPORATE", "COMPANY"),
+    ("COMPANY", "COMPANY"),
+    ("CORPORATION", "COMPANY"),
+    ("BODY OF INDIVIDUAL", "BOI"),
+    ("ASSOCIATION", "AOP"),
+    ("LOCAL AUTHORITY", "LOCAL_AUTHORITY"),
+    ("GOVERNMENT", "GOVERNMENT"),
+    ("JURIDICAL", "ARTIFICIAL_JURIDICAL_PERSON"),
+    # A sole proprietorship transacts on the PROPRIETOR'S OWN
+    # individual PAN, so the natural person is the assessee.
+    ("PROPRIET", "INDIVIDUAL"),
+    ("NRI", "INDIVIDUAL"),
+    ("INDIVIDUAL", "INDIVIDUAL"),
+)
+
+
+# The RTA's own one- and two-character tax_status codes.
+#
+# These are NOT PAN letters and they collide with them:
+#
+#   'P' = Partnership Firm  (PAN 4th char F)  -- NOT Person
+#   'B' = Body Corporate    (PAN 4th char C)  -- NOT BOI
+#   'Y' = LLP               (PAN 4th char F)
+#   'M' = Minor             (no PAN at all)
+#
+# Passing the letter straight through would file every
+# partnership firm as an individual, which is why this is an
+# explicit table and never a passthrough.
+#
+# 'W' and 'L' (Sole Proprietorship) are deliberately absent:
+# they are seen against PAN characters {F,H,P} and {H,P}, so
+# they do not identify a constitution on their own. Both only
+# ever occur on rows that HAVE a PAN, so this table is never
+# consulted for them; if one ever arrives without a PAN it must
+# surface as NULL rather than be guessed.
+TAX_STATUS_CODES = {
+    "M": "INDIVIDUAL", "N": "INDIVIDUAL", "2": "INDIVIDUAL",
+    "9": "INDIVIDUAL", "01": "INDIVIDUAL", "04": "INDIVIDUAL",
+    "H": "HUF", "3": "HUF",
+    "T": "TRUST", "8": "TRUST", "10": "TRUST",
+    "C": "COMPANY", "B": "COMPANY", "4": "COMPANY", "08": "COMPANY",
+    "P": "FIRM", "Y": "FIRM", "O": "FIRM", "07": "FIRM",
+}
+
+
+def _category_from_tax_status(value):
+
+    if value is None or pd.isna(value):
+        return None
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    upper = text.upper()
+
+    for phrase, category in TAX_STATUS_PHRASES:
+        if phrase in upper:
+            return category
+
+    return TAX_STATUS_CODES.get(upper)
+
+
+def _individual_category_type(pan_series, tax_status_series, index):
+
+    """PAN 4th character, falling back to tax_status.
+
+    Returns a plain object Series of str / None -- an extension
+    dtype would carry pd.NA through process_table's
+    df.where(pd.notnull(df), None) and psycopg2 has no adapter
+    for NAType, which fails the whole silver INSERT.
+    """
+
+    pan_valid = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+
+    if pan_series is None:
+        pan_series = pd.Series([None] * len(index), index=index)
+
+    if tax_status_series is None:
+        tax_status_series = pd.Series([None] * len(index), index=index)
+
+    values = []
+
+    for pan, tax_status in zip(pan_series, tax_status_series):
+
+        category = None
+
+        if pan is not None and not pd.isna(pan):
+
+            cleaned = str(pan).strip().upper()
+
+            if pan_valid.match(cleaned):
+                category = PAN_HOLDER_TYPE.get(cleaned[3])
+
+        if category is None:
+            category = _category_from_tax_status(tax_status)
+
+        values.append(category)
+
+    return pd.Series(values, index=index, dtype=object)
 
 
 # =====================================================

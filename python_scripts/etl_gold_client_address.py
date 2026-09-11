@@ -102,6 +102,12 @@ def extract_client_address():
 
             i.pan_no,
 
+            i.guardian_pan,
+
+            i.investor_name,
+
+            i.dob,
+
             txn.txn_pan,
 
             sip.sip_pan,
@@ -558,25 +564,52 @@ def transform_client_address(df):
     # ========================================================
     # FINAL PAN
     # ========================================================
+    #
+    # pan_no only -- no transaction or SIP fallback.
+    #
+    # This is what gold.clients does, and the comment above used
+    # to claim this file matched it while the fallback below said
+    # otherwise. CAMS writes the GUARDIAN's PAN into the ordinary
+    # transaction pan field with no flag, so falling back to it
+    # resolved a minor's folio to the guardian's PAN and filed
+    # the MINOR's address under the GUARDIAN's client_id.
+    #
+    # A folio with no PAN of its own is a minor, and is matched
+    # to its client below on guardian PAN + name + date of birth
+    # -- the same key gold.clients de-duplicates them on.
+    # ========================================================
 
-    df["pan"] = (
-        df["pan_no"]
-        .fillna(df["txn_pan"])
-        .fillna(df["sip_pan"])
-    )
+    df["pan"] = df["pan_no"]
 
     # ========================================================
     # REMOVE INVALID RECORDS
     # ========================================================
 
+    # A missing PAN is not a reason to discard an address. A
+    # minor has no PAN of their own, and dropping them here --
+    # before the client mapping even runs -- is what left every
+    # minor in gold.clients with no address at all. Rows that
+    # genuinely resolve to no client are removed after the
+    # mapping below, where the guardian-identity match has had
+    # its chance.
     before = len(df)
 
-    df = df[
-        df["pan"].notna()
-    ].copy()
-
+    # The guardian PAN was added to this test when the minors
+    # were found missing, but that only widened it from one
+    # identity rule to two. gold.clients resolves an investor
+    # THREE ways -- bronze.client_mapping_review calls them
+    # PAN_EXACT (592), GUARDIAN_PAN (22) and NAME_CLUSTER (6) --
+    # and a folio carrying neither PAN was still discarded here,
+    # before the mapping had any chance to match it by name and
+    # date of birth. That is what left six clients with no
+    # address while silver held one for every one of them.
+    #
+    # Deciding WHICH client a row belongs to is the mapping's
+    # job, and the "client does not exist" removal after it
+    # drops the genuinely unresolvable, so no identity test
+    # belongs here at all.
     print(
-        "Rows removed due to missing PAN :",
+        "Rows removed before mapping :",
         before - len(df)
     )
 
@@ -632,11 +665,23 @@ def transform_client_address(df):
 
             id,
 
-            pan
+            pan,
+
+            guardian_pan,
+
+            full_name,
+
+            date_of_birth
 
         FROM gold.clients
 
-        WHERE pan IS NOT NULL
+        -- A superseded client is not a destination. Left
+        -- visible here, this ETL re-attaches the address and
+        -- bank rows a merge just moved to the survivor, and the
+        -- person's data ends up split across both rows again --
+        -- three addresses and three accounts came straight back
+        -- that way.
+        WHERE superseded_by IS NULL
 
     """
 
@@ -656,16 +701,8 @@ def transform_client_address(df):
         clients["pan"]
     )
 
-    clients = clients[
-        clients["pan"].notna()
-    ].copy()
-
-    # --------------------------------------------------------
-    # REMOVE DUPLICATE CLIENT PANs
-    # --------------------------------------------------------
-
-    clients = (
-        clients
+    with_pan = (
+        clients[clients["pan"].notna()]
         .drop_duplicates(
             subset=["pan"],
             keep="first"
@@ -673,11 +710,11 @@ def transform_client_address(df):
     )
 
     # --------------------------------------------------------
-    # MAP CLIENT UUID
+    # MAP CLIENT UUID -- BY PAN
     # --------------------------------------------------------
 
     df = df.merge(
-        clients[
+        with_pan[
             [
                 "pan",
                 "id"
@@ -693,6 +730,162 @@ def transform_client_address(df):
         },
         inplace=True
     )
+
+    # --------------------------------------------------------
+    # MAP CLIENT UUID -- MINORS, BY GUARDIAN IDENTITY
+    # --------------------------------------------------------
+    #
+    # A minor has no PAN, so the merge above leaves client_id
+    # null and every one of their addresses was dropped as
+    # "client does not exist". They are matched instead on the
+    # key gold.clients stores them under.
+    # --------------------------------------------------------
+
+    minor_key = [
+        "guardian_pan",
+        "full_name",
+        "date_of_birth"
+    ]
+
+    minors = (
+        clients[clients["pan"].isna()]
+        .dropna(subset=["guardian_pan"])
+        .drop_duplicates(
+            subset=minor_key,
+            keep="first"
+        )
+    )
+
+    if not minors.empty:
+
+        df["guardian_pan"] = clean_pan(
+            df["guardian_pan"]
+        )
+
+        df["full_name"] = clean_string(
+            df["investor_name"]
+        )
+
+        df["date_of_birth"] = (
+            pd.to_datetime(
+                df["dob"],
+                errors="coerce",
+                format="ISO8601"
+            )
+            .dt.date
+        )
+
+        df = df.merge(
+            minors[minor_key + ["id"]],
+            on=minor_key,
+            how="left"
+        )
+
+        df["client_id"] = (
+            df["client_id"]
+            .fillna(df["id"])
+        )
+
+        df = df.drop(columns=["id"])
+
+        print(
+            "Client IDs mapped via guardian identity :",
+            int(
+                (
+                    df["pan"].isna()
+                    & df["client_id"].notna()
+                ).sum()
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # MAP CLIENT UUID -- PAN-LESS WITH NO GUARDIAN
+    # --------------------------------------------------------
+    #
+    # gold.clients resolves an investor three ways, and
+    # bronze.client_mapping_review names them:
+    #
+    #   PAN_EXACT     592
+    #   GUARDIAN_PAN   22
+    #   NAME_CLUSTER    6
+    #
+    # The two merges above are the first two rules only. Without
+    # the third, the six clients carrying NEITHER a PAN nor a
+    # guardian PAN can never be matched, and every address of
+    # theirs was dropped as "client does not exist" -- Animesh J
+    # Mehta, Pritipal Shah, Saleel Y Bhatt, Sureel Yogendra
+    # Bhatt, Mina Jitendra Desai and Pavanendra Bhatt Heritage
+    # Fund all had source data in silver and nothing in gold.
+    #
+    # load_clients() keys exactly these on the whole normalised
+    # name plus date of birth, so the same key is rebuilt here.
+    # norm_name is reused rather than reimplemented so the two
+    # cannot drift -- which is how this rule went missing in the
+    # first place: the identity logic is written out separately
+    # in each of these three files.
+    #
+    # Built as ONE string because several of these clients have
+    # no date of birth at all, and a merge across a date column
+    # would then have to rely on null matching null.
+    # --------------------------------------------------------
+
+    from client_mapping import norm_name
+
+    name_only = clients[
+        clients["pan"].isna()
+        &
+        clients["guardian_pan"].isna()
+    ].copy()
+
+    if not name_only.empty:
+
+        def name_dob_key(names, dobs):
+
+            return (
+                norm_name(names).fillna("")
+                + "|"
+                + pd.to_datetime(dobs, errors="coerce")
+                    .dt.strftime("%Y-%m-%d")
+                    .fillna("")
+            )
+
+        name_only["_name_dob_key"] = name_dob_key(
+            name_only["full_name"],
+            name_only["date_of_birth"]
+        )
+
+        name_only = name_only.drop_duplicates(
+            subset=["_name_dob_key"],
+            keep="first"
+        )
+
+        df["_name_dob_key"] = name_dob_key(
+            df["investor_name"],
+            df["dob"]
+        )
+
+        before_name_match = df["client_id"].notna().sum()
+
+        df = df.merge(
+            name_only[["_name_dob_key", "id"]],
+            on="_name_dob_key",
+            how="left"
+        )
+
+        df["client_id"] = (
+            df["client_id"]
+            .fillna(df["id"])
+        )
+
+        df = df.drop(
+            columns=["id", "_name_dob_key"]
+        )
+
+        print(
+            "Client IDs mapped via name + dob        :",
+            int(df["client_id"].notna().sum() - before_name_match)
+        )
 
     print(
         "Client IDs mapped :",
@@ -1059,6 +1252,8 @@ def load_client_address(gold_df):
 
         FROM gold.client_address
 
+        WHERE is_deleted = FALSE
+
     """
 
     existing = safe_read(
@@ -1187,6 +1382,27 @@ def load_client_address(gold_df):
         )
 
         return
+
+    # address_key was only ever needed to match the database's
+    # own notion of a duplicate. It is GENERATED ALWAYS, so
+    # Postgres computes it on insert and rejects any attempt to
+    # supply a value for it.
+    #
+    # Counted HERE, while the column still exists. The count used to
+    # be taken much further down, next to the final column reduction,
+    # on the assumption that the reduction was what removed
+    # address_key -- but this drop has already removed it by then, so
+    # that line raised KeyError: ['address_key'] not in index and
+    # load_client_address() died before inserting anything.
+    unique_addresses = (
+        gold_df[["client_id", "address_key"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+
+    gold_df = gold_df.drop(
+        columns=["address_key"]
+    )
 
     # ========================================================
     # GET CURRENT MAX SEQUENCE PER CLIENT
@@ -1399,15 +1615,8 @@ def load_client_address(gold_df):
 
     ]
 
-    # Counted before the reduction: address_key is dropped by it, because the
-    # column in gold.client_address is GENERATED ALWAYS and Postgres rejects an
-    # INSERT that supplies one.
-    unique_addresses = (
-        gold_df[["client_id", "address_key"]]
-        .drop_duplicates()
-        .shape[0]
-    )
-
+    # unique_addresses was counted earlier, before address_key was
+    # dropped -- see the drop site above.
     gold_df = gold_df[
         final_columns
     ].copy()
