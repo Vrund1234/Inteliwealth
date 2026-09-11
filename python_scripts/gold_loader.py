@@ -64,7 +64,9 @@ try:
     from etl_gold_clients import (
         extract_clients,
         transform_clients,
-        load_clients
+        load_clients,
+        link_client_folios,
+        merge_duplicate_clients
     )
 
     CLIENT_AVAILABLE = True
@@ -817,6 +819,34 @@ def load_gold():
     # the decisions -- so the same pairs are re-detected every run and the
     # size holds steady. A stable count is the healthy reading.
     # =====================================================
+
+    # =====================================================
+    # CLIENT IDENTITY: link folios, then fold duplicates
+    #
+    # HERE, and not inside the clients block above, because the
+    # merge sweep will only join two rows that share a bank
+    # account or a postal address -- and neither table has been
+    # written yet at that point. Run too early it finds no
+    # evidence, reports nothing, and the duplicate survives
+    # until the next pipeline run.
+    #
+    # link_client_folios() comes first: the sweep reads folio
+    # counts to decide which of two rows survives, and a merge
+    # repoints folios, so the map wants to be current.
+    # =====================================================
+
+    if CLIENT_AVAILABLE:
+
+        try:
+
+            link_client_folios()
+
+            merge_duplicate_clients()
+
+        except Exception as e:
+
+            print("Client identity maintenance failed")
+            print(e)
 
     if ADDRESS_REVIEW_AVAILABLE:
 
